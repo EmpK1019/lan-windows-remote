@@ -37,6 +37,29 @@ python .\lan_remote.py --port 9000
 python .\lan_remote.py --token "my-safe-code"
 ```
 
+## 构建安装包
+
+在 Windows 上运行：
+
+```powershell
+.\scripts\build-windows-installer.ps1
+```
+
+构建完成后会生成：
+
+- `dist\WindowsLANRemote.exe`：独立可执行程序。
+- `dist\WindowsLANRemoteSetup-0.1.0.exe`：每用户安装包。
+
+安装包会安装到 `%LOCALAPPDATA%\Programs\Windows LAN Remote`，创建开始菜单快捷方式和卸载项。它不会注册系统服务、不会设置开机自启，也不会隐藏运行。
+
+静默安装：
+
+```powershell
+.\dist\WindowsLANRemoteSetup-0.1.0.exe /quiet
+```
+
+当前构建产物没有代码签名证书，Windows SmartScreen 或杀毒软件可能会提示未知发布者。
+
 ## 使用提示
 
 - 控制端网页里点“键盘”后才会发送键盘按键；按 `Esc` 可以关闭键盘控制。

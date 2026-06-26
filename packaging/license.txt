@@ -1,0 +1,12 @@
+Windows LAN Remote
+
+This tool is intended only for controlling Windows computers that you own or
+are explicitly authorized to control. Do not use it to access someone else's
+computer without clear permission.
+
+The application does not install a background service, does not configure
+startup persistence, and does not hide itself. Closing the console window stops
+the remote-control server.
+
+The default server accepts only local or private LAN clients and requires the
+one-time access code shown in the console.
