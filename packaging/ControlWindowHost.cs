@@ -1,0 +1,246 @@
+using System;
+using System.Collections.Generic;
+using System.Drawing;
+using System.IO;
+using System.Runtime.InteropServices;
+using System.Threading.Tasks;
+using System.Web.Script.Serialization;
+using System.Windows.Forms;
+using Microsoft.Web.WebView2.Core;
+using Microsoft.Web.WebView2.WinForms;
+
+namespace WindowsLANRemoteControlHost
+{
+    internal static class Program
+    {
+        [STAThread]
+        private static int Main(string[] args)
+        {
+            Uri url;
+            if (!TryReadUrl(args, out url))
+            {
+                MessageBox.Show(
+                    "The remote control session URL is invalid.",
+                    "LAN Remote",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Error);
+                return 2;
+            }
+
+            Application.EnableVisualStyles();
+            Application.SetCompatibleTextRenderingDefault(false);
+            Application.Run(new ControlWindow(url));
+            return 0;
+        }
+
+        private static bool TryReadUrl(string[] args, out Uri url)
+        {
+            url = null;
+            string value = null;
+            for (int index = 0; args != null && index < args.Length - 1; index++)
+            {
+                if (String.Equals(args[index], "--url", StringComparison.OrdinalIgnoreCase))
+                {
+                    value = args[index + 1];
+                    break;
+                }
+            }
+
+            Uri parsed;
+            if (!Uri.TryCreate(value, UriKind.Absolute, out parsed) ||
+                !String.Equals(parsed.Scheme, Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase) ||
+                !String.Equals(parsed.Host, "127.0.0.1", StringComparison.Ordinal) ||
+                parsed.Port < 1 || parsed.Port > 65535 ||
+                !parsed.Query.Contains("remote=1") ||
+                !parsed.Query.Contains("handoff="))
+            {
+                return false;
+            }
+
+            url = parsed;
+            return true;
+        }
+    }
+
+    internal sealed class ControlWindow : Form
+    {
+        private const int WmNcLButtonDown = 0x00A1;
+        private const int HtCaption = 0x0002;
+
+        private readonly Uri sessionUrl;
+        private readonly WebView2 browser;
+        private readonly JavaScriptSerializer serializer = new JavaScriptSerializer();
+        private bool fullscreen;
+        private bool maximized;
+        private Rectangle restoredBounds;
+
+        [DllImport("user32.dll")]
+        private static extern bool ReleaseCapture();
+
+        [DllImport("user32.dll")]
+        private static extern IntPtr SendMessage(IntPtr window, int message, IntPtr wParam, IntPtr lParam);
+
+        public ControlWindow(Uri url)
+        {
+            sessionUrl = url;
+            Text = "LAN Remote · 远程控制";
+            StartPosition = FormStartPosition.CenterScreen;
+            FormBorderStyle = FormBorderStyle.None;
+            BackColor = Color.FromArgb(15, 16, 20);
+            ClientSize = new Size(1280, 800);
+            MinimumSize = new Size(720, 480);
+            KeyPreview = true;
+
+            browser = new WebView2();
+            browser.Dock = DockStyle.Fill;
+            browser.DefaultBackgroundColor = BackColor;
+            Controls.Add(browser);
+
+            Shown += async delegate { await InitializeBrowser(); };
+        }
+
+        private async Task InitializeBrowser()
+        {
+            string dataFolder = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "LAN Remote",
+                "ControlHostWebView2");
+            Directory.CreateDirectory(dataFolder);
+
+            CoreWebView2Environment environment = await CoreWebView2Environment.CreateAsync(null, dataFolder);
+            await browser.EnsureCoreWebView2Async(environment);
+            browser.CoreWebView2.Settings.AreDefaultContextMenusEnabled = false;
+            browser.CoreWebView2.Settings.AreDevToolsEnabled = false;
+            browser.CoreWebView2.Settings.IsStatusBarEnabled = false;
+            browser.CoreWebView2.WebMessageReceived += OnWebMessageReceived;
+            await browser.CoreWebView2.AddScriptToExecuteOnDocumentCreatedAsync(BridgeScript);
+            browser.Source = sessionUrl;
+        }
+
+        private async void OnWebMessageReceived(object sender, CoreWebView2WebMessageReceivedEventArgs args)
+        {
+            Dictionary<string, object> message;
+            try
+            {
+                message = serializer.Deserialize<Dictionary<string, object>>(args.WebMessageAsJson);
+            }
+            catch
+            {
+                return;
+            }
+
+            object idValue;
+            object actionValue;
+            if (!message.TryGetValue("id", out idValue) || !message.TryGetValue("action", out actionValue))
+            {
+                return;
+            }
+
+            string id = Convert.ToString(idValue);
+            string action = Convert.ToString(actionValue);
+            object payload = null;
+            message.TryGetValue("payload", out payload);
+            object result = true;
+
+            switch (action)
+            {
+                case "set_title":
+                    Text = (Convert.ToString(payload) ?? "LAN Remote").Trim();
+                    if (Text.Length > 160) Text = Text.Substring(0, 160);
+                    break;
+                case "minimize":
+                    WindowState = FormWindowState.Minimized;
+                    break;
+                case "toggle_maximize":
+                    maximized = !maximized;
+                    WindowState = maximized ? FormWindowState.Maximized : FormWindowState.Normal;
+                    result = maximized;
+                    break;
+                case "toggle_fullscreen":
+                    ToggleFullscreen();
+                    result = fullscreen;
+                    break;
+                case "window_state":
+                    result = new Dictionary<string, object>
+                    {
+                        { "maximized", maximized },
+                        { "fullscreen", fullscreen },
+                        { "remote_window", true }
+                    };
+                    break;
+                case "drag":
+                    ReleaseCapture();
+                    SendMessage(Handle, WmNcLButtonDown, new IntPtr(HtCaption), IntPtr.Zero);
+                    break;
+                case "close":
+                    Close();
+                    return;
+                default:
+                    result = false;
+                    break;
+            }
+
+            if (browser.CoreWebView2 != null)
+            {
+                string script = "window.__lanNativeResolve(" + serializer.Serialize(id) + "," +
+                    serializer.Serialize(result) + ");";
+                await browser.CoreWebView2.ExecuteScriptAsync(script);
+            }
+        }
+
+        private void ToggleFullscreen()
+        {
+            if (!fullscreen)
+            {
+                restoredBounds = Bounds;
+                WindowState = FormWindowState.Normal;
+                Bounds = Screen.FromControl(this).Bounds;
+                TopMost = true;
+                fullscreen = true;
+            }
+            else
+            {
+                TopMost = false;
+                Bounds = restoredBounds;
+                fullscreen = false;
+            }
+        }
+
+        private const string BridgeScript = @"
+(() => {
+  const pending = new Map();
+  let nextId = 1;
+  const call = (action, payload = null) => new Promise((resolve) => {
+    const id = String(nextId++);
+    pending.set(id, resolve);
+    window.chrome.webview.postMessage({id, action, payload});
+  });
+  window.__lanNativeResolve = (id, result) => {
+    const resolve = pending.get(String(id));
+    if (!resolve) return;
+    pending.delete(String(id));
+    resolve(result);
+  };
+  window.pywebview = {api: {
+    set_window_title: (title) => call('set_title', String(title || 'LAN Remote')),
+    minimize_window: () => call('minimize'),
+    toggle_maximize_window: () => call('toggle_maximize'),
+    toggle_fullscreen: () => call('toggle_fullscreen'),
+    close_window: () => call('close'),
+    window_state: () => call('window_state'),
+    try_auto_unlock: (deviceJson, token) => fetch('/api/native/try-auto-unlock', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({device: JSON.parse(deviceJson), token}),
+      cache: 'no-store'
+    }).then((response) => response.json())
+  }};
+  document.addEventListener('mousedown', (event) => {
+    if (event.button !== 0 || !event.target.closest('.pywebview-drag-region') || event.target.closest('button,input')) return;
+    call('drag');
+    event.preventDefault();
+  }, true);
+  window.dispatchEvent(new CustomEvent('pywebviewready'));
+})();";
+    }
+}

@@ -1,5 +1,5 @@
 param(
-    [string]$Version = "0.6.3",
+    [string]$Version = "0.6.4",
     [switch]$SkipDependencyInstall
 )
 
@@ -20,6 +20,8 @@ $PortableExecutable = Join-Path $PortableDir "$PortableBaseName.exe"
 $PortableArchive = Join-Path $DistDir "$PortableBaseName-portable.zip"
 $ServicePath = Join-Path $DistDir "WindowsLANRemoteService-$Version.exe"
 $IconPath = Join-Path $Root "assets\lan-remote-icon.ico"
+$WebViewLibDir = Join-Path $Root ".venv-build\Lib\site-packages\webview\lib"
+$ControlHostPath = Join-Path $PortableDir "WindowsLANRemoteControlHost.exe"
 
 function Assert-Tool {
     param([string]$Name)
@@ -87,6 +89,27 @@ if (-not (Test-Path -LiteralPath $PortableExecutable)) {
 if ($LASTEXITCODE -ne 0) {
     throw "Secure desktop service compilation failed with exit code $LASTEXITCODE."
 }
+
+$ControlHostCompilerArgs = @(
+    "/nologo",
+    "/target:winexe",
+    "/out:$ControlHostPath",
+    "/win32icon:$IconPath",
+    "/reference:System.Drawing.dll",
+    "/reference:System.Web.Extensions.dll",
+    "/reference:System.Windows.Forms.dll",
+    "/reference:$((Join-Path $WebViewLibDir 'Microsoft.Web.WebView2.Core.dll'))",
+    "/reference:$((Join-Path $WebViewLibDir 'Microsoft.Web.WebView2.WinForms.dll'))",
+    (Join-Path $PackagingDir "ControlWindowHost.cs")
+)
+& $CscPath @ControlHostCompilerArgs
+if ($LASTEXITCODE -ne 0) {
+    throw "Native control window host compilation failed with exit code $LASTEXITCODE."
+}
+
+Copy-Item -LiteralPath (Join-Path $WebViewLibDir "Microsoft.Web.WebView2.Core.dll") -Destination $PortableDir -Force
+Copy-Item -LiteralPath (Join-Path $WebViewLibDir "Microsoft.Web.WebView2.WinForms.dll") -Destination $PortableDir -Force
+Copy-Item -LiteralPath (Join-Path $WebViewLibDir "runtimes\win-x64\native\WebView2Loader.dll") -Destination $PortableDir -Force
 
 $StagedAppDir = Join-Path $StageDir "app"
 Copy-Item -LiteralPath $PortableDir -Destination $StagedAppDir -Recurse -Force

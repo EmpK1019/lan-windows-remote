@@ -18,6 +18,7 @@ import hmac
 import io
 import ipaddress
 import json
+import mimetypes
 import os
 import platform
 import queue
@@ -51,7 +52,7 @@ if platform.system() == "Windows":
 
 
 APP_NAME = "Windows LAN Remote"
-APP_VERSION = "0.6.3"
+APP_VERSION = "0.6.4"
 GITHUB_REPOSITORY = "EmpK1019/lan-windows-remote"
 GITHUB_LATEST_RELEASE_API = f"https://api.github.com/repos/{GITHUB_REPOSITORY}/releases/latest"
 DEFAULT_PORT = 8765
@@ -64,8 +65,13 @@ PERMANENT_PASSWORD_ITERATIONS = 240_000
 PERMANENT_PASSWORD_MIN_LENGTH = 8
 ACCESS_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 MAX_POST_BYTES = 16 * 1024
+MAX_CLIPBOARD_CHARS = 1_000_000
+MAX_CLIPBOARD_PAYLOAD_BYTES = MAX_CLIPBOARD_CHARS * 4 + 1024
+MAX_FILE_TRANSFER_BYTES = 2 * 1024 * 1024 * 1024
+FILE_TRANSFER_CHUNK_BYTES = 1024 * 1024
 REMOTE_WINDOW_HANDOFF_TTL_SECONDS = 60
 SCREEN_LOCK = threading.Lock()
+CLIPBOARD_LOCK = threading.Lock()
 GDIPLUS_LOCK = threading.Lock()
 GDIPLUS_TOKEN = ctypes.c_void_p()
 GDIPLUS_STARTED = False
@@ -726,6 +732,14 @@ class ServerState:
     session_token_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
     remote_window_sessions: dict[str, tuple[dict[str, Any], float]] = field(default_factory=dict, repr=False)
     remote_window_session_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+    credential_api: Any = field(default=None, repr=False)
+    credential_api_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+
+    def get_credential_api(self) -> Any:
+        with self.credential_api_lock:
+            if self.credential_api is None:
+                self.credential_api = DesktopApi()
+            return self.credential_api
 
     def temporary_access_code(self) -> tuple[str, float]:
         with self.token_lock:
@@ -1214,6 +1228,34 @@ class BITMAPINFO(ctypes.Structure):
     ]
 
 
+class RECT(ctypes.Structure):
+    _fields_ = [
+        ("left", wintypes.LONG),
+        ("top", wintypes.LONG),
+        ("right", wintypes.LONG),
+        ("bottom", wintypes.LONG),
+    ]
+
+
+class MONITORINFOEXW(ctypes.Structure):
+    _fields_ = [
+        ("cbSize", wintypes.DWORD),
+        ("rcMonitor", RECT),
+        ("rcWork", RECT),
+        ("dwFlags", wintypes.DWORD),
+        ("szDevice", wintypes.WCHAR * 32),
+    ]
+
+
+MONITORENUMPROC = ctypes.WINFUNCTYPE(
+    wintypes.BOOL,
+    wintypes.HANDLE,
+    wintypes.HDC,
+    ctypes.POINTER(RECT),
+    wintypes.LPARAM,
+)
+
+
 class GUID(ctypes.Structure):
     _fields_ = [
         ("Data1", wintypes.DWORD),
@@ -1314,6 +1356,10 @@ def configure_win32_signatures() -> None:
 
     user32.GetSystemMetrics.argtypes = [ctypes.c_int]
     user32.GetSystemMetrics.restype = ctypes.c_int
+    user32.EnumDisplayMonitors.argtypes = [wintypes.HDC, ctypes.POINTER(RECT), MONITORENUMPROC, wintypes.LPARAM]
+    user32.EnumDisplayMonitors.restype = wintypes.BOOL
+    user32.GetMonitorInfoW.argtypes = [wintypes.HANDLE, ctypes.POINTER(MONITORINFOEXW)]
+    user32.GetMonitorInfoW.restype = wintypes.BOOL
     user32.GetDC.argtypes = [wintypes.HWND]
     user32.GetDC.restype = wintypes.HDC
     user32.GetParent.argtypes = [wintypes.HWND]
@@ -1330,6 +1376,20 @@ def configure_win32_signatures() -> None:
     user32.MapVirtualKeyW.restype = wintypes.UINT
     user32.SendInput.argtypes = [wintypes.UINT, ctypes.POINTER(INPUT), ctypes.c_int]
     user32.SendInput.restype = wintypes.UINT
+    user32.OpenClipboard.argtypes = [wintypes.HWND]
+    user32.OpenClipboard.restype = wintypes.BOOL
+    user32.CloseClipboard.argtypes = []
+    user32.CloseClipboard.restype = wintypes.BOOL
+    user32.EmptyClipboard.argtypes = []
+    user32.EmptyClipboard.restype = wintypes.BOOL
+    user32.IsClipboardFormatAvailable.argtypes = [wintypes.UINT]
+    user32.IsClipboardFormatAvailable.restype = wintypes.BOOL
+    user32.GetClipboardData.argtypes = [wintypes.UINT]
+    user32.GetClipboardData.restype = wintypes.HANDLE
+    user32.SetClipboardData.argtypes = [wintypes.UINT, wintypes.HANDLE]
+    user32.SetClipboardData.restype = wintypes.HANDLE
+    user32.GetClipboardSequenceNumber.argtypes = []
+    user32.GetClipboardSequenceNumber.restype = wintypes.DWORD
     user32.OpenInputDesktop.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
     user32.OpenInputDesktop.restype = wintypes.HANDLE
     user32.CloseDesktop.argtypes = [wintypes.HANDLE]
@@ -1348,6 +1408,8 @@ def configure_win32_signatures() -> None:
     kernel32.GetCurrentThreadId.restype = wintypes.DWORD
     kernel32.GetCurrentProcessId.argtypes = []
     kernel32.GetCurrentProcessId.restype = wintypes.DWORD
+    kernel32.GetLogicalDrives.argtypes = []
+    kernel32.GetLogicalDrives.restype = wintypes.DWORD
     kernel32.ProcessIdToSessionId.argtypes = [wintypes.DWORD, ctypes.POINTER(wintypes.DWORD)]
     kernel32.ProcessIdToSessionId.restype = wintypes.BOOL
     kernel32.LocalFree.argtypes = [ctypes.c_void_p]
@@ -1423,6 +1485,10 @@ def configure_win32_signatures() -> None:
 
     kernel32.GlobalSize.argtypes = [wintypes.HGLOBAL]
     kernel32.GlobalSize.restype = ctypes.c_size_t
+    kernel32.GlobalAlloc.argtypes = [wintypes.UINT, ctypes.c_size_t]
+    kernel32.GlobalAlloc.restype = wintypes.HGLOBAL
+    kernel32.GlobalFree.argtypes = [wintypes.HGLOBAL]
+    kernel32.GlobalFree.restype = wintypes.HGLOBAL
     kernel32.GlobalLock.argtypes = [wintypes.HGLOBAL]
     kernel32.GlobalLock.restype = ctypes.c_void_p
     kernel32.GlobalUnlock.argtypes = [wintypes.HGLOBAL]
@@ -1442,10 +1508,75 @@ def virtual_screen_rect() -> tuple[int, int, int, int]:
     return left, top, width, height
 
 
-def capture_screen_bmp() -> bytes:
+def enumerate_monitors() -> list[dict[str, Any]]:
+    monitors: list[dict[str, Any]] = []
+
+    @MONITORENUMPROC
+    def callback(
+        monitor_handle: int,
+        _monitor_dc: int,
+        _monitor_rect: ctypes.POINTER(RECT),
+        _data: int,
+    ) -> bool:
+        info = MONITORINFOEXW()
+        info.cbSize = ctypes.sizeof(MONITORINFOEXW)
+        if not ctypes.windll.user32.GetMonitorInfoW(monitor_handle, ctypes.byref(info)):
+            return True
+        rect = info.rcMonitor
+        width = int(rect.right - rect.left)
+        height = int(rect.bottom - rect.top)
+        if width <= 0 or height <= 0:
+            return True
+        monitors.append(
+            {
+                "id": str(info.szDevice),
+                "left": int(rect.left),
+                "top": int(rect.top),
+                "width": width,
+                "height": height,
+                "primary": bool(info.dwFlags & 1),
+            }
+        )
+        return True
+
+    if not ctypes.windll.user32.EnumDisplayMonitors(None, None, callback, 0):
+        raise ctypes.WinError()
+    monitors.sort(key=lambda item: (not item["primary"], item["left"], item["top"]))
+    for index, monitor in enumerate(monitors, 1):
+        monitor["label"] = f"显示器 {index}" + ("（主屏）" if monitor["primary"] else "")
+    return monitors
+
+
+def screen_rect(monitor_id: str = "all") -> tuple[int, int, int, int]:
+    if not monitor_id or monitor_id == "all":
+        return virtual_screen_rect()
+    for monitor in enumerate_monitors():
+        if monitor["id"] == monitor_id:
+            return monitor["left"], monitor["top"], monitor["width"], monitor["height"]
+    raise ValueError("显示器不存在或已经断开")
+
+
+def monitor_payload() -> list[dict[str, Any]]:
+    left, top, width, height = virtual_screen_rect()
+    monitors = enumerate_monitors()
+    return [
+        {
+            "id": "all",
+            "label": "全部显示器",
+            "left": left,
+            "top": top,
+            "width": width,
+            "height": height,
+            "primary": False,
+        },
+        *monitors,
+    ]
+
+
+def capture_screen_bmp(monitor_id: str = "all") -> bytes:
     user32 = ctypes.windll.user32
     gdi32 = ctypes.windll.gdi32
-    left, top, width, height = virtual_screen_rect()
+    left, top, width, height = screen_rect(monitor_id)
     data_size = width * height * 4
 
     with SCREEN_LOCK:
@@ -1571,10 +1702,10 @@ def encode_hbitmap_jpeg(bitmap: int) -> bytes:
             release_com_object(stream)
 
 
-def capture_screen_jpeg() -> bytes:
+def capture_screen_jpeg(monitor_id: str = "all") -> bytes:
     user32 = ctypes.windll.user32
     gdi32 = ctypes.windll.gdi32
-    left, top, width, height = virtual_screen_rect()
+    left, top, width, height = screen_rect(monitor_id)
 
     with SCREEN_LOCK:
         screen_dc = user32.GetDC(None)
@@ -1611,11 +1742,159 @@ def capture_screen_jpeg() -> bytes:
             user32.ReleaseDC(None, screen_dc)
 
 
-def capture_screen_image() -> tuple[bytes, str]:
+def capture_screen_image(monitor_id: str = "all") -> tuple[bytes, str]:
     try:
-        return capture_screen_jpeg(), "image/jpeg"
+        return capture_screen_jpeg(monitor_id), "image/jpeg"
     except Exception:
-        return capture_screen_bmp(), "image/bmp"
+        return capture_screen_bmp(monitor_id), "image/bmp"
+
+
+def open_clipboard_with_retry() -> None:
+    for _ in range(12):
+        if ctypes.windll.user32.OpenClipboard(None):
+            return
+        time.sleep(0.025)
+    raise OSError("剪贴板正被其他程序占用")
+
+
+def read_text_clipboard() -> dict[str, Any]:
+    user32 = ctypes.windll.user32
+    kernel32 = ctypes.windll.kernel32
+    with CLIPBOARD_LOCK:
+        open_clipboard_with_retry()
+        try:
+            sequence = int(user32.GetClipboardSequenceNumber())
+            if not user32.IsClipboardFormatAvailable(13):  # CF_UNICODETEXT
+                return {"text": "", "sequence": sequence, "has_text": False}
+            handle = user32.GetClipboardData(13)
+            if not handle:
+                raise ctypes.WinError()
+            pointer = kernel32.GlobalLock(handle)
+            if not pointer:
+                raise ctypes.WinError()
+            try:
+                size = int(kernel32.GlobalSize(handle))
+                text = ctypes.wstring_at(pointer, min(size // 2, MAX_CLIPBOARD_CHARS + 1)).split("\0", 1)[0]
+            finally:
+                kernel32.GlobalUnlock(handle)
+        finally:
+            user32.CloseClipboard()
+    if len(text) > MAX_CLIPBOARD_CHARS:
+        raise ValueError("剪贴板文本超过 100 万字符限制")
+    return {"text": text, "sequence": sequence, "has_text": True}
+
+
+def write_text_clipboard(text: str) -> int:
+    if len(text) > MAX_CLIPBOARD_CHARS or "\0" in text:
+        raise ValueError("剪贴板文本无效或超过 100 万字符限制")
+    user32 = ctypes.windll.user32
+    kernel32 = ctypes.windll.kernel32
+    data = (text + "\0").encode("utf-16-le")
+    memory = kernel32.GlobalAlloc(0x0002, len(data))  # GMEM_MOVEABLE
+    if not memory:
+        raise ctypes.WinError()
+    transferred = False
+    try:
+        pointer = kernel32.GlobalLock(memory)
+        if not pointer:
+            raise ctypes.WinError()
+        try:
+            ctypes.memmove(pointer, data, len(data))
+        finally:
+            kernel32.GlobalUnlock(memory)
+        with CLIPBOARD_LOCK:
+            open_clipboard_with_retry()
+            try:
+                if not user32.EmptyClipboard():
+                    raise ctypes.WinError()
+                if not user32.SetClipboardData(13, memory):
+                    raise ctypes.WinError()
+                transferred = True
+                return int(user32.GetClipboardSequenceNumber())
+            finally:
+                user32.CloseClipboard()
+    finally:
+        if not transferred:
+            kernel32.GlobalFree(memory)
+
+
+def local_file_path(value: str, *, must_exist: bool = True) -> Path:
+    if not value:
+        path = Path.home()
+    else:
+        path = Path(value).expanduser()
+    if not path.is_absolute() or str(path).startswith("\\\\"):
+        raise ValueError("只允许访问本机磁盘上的绝对路径")
+    try:
+        resolved = path.resolve(strict=must_exist)
+    except OSError as exc:
+        raise ValueError("文件路径不存在或无法访问") from exc
+    if str(resolved).startswith("\\\\"):
+        raise ValueError("不允许访问网络共享路径")
+    return resolved
+
+
+def validate_file_name(value: str) -> str:
+    name = value.strip()
+    if (
+        not name
+        or name in {".", ".."}
+        or len(name) > 255
+        or any(character in name for character in '<>:"/\\|?*')
+        or Path(name).name != name
+    ):
+        raise ValueError("文件名无效")
+    return name
+
+
+def file_browser_roots() -> list[dict[str, str]]:
+    roots: list[dict[str, str]] = []
+    home = Path.home().resolve()
+    roots.append({"name": "用户文件", "path": str(home)})
+    mask = int(ctypes.windll.kernel32.GetLogicalDrives())
+    for index in range(26):
+        if mask & (1 << index):
+            drive = f"{chr(65 + index)}:\\"
+            if Path(drive).resolve() == home:
+                continue
+            roots.append({"name": f"本地磁盘 ({drive[:2]})", "path": drive})
+    return roots
+
+
+def directory_payload(value: str) -> dict[str, Any]:
+    directory = local_file_path(value)
+    if not directory.is_dir():
+        raise ValueError("所选路径不是文件夹")
+    entries: list[dict[str, Any]] = []
+    try:
+        children = list(directory.iterdir())
+    except OSError as exc:
+        raise ValueError("没有权限读取该文件夹") from exc
+    children.sort(key=lambda child: (not child.is_dir(), child.name.casefold()))
+    for child in children[:2000]:
+        try:
+            stat = child.stat()
+            is_directory = child.is_dir()
+        except OSError:
+            continue
+        entries.append(
+            {
+                "name": child.name,
+                "path": str(child),
+                "is_dir": is_directory,
+                "size": 0 if is_directory else int(stat.st_size),
+                "modified_at": int(stat.st_mtime * 1000),
+            }
+        )
+    parent = directory.parent if directory.parent != directory else None
+    return {
+        "ok": True,
+        "path": str(directory),
+        "parent": str(parent) if parent else "",
+        "roots": file_browser_roots(),
+        "entries": entries,
+        "truncated": len(children) > 2000,
+    }
 
 
 def service_secret_path() -> Path:
@@ -1743,8 +2022,8 @@ def secure_helper_available() -> bool:
         return False
 
 
-def capture_secure_desktop() -> tuple[bytes, str]:
-    return secure_helper_request("/secure/screen")
+def capture_secure_desktop(monitor_id: str = "all") -> tuple[bytes, str]:
+    return secure_helper_request(f"/secure/screen?monitor={quote(monitor_id, safe='')}")
 
 
 def send_secure_input(payload: dict[str, Any]) -> None:
@@ -1840,9 +2119,11 @@ def key_to_vk(key: str, code: str) -> int | None:
 
 def send_mouse_event(payload: dict[str, Any]) -> None:
     user32 = ctypes.windll.user32
-    left, top, _, _ = virtual_screen_rect()
-    x = int(payload.get("x", 0)) + left
-    y = int(payload.get("y", 0)) + top
+    left, top, width, height = screen_rect(str(payload.get("monitor", "all")))
+    relative_x = max(0, min(int(payload.get("x", 0)), width - 1))
+    relative_y = max(0, min(int(payload.get("y", 0)), height - 1))
+    x = relative_x + left
+    y = relative_y + top
     user32.SetCursorPos(x, y)
 
     event_type = str(payload.get("type", ""))
@@ -1948,7 +2229,8 @@ class SecureDesktopHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         if not self.authorized():
             return
-        path = urlparse(self.path).path
+        parsed = urlparse(self.path)
+        path = parsed.path
         if path == "/secure/health":
             json_response(
                 self,
@@ -1965,7 +2247,8 @@ class SecureDesktopHandler(BaseHTTPRequestHandler):
             json_response(self, HTTPStatus.NOT_FOUND, {"ok": False, "error": "not found"}, False)
             return
         try:
-            data, content_type = capture_screen_image()
+            monitor_id = parse_qs(parsed.query).get("monitor", ["all"])[0]
+            data, content_type = capture_screen_image(monitor_id)
         except Exception as exc:
             json_response(self, HTTPStatus.INTERNAL_SERVER_ERROR, {"ok": False, "error": str(exc)}, False)
             return
@@ -2307,12 +2590,18 @@ def normalize_remote_window_payload(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def launch_remote_window(local_port: int, handoff_id: str) -> int:
+    url = f"http://127.0.0.1:{local_port}/?remote=1&handoff={quote(handoff_id)}&v={quote(APP_VERSION)}"
+    if getattr(sys, "frozen", False):
+        control_host = Path(sys.executable).resolve().parent / "WindowsLANRemoteControlHost.exe"
+    else:
+        control_host = application_path("dist", f"WindowsLANRemote-{APP_VERSION}", "WindowsLANRemoteControlHost.exe")
+    command = (
+        [str(control_host), "--url", url]
+        if control_host.exists()
+        else webview_shell_command(url, False, remote_window=True)
+    )
     process = subprocess.Popen(
-        webview_shell_command(
-            f"http://127.0.0.1:{local_port}/?remote=1&handoff={quote(handoff_id)}&v={quote(APP_VERSION)}",
-            False,
-            remote_window=True,
-        ),
+        command,
         cwd=str(application_path()),
         close_fds=True,
     )
@@ -2326,7 +2615,14 @@ class RemoteHandler(BaseHTTPRequestHandler):
     def log_message(self, format: str, *args: Any) -> None:
         # Screen polling and input are both high-frequency. Screen URLs also
         # carry the one-time token, so never echo those request paths.
-        if urlparse(self.path).path in {"/screen", "/input"}:
+        if urlparse(self.path).path in {
+            "/screen",
+            "/input",
+            "/clipboard",
+            "/files",
+            "/files/download",
+            "/files/upload",
+        }:
             return
         # A PyInstaller windowed application deliberately has no stdout.
         # Attempting to print here raises from send_response() and leaves the
@@ -2467,6 +2763,21 @@ class RemoteHandler(BaseHTTPRequestHandler):
                 },
             )
             return
+        if parsed.path == "/api/native/clipboard":
+            if not self.check_local_desktop():
+                return
+            try:
+                result = read_text_clipboard()
+            except (OSError, ValueError) as exc:
+                json_response(
+                    self,
+                    HTTPStatus.CONFLICT,
+                    {"ok": False, "error": str(exc)},
+                    allow_cross_origin=False,
+                )
+                return
+            json_response(self, HTTPStatus.OK, {"ok": True, **result}, allow_cross_origin=False)
+            return
         if parsed.path in {"/api/info", "/health"}:
             json_response(
                 self,
@@ -2484,17 +2795,90 @@ class RemoteHandler(BaseHTTPRequestHandler):
                 },
             )
             return
+        if parsed.path == "/monitors":
+            if self.authenticate_request(parsed) is None:
+                return
+            try:
+                monitors = monitor_payload()
+            except OSError as exc:
+                json_response(self, HTTPStatus.INTERNAL_SERVER_ERROR, {"ok": False, "error": str(exc)})
+                return
+            json_response(self, HTTPStatus.OK, {"ok": True, "monitors": monitors})
+            return
+        if parsed.path == "/clipboard":
+            if self.authenticate_request(parsed) is None:
+                return
+            if self.server.state.view_only:
+                json_response(self, HTTPStatus.FORBIDDEN, {"ok": False, "error": "server is view-only"})
+                return
+            try:
+                result = read_text_clipboard()
+            except (OSError, ValueError) as exc:
+                json_response(self, HTTPStatus.CONFLICT, {"ok": False, "error": str(exc)})
+                return
+            json_response(self, HTTPStatus.OK, {"ok": True, **result})
+            return
+        if parsed.path == "/files":
+            if self.authenticate_request(parsed) is None:
+                return
+            if self.server.state.view_only:
+                json_response(self, HTTPStatus.FORBIDDEN, {"ok": False, "error": "server is view-only"})
+                return
+            try:
+                path_value = parse_qs(parsed.query).get("path", [""])[0]
+                result = directory_payload(path_value)
+            except (OSError, ValueError) as exc:
+                json_response(self, HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(exc)})
+                return
+            json_response(self, HTTPStatus.OK, result)
+            return
+        if parsed.path == "/files/download":
+            if self.authenticate_request(parsed) is None:
+                return
+            if self.server.state.view_only:
+                json_response(self, HTTPStatus.FORBIDDEN, {"ok": False, "error": "server is view-only"})
+                return
+            try:
+                path_value = parse_qs(parsed.query).get("path", [""])[0]
+                source = local_file_path(path_value)
+                if not source.is_file():
+                    raise ValueError("所选项目不是文件")
+                size = source.stat().st_size
+                if size > MAX_FILE_TRANSFER_BYTES:
+                    json_response(self, HTTPStatus.REQUEST_ENTITY_TOO_LARGE, {"ok": False, "error": "文件超过 2 GB 限制"})
+                    return
+                content_type = mimetypes.guess_type(source.name)[0] or "application/octet-stream"
+                with source.open("rb") as file_handle:
+                    self.send_response(HTTPStatus.OK)
+                    self.send_header("Content-Type", content_type)
+                    self.send_header("Content-Length", str(size))
+                    self.send_header("Content-Disposition", f"attachment; filename*=UTF-8''{quote(source.name, safe='')}")
+                    self.send_header("Cache-Control", "no-store")
+                    send_common_headers(self)
+                    self.end_headers()
+                    while True:
+                        chunk = file_handle.read(FILE_TRANSFER_CHUNK_BYTES)
+                        if not chunk:
+                            break
+                        self.wfile.write(chunk)
+                return
+            except (BrokenPipeError, ConnectionResetError):
+                return
+            except (OSError, ValueError) as exc:
+                json_response(self, HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(exc)})
+                return
         if parsed.path == "/screen":
             if self.authenticate_request(parsed) is None:
                 return
             try:
+                monitor_id = parse_qs(parsed.query).get("monitor", ["all"])[0]
                 if secure_desktop_active():
                     if not self.server.state.settings.values["secure_desktop_enabled"]:
                         json_response(self, HTTPStatus.LOCKED, {"ok": False, "error": "secure desktop control disabled"})
                         return
-                    data, content_type = capture_secure_desktop()
+                    data, content_type = capture_secure_desktop(monitor_id)
                 else:
-                    data, content_type = capture_screen_image()
+                    data, content_type = capture_screen_image(monitor_id)
             except Exception as exc:
                 json_response(self, HTTPStatus.INTERNAL_SERVER_ERROR, {"ok": False, "error": str(exc)})
                 return
@@ -2538,6 +2922,60 @@ class RemoteHandler(BaseHTTPRequestHandler):
                 self,
                 HTTPStatus.OK,
                 {"ok": True, "process_id": process_id},
+                allow_cross_origin=False,
+            )
+            return
+        if parsed.path == "/api/native/try-auto-unlock":
+            if not self.check_local_desktop():
+                return
+            payload = self.read_json_payload()
+            if payload is None:
+                return
+            device = payload.get("device")
+            token = str(payload.get("token", ""))
+            if not isinstance(device, dict) or not 1 <= len(token) <= 512:
+                json_response(
+                    self,
+                    HTTPStatus.BAD_REQUEST,
+                    {"ok": False, "status": "error", "error": "invalid unlock request"},
+                    allow_cross_origin=False,
+                )
+                return
+            result = self.server.state.get_credential_api().try_auto_unlock(
+                json.dumps(device, ensure_ascii=False),
+                token,
+            )
+            json_response(self, HTTPStatus.OK, result, allow_cross_origin=False)
+            return
+        if parsed.path == "/api/native/clipboard":
+            if not self.check_local_desktop():
+                return
+            payload = self.read_json_payload(max_bytes=MAX_CLIPBOARD_PAYLOAD_BYTES)
+            if payload is None:
+                return
+            text = payload.get("text")
+            if not isinstance(text, str):
+                json_response(
+                    self,
+                    HTTPStatus.BAD_REQUEST,
+                    {"ok": False, "error": "clipboard text required"},
+                    allow_cross_origin=False,
+                )
+                return
+            try:
+                sequence = write_text_clipboard(text)
+            except (OSError, ValueError) as exc:
+                json_response(
+                    self,
+                    HTTPStatus.CONFLICT,
+                    {"ok": False, "error": str(exc)},
+                    allow_cross_origin=False,
+                )
+                return
+            json_response(
+                self,
+                HTTPStatus.OK,
+                {"ok": True, "sequence": sequence},
                 allow_cross_origin=False,
             )
             return
@@ -2594,6 +3032,34 @@ class RemoteHandler(BaseHTTPRequestHandler):
                 },
             )
             return
+        if parsed.path == "/clipboard":
+            payload = self.read_json_payload(max_bytes=MAX_CLIPBOARD_PAYLOAD_BYTES)
+            if payload is None:
+                return
+            if self.authenticate_request(parsed, payload) is None:
+                return
+            if self.server.state.view_only:
+                json_response(self, HTTPStatus.FORBIDDEN, {"ok": False, "error": "server is view-only"})
+                return
+            text = payload.get("text")
+            if not isinstance(text, str):
+                json_response(self, HTTPStatus.BAD_REQUEST, {"ok": False, "error": "clipboard text required"})
+                return
+            try:
+                sequence = write_text_clipboard(text)
+            except (OSError, ValueError) as exc:
+                json_response(self, HTTPStatus.CONFLICT, {"ok": False, "error": str(exc)})
+                return
+            json_response(self, HTTPStatus.OK, {"ok": True, "sequence": sequence})
+            return
+        if parsed.path == "/files/upload":
+            if self.authenticate_request(parsed) is None:
+                return
+            if self.server.state.view_only:
+                json_response(self, HTTPStatus.FORBIDDEN, {"ok": False, "error": "server is view-only"})
+                return
+            self.handle_file_upload(parsed)
+            return
         if parsed.path != "/input":
             json_response(self, HTTPStatus.NOT_FOUND, {"ok": False, "error": "not found"})
             return
@@ -2621,13 +3087,66 @@ class RemoteHandler(BaseHTTPRequestHandler):
             return
         json_response(self, HTTPStatus.OK, {"ok": True})
 
-    def read_json_payload(self) -> dict[str, Any] | None:
+    def handle_file_upload(self, parsed: Any) -> None:
+        try:
+            length = int(self.headers.get("Content-Length", "0") or "0")
+        except ValueError:
+            length = -1
+        if length < 0 or length > MAX_FILE_TRANSFER_BYTES:
+            json_response(self, HTTPStatus.REQUEST_ENTITY_TOO_LARGE, {"ok": False, "error": "文件超过 2 GB 限制"})
+            return
+        query = parse_qs(parsed.query)
+        temporary: Path | None = None
+        try:
+            directory = local_file_path(query.get("path", [""])[0])
+            if not directory.is_dir():
+                raise ValueError("上传目标不是文件夹")
+            name = validate_file_name(query.get("name", [""])[0])
+            destination = local_file_path(str(directory / name), must_exist=False)
+            if destination.parent != directory.resolve():
+                raise ValueError("上传路径无效")
+            overwrite = query.get("overwrite", ["0"])[0] == "1"
+            if destination.exists() and not overwrite:
+                json_response(self, HTTPStatus.CONFLICT, {"ok": False, "error": "同名文件已存在"})
+                return
+            with tempfile.NamedTemporaryFile(
+                mode="wb",
+                prefix=".lan-remote-",
+                suffix=".upload",
+                dir=str(directory),
+                delete=False,
+            ) as target:
+                temporary = Path(target.name)
+                remaining = length
+                while remaining:
+                    chunk = self.rfile.read(min(FILE_TRANSFER_CHUNK_BYTES, remaining))
+                    if not chunk:
+                        raise ConnectionError("上传连接提前断开")
+                    target.write(chunk)
+                    remaining -= len(chunk)
+            os.replace(temporary, destination)
+            temporary = None
+        except (ConnectionError, OSError, ValueError) as exc:
+            if temporary:
+                try:
+                    temporary.unlink(missing_ok=True)
+                except OSError:
+                    pass
+            json_response(self, HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(exc)})
+            return
+        json_response(
+            self,
+            HTTPStatus.OK,
+            {"ok": True, "name": destination.name, "path": str(destination), "size": length},
+        )
+
+    def read_json_payload(self, max_bytes: int = MAX_POST_BYTES) -> dict[str, Any] | None:
         try:
             length = int(self.headers.get("Content-Length", "0") or "0")
         except ValueError:
             json_response(self, HTTPStatus.BAD_REQUEST, {"ok": False, "error": "invalid content length"})
             return None
-        if length < 0 or length > MAX_POST_BYTES:
+        if length < 0 or length > max_bytes:
             json_response(self, HTTPStatus.REQUEST_ENTITY_TOO_LARGE, {"ok": False, "error": "payload too large"})
             return None
         raw_body = self.rfile.read(length) if length else b"{}"
