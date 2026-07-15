@@ -5,6 +5,11 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark">
   <title>LAN Remote</title>
+  <script>
+    if (new URLSearchParams(location.search).get("remote") === "1") {
+      document.documentElement.classList.add("remote-window-root");
+    }
+  </script>
   <style>
     :root {
       --bg: #0f1014;
@@ -38,6 +43,11 @@
       color: var(--text);
       font: 14px/1.5 "Segoe UI", "Microsoft YaHei UI", system-ui, sans-serif;
     }
+
+    html.remote-window-root body { min-width: 0; background: #050609; cursor: default; }
+    html.remote-window-root .app,
+    html.remote-window-root .modal,
+    html.remote-window-root .toast { display: none !important; }
 
     button, input { font: inherit; }
     button { color: inherit; }
@@ -75,7 +85,7 @@
       font-size: 12px;
       font-weight: 600;
       letter-spacing: .15px;
-      cursor: default;
+      cursor: default !important;
     }
 
     .window-drag img { width: 21px; height: 21px; border-radius: 6px; }
@@ -567,6 +577,14 @@
       white-space: nowrap;
     }
     .remote-status.error { color: #ff7d8e; }
+    .remote-native-control { display: none !important; width: 34px; padding: 0 !important; }
+    html.remote-window-root .remote-native-control { display: inline-flex !important; }
+    .remote-window-control svg { stroke-width: 2.45; }
+    .remote-window-control.close:hover { border-color: #c42b3e; background: #c42b3e; color: white; }
+    body.window-maximized .remote-window-control .maximize-icon { display: none; }
+    .remote-window-control .restore-icon { display: none; }
+    body.window-maximized .remote-window-control .restore-icon { display: block; }
+    html.remote-window-root .remote-window-drag { flex: 1 1 260px; cursor: default; }
     .toolbar-toggle { width: 34px; padding: 0 !important; }
     .toolbar-toggle svg { transition: transform .16s ease; }
     .remote-session.toolbar-collapsed .remote-toolbar { min-height: 34px; gap: 4px; padding: 2px 8px; }
@@ -598,9 +616,10 @@
       object-fit: contain;
       user-select: none;
       -webkit-user-drag: none;
-      cursor: default;
+      cursor: default !important;
     }
-    .remote-stage.controlling #remoteScreen { cursor: crosshair; }
+    .remote-stage.controlling,
+    .remote-stage.controlling #remoteScreen { cursor: default !important; }
     .remote-hint { position: absolute; pointer-events: none; color: #6f7380; }
     .remote-hint.hidden { display: none; }
 
@@ -884,12 +903,14 @@
 
   <section class="remote-session" id="remoteSession">
     <div class="remote-toolbar">
-      <strong id="remoteName">远程桌面</strong>
+      <strong class="remote-window-drag pywebview-drag-region" id="remoteName">远程桌面</strong>
       <button class="button" id="keyboardButton"><svg><use href="#i-keyboard"/></svg><span>键盘</span></button>
       <button class="button" id="fullscreenButton"><svg><use href="#i-expand"/></svg><span>全屏</span></button>
-      <button class="button" id="closeSession"><svg><use href="#i-x"/></svg><span>断开</span></button>
       <span class="remote-status" id="remoteStatus">正在连接…</span>
       <button class="button toolbar-toggle" id="toolbarToggle" type="button" title="收起工具栏" aria-label="收起工具栏"><svg><use href="#i-chevron-up"/></svg></button>
+      <button class="button remote-native-control remote-window-control" id="remoteWindowMinimize" type="button" title="最小化"><svg><use href="#i-minus"/></svg></button>
+      <button class="button remote-native-control remote-window-control" id="remoteWindowMaximize" type="button" title="最大化"><svg class="maximize-icon"><use href="#i-maximize"/></svg><svg class="restore-icon"><use href="#i-restore"/></svg></button>
+      <button class="button remote-window-control close" id="closeSession" type="button" title="断开并关闭"><svg><use href="#i-x"/></svg><span>断开</span></button>
     </div>
     <div class="remote-stage" id="remoteStage" tabindex="0">
       <img id="remoteScreen" alt="远程屏幕" draggable="false">
@@ -902,6 +923,9 @@
     "use strict";
 
     const $ = (id) => document.getElementById(id);
+    const pageParams = new URLSearchParams(location.search);
+    const remoteWindowMode = pageParams.get("remote") === "1";
+    const remoteWindowHandoff = pageParams.get("handoff") || "";
     const state = {
       devices: [],
       selectedId: "",
@@ -1316,8 +1340,24 @@
             await window.pywebview.api.clear_lock_password(device.id);
           }
         }
+        const remoteWindowResponse = await fetch("/api/remote-window/open", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({
+            device,
+            token: result.session_token || token,
+            viewOnly: state.pairMode === "view",
+            authMethod: result.auth_method,
+            credentialExpiresAt: result.credential_expires_at
+          }),
+          cache: "no-store"
+        });
+        const remoteWindowResult = await remoteWindowResponse.json().catch(() => ({}));
+        if (!remoteWindowResponse.ok || !remoteWindowResult.ok) {
+          throw new Error(remoteWindowResult.error || "无法启动独立控制窗口");
+        }
         closePair();
-        startSession(device, result.session_token || token, state.pairMode === "view", result.auth_method, result.credential_expires_at);
+        showToast(`已在独立窗口打开 ${device.name}`);
       } catch (error) {
         $("pairError").textContent = error.message || "无法连接到设备";
       } finally {
@@ -1337,13 +1377,17 @@
       $("remoteStage").classList.toggle("controlling", !viewOnly);
       $("remoteHint").classList.remove("hidden");
       $("remoteSession").classList.add("show");
+      document.body.classList.toggle("remote-window-mode", remoteWindowMode);
       state.toolbarLayoutManual = false;
       updateToolbarLayout();
+      if (remoteWindowMode && window.pywebview?.api?.set_window_title) {
+        window.pywebview.api.set_window_title(`${device.name} · LAN Remote`).catch(() => {});
+      }
       setRemoteStatus("正在获取远程画面…");
       refreshScreen();
     }
 
-    function stopSession() {
+    function stopSession(closeWindow = false) {
       if (state.session) state.session.connected = false;
       clearTimeout(state.refreshTimer);
       state.session = null;
@@ -1353,6 +1397,9 @@
       $("remoteSession").classList.remove("show");
       $("remoteSession").classList.remove("toolbar-collapsed");
       if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+      if (closeWindow && remoteWindowMode) {
+        window.pywebview?.api?.close_window?.();
+      }
     }
 
     function setToolbarCollapsed(collapsed) {
@@ -1382,6 +1429,12 @@
       const session = state.session;
       if (!session?.connected || state.loadingFrame) return;
       if (session.authMethod === "temporary" && Number(session.credentialExpiresAt || 0) <= Date.now()) {
+        if (remoteWindowMode) {
+          session.connected = false;
+          setRemoteStatus("临时访问码已失效，控制窗口即将关闭", true);
+          setTimeout(() => window.pywebview?.api?.close_window?.(), 1200);
+          return;
+        }
         const deviceId = session.device.id;
         const mode = session.viewOnly ? "view" : "control";
         sessionStorage.removeItem(`lan-remote-token:${deviceId}`);
@@ -1501,7 +1554,7 @@
     $("lockPasswordInput").addEventListener("input", () => {
       if ($("lockPasswordInput").value) $("rememberLockPassword").checked = true;
     });
-    $("closeSession").addEventListener("click", stopSession);
+    $("closeSession").addEventListener("click", () => stopSession(remoteWindowMode));
     $("toolbarToggle").addEventListener("click", () => {
       state.toolbarLayoutManual = true;
       setToolbarCollapsed(!$("remoteSession").classList.contains("toolbar-collapsed"));
@@ -1513,17 +1566,22 @@
       const maximized = await window.pywebview.api.toggle_maximize_window();
       document.body.classList.toggle("window-maximized", Boolean(maximized));
       $("windowMaximize").title = maximized ? "还原" : "最大化";
+      $("remoteWindowMaximize").title = maximized ? "还原" : "最大化";
     }
 
     $("windowMinimize").addEventListener("click", () => window.pywebview?.api?.minimize_window?.());
     $("windowMaximize").addEventListener("click", toggleWindowMaximize);
     $("windowClose").addEventListener("click", () => window.pywebview?.api?.close_window?.());
     $("windowDragRegion").addEventListener("dblclick", toggleWindowMaximize);
+    $("remoteWindowMinimize").addEventListener("click", () => window.pywebview?.api?.minimize_window?.());
+    $("remoteWindowMaximize").addEventListener("click", toggleWindowMaximize);
+    $("remoteName").addEventListener("dblclick", () => { if (remoteWindowMode) toggleWindowMaximize(); });
     window.addEventListener("pywebviewready", async () => {
       try {
         const nativeState = await window.pywebview.api.window_state();
         document.body.classList.toggle("window-maximized", Boolean(nativeState.maximized));
         $("windowMaximize").title = nativeState.maximized ? "还原" : "最大化";
+        $("remoteWindowMaximize").title = nativeState.maximized ? "还原" : "最大化";
       } catch {}
     });
 
@@ -1599,13 +1657,71 @@
       event.preventDefault();
     });
 
+    function waitForNativeBridge(timeoutMs = 6000) {
+      const bridgeReady = () => typeof window.pywebview?.api?.set_window_title === "function";
+      if (bridgeReady()) return Promise.resolve(true);
+      return new Promise((resolve) => {
+        let finished = false;
+        const finish = (ready) => {
+          if (finished) return;
+          finished = true;
+          clearInterval(pollTimer);
+          clearTimeout(timeoutTimer);
+          window.removeEventListener("pywebviewready", onReady);
+          resolve(ready);
+        };
+        const onReady = () => {
+          if (bridgeReady()) finish(true);
+        };
+        const pollTimer = setInterval(() => {
+          if (bridgeReady()) finish(true);
+        }, 100);
+        const timeoutTimer = setTimeout(() => finish(bridgeReady()), timeoutMs);
+        window.addEventListener("pywebviewready", onReady);
+      });
+    }
+
+    function showRemoteStartupError(message) {
+      document.body.classList.add("remote-window-mode");
+      $("remoteName").textContent = "远程会话不可用";
+      $("keyboardButton").style.display = "none";
+      $("remoteSession").classList.add("show");
+      $("remoteHint").textContent = message;
+      setRemoteStatus("无法启动远程会话", true);
+    }
+
     (async function initialize() {
       await loadSettings();
+      if (remoteWindowMode) {
+        document.body.classList.add("remote-window-mode");
+        const handoffResponse = await fetch(`/api/remote-window/session?id=${encodeURIComponent(remoteWindowHandoff)}`, {
+          cache: "no-store"
+        });
+        const handoffPayload = await handoffResponse.json().catch(() => ({}));
+        const initialSession = handoffPayload.session;
+        if (!initialSession?.device || !initialSession?.token) {
+          showRemoteStartupError(handoffPayload.error || "会话交接数据已失效，请从设备主窗口重新连接。");
+          return;
+        }
+        startSession(
+          initialSession.device,
+          initialSession.token,
+          Boolean(initialSession.viewOnly),
+          initialSession.authMethod,
+          initialSession.credentialExpiresAt
+        );
+        waitForNativeBridge().then((ready) => {
+          if (ready) window.pywebview.api.set_window_title(`${initialSession.device.name} · LAN Remote`).catch(() => {});
+        });
+        return;
+      }
       await refreshDevices();
       if (state.settings.auto_check_updates) checkForUpdates(true);
-    })();
-    setInterval(() => refreshDevices(false), 2500);
-    setInterval(updateAccessCodeExpiry, 1000);
+      setInterval(() => refreshDevices(false), 2500);
+      setInterval(updateAccessCodeExpiry, 1000);
+    })().catch((error) => {
+      if (remoteWindowMode) showRemoteStartupError(error?.message || "初始化失败，请重新连接。");
+    });
   </script>
 </body>
 </html>

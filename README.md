@@ -11,12 +11,14 @@ LAN Remote 是一个 Windows 桌面软件，只在局域网内工作。启动后
 - 局域网设备自动发现与在线状态
 - 搜索和刷新设备
 - 双击设备直接开始桌面控制
+- 设备管理主窗口与远程控制窗口完全分离，可同时打开多个独立控制窗口
 - 设置页显示、复制或立即刷新临时访问码
 - 临时访问码每 30 分钟自动轮换，到期后旧码立即失效
 - 可设置永久访问密码，并在受信任控制端长期免输连接
 - 对方锁屏密码使用 Windows DPAPI 加密保存在控制端，可在确认锁屏后自动输入一次
 - 远程桌面实时画面
 - 鼠标移动、单击、右键和滚轮
+- 控制画面使用标准箭头光标，不使用十字光标
 - 常用键盘按键与组合键
 - 桌面观看模式
 - 原生桌面窗口全屏
@@ -38,7 +40,7 @@ LAN Remote 是一个 Windows 桌面软件，只在局域网内工作。启动后
 6. 临时访问码可记住到本轮 30 分钟到期；永久密码可使用 Windows 加密后长期记住。
 7. 如需锁屏自动输入，在目标设备的“连接凭据与锁屏自动输入”中保存对方 Windows 密码。
 
-程序运行期间请保持软件窗口开启。关闭窗口会立即停止设备发现和远程控制服务。
+被控电脑需要保持设备主窗口运行。控制端关闭某个远程控制窗口只会断开该窗口，不会关闭设备管理主窗口。
 
 ## 网络端口
 
@@ -57,9 +59,9 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-windows-
 
 构建产物：
 
-- `dist\WindowsLANRemote-0.6.0.exe`：免安装桌面程序
-- `dist\WindowsLANRemoteSetup-0.6.0.exe`：管理员安装包
-- `dist\WindowsLANRemoteService-0.6.0.exe`：构建产生的安全桌面服务组件
+- `dist\WindowsLANRemote-0.6.1.exe`：免安装桌面程序
+- `dist\WindowsLANRemoteSetup-0.6.1.exe`：管理员安装包
+- `dist\WindowsLANRemoteService-0.6.1.exe`：构建产生的安全桌面服务组件
 
 安装包需要 UAC 管理员确认，安装位置为 `%ProgramFiles%\Windows LAN Remote`。它会创建开始菜单快捷方式、卸载项、专用网络防火墙规则，并注册自动启动的 `WindowsLANRemoteSecureDesktop` LocalSystem 服务。服务只在 `127.0.0.1:8767` 上提供经过本机密钥验证的安全桌面通道，不直接对局域网开放。
 

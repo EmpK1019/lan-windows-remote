@@ -51,7 +51,7 @@ if platform.system() == "Windows":
 
 
 APP_NAME = "Windows LAN Remote"
-APP_VERSION = "0.6.0"
+APP_VERSION = "0.6.1"
 GITHUB_REPOSITORY = "EmpK1019/lan-windows-remote"
 GITHUB_LATEST_RELEASE_API = f"https://api.github.com/repos/{GITHUB_REPOSITORY}/releases/latest"
 DEFAULT_PORT = 8765
@@ -64,6 +64,7 @@ PERMANENT_PASSWORD_ITERATIONS = 240_000
 PERMANENT_PASSWORD_MIN_LENGTH = 8
 ACCESS_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 MAX_POST_BYTES = 16 * 1024
+REMOTE_WINDOW_HANDOFF_TTL_SECONDS = 60
 SCREEN_LOCK = threading.Lock()
 GDIPLUS_LOCK = threading.Lock()
 GDIPLUS_TOKEN = ctypes.c_void_p()
@@ -163,7 +164,7 @@ INDEX_HTML = r"""<!doctype html>
       object-fit: contain;
       user-select: none;
       -webkit-user-drag: none;
-      cursor: crosshair;
+      cursor: default !important;
       image-rendering: auto;
     }
 
@@ -723,6 +724,8 @@ class ServerState:
     permanent_auth_secret: bytes = field(default_factory=lambda: secrets.token_bytes(32), repr=False)
     session_tokens: dict[str, tuple[str, float, str]] = field(default_factory=dict, repr=False)
     session_token_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+    remote_window_sessions: dict[str, tuple[dict[str, Any], float]] = field(default_factory=dict, repr=False)
+    remote_window_session_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
     def temporary_access_code(self) -> tuple[str, float]:
         with self.token_lock:
@@ -789,6 +792,30 @@ class ServerState:
             }
             self.session_tokens[session_token] = (method, expires_at, marker)
         return session_token
+
+    def create_remote_window_session(self, payload: dict[str, Any]) -> str:
+        handoff_id = secrets.token_urlsafe(24)
+        now = time.time()
+        with self.remote_window_session_lock:
+            self.remote_window_sessions = {
+                key: value
+                for key, value in self.remote_window_sessions.items()
+                if value[1] > now
+            }
+            self.remote_window_sessions[handoff_id] = (
+                payload,
+                now + REMOTE_WINDOW_HANDOFF_TTL_SECONDS,
+            )
+        return handoff_id
+
+    def consume_remote_window_session(self, handoff_id: str) -> dict[str, Any] | None:
+        if not 16 <= len(handoff_id) <= 64:
+            return None
+        with self.remote_window_session_lock:
+            item = self.remote_window_sessions.pop(handoff_id, None)
+        if item is None or item[1] <= time.time():
+            return None
+        return item[0]
 
 
 def require_windows() -> None:
@@ -1968,10 +1995,15 @@ class RemoteServer(ThreadingHTTPServer):
 class DesktopApi:
     """Native window and DPAPI credential bridge for the WebView shell."""
 
-    def __init__(self, maximized: bool = False) -> None:
+    def __init__(
+        self,
+        maximized: bool = False,
+        remote_window: bool = False,
+    ) -> None:
         self.window: Any = None
         self.fullscreen = False
         self.maximized = maximized
+        self.remote_window = remote_window
         self.vault = CredentialVault()
         self._unlock_attempts: set[str] = set()
         self._unlock_lock = threading.Lock()
@@ -2004,7 +2036,17 @@ class DesktopApi:
         return True
 
     def window_state(self) -> dict[str, bool]:
-        return {"maximized": self.maximized, "fullscreen": self.fullscreen}
+        return {
+            "maximized": self.maximized,
+            "fullscreen": self.fullscreen,
+            "remote_window": self.remote_window,
+        }
+
+    def set_window_title(self, title: str) -> bool:
+        safe_title = str(title).strip()[:160] or "LAN Remote"
+        if self.window is not None:
+            self.window.set_title(safe_title)
+        return True
 
     def credential_status(self, device_id: str) -> dict[str, bool]:
         return {
@@ -2098,21 +2140,28 @@ class DesktopApi:
             return {"ok": False, "status": "error", "error": str(exc)}
 
 
-def run_webview_shell(url: str, maximized: bool) -> int:
+def run_webview_shell(
+    url: str,
+    maximized: bool,
+    remote_window: bool = False,
+) -> int:
     """Run WebView2 outside the HTTP/control process.
 
     Python.NET's Windows message loop can hold the interpreter lock on some
     runtime combinations. Keeping WebView in a separate process ensures LAN
     discovery, screen streaming and the local API remain responsive.
     """
-    desktop_api = DesktopApi(maximized=maximized)
+    desktop_api = DesktopApi(
+        maximized=maximized,
+        remote_window=remote_window,
+    )
     window = webview.create_window(
-        "LAN Remote",
+        "LAN Remote · 远程控制" if remote_window else "LAN Remote",
         url,
         js_api=desktop_api,
-        width=1200,
-        height=760,
-        min_size=(920, 600),
+        width=1280 if remote_window else 1200,
+        height=800 if remote_window else 760,
+        min_size=(720, 480) if remote_window else (920, 600),
         resizable=True,
         background_color="#0f1014",
         text_select=False,
@@ -2141,13 +2190,65 @@ def run_webview_shell(url: str, maximized: bool) -> int:
     return 0
 
 
-def webview_shell_command(url: str, maximized: bool) -> list[str]:
+def webview_shell_command(
+    url: str,
+    maximized: bool,
+    remote_window: bool = False,
+) -> list[str]:
     arguments = ["--ui-shell", "--ui-url", url]
     if maximized:
         arguments.append("--ui-maximized")
+    if remote_window:
+        arguments.append("--ui-remote")
     if getattr(sys, "frozen", False):
         return [sys.executable, *arguments]
     return [sys.executable, str(Path(__file__).resolve()), *arguments]
+
+
+def normalize_remote_window_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    raw_device = payload.get("device")
+    if not isinstance(raw_device, dict):
+        raise ValueError("设备信息无效")
+    validated = DesktopApi._validated_device(json.dumps(raw_device, ensure_ascii=False))
+    token = str(payload.get("token", ""))
+    if not 1 <= len(token) <= 512:
+        raise ValueError("远程会话令牌无效")
+    auth_method = str(payload.get("authMethod", "temporary"))
+    if auth_method not in {"temporary", "permanent"}:
+        raise ValueError("远程认证方式无效")
+    expires_at = payload.get("credentialExpiresAt")
+    if expires_at is not None:
+        try:
+            expires_at = int(expires_at)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("远程凭据到期时间无效") from exc
+    device = {
+        **validated,
+        "name": str(raw_device.get("name", "远程桌面"))[:128],
+        "os": str(raw_device.get("os", "Windows"))[:80],
+        "view_only": bool(raw_device.get("view_only", False)),
+        "is_self": bool(raw_device.get("is_self", False)),
+    }
+    return {
+        "device": device,
+        "token": token,
+        "viewOnly": bool(payload.get("viewOnly", False)),
+        "authMethod": auth_method,
+        "credentialExpiresAt": expires_at,
+    }
+
+
+def launch_remote_window(local_port: int, handoff_id: str) -> int:
+    process = subprocess.Popen(
+        webview_shell_command(
+            f"http://127.0.0.1:{local_port}/?remote=1&handoff={quote(handoff_id)}&v={quote(APP_VERSION)}",
+            False,
+            remote_window=True,
+        ),
+        cwd=str(application_path()),
+        close_fds=True,
+    )
+    return int(process.pid)
 
 
 class RemoteHandler(BaseHTTPRequestHandler):
@@ -2234,6 +2335,26 @@ class RemoteHandler(BaseHTTPRequestHandler):
                     "access_code": access_code,
                     "access_code_expires_at": int(expires_at * 1000),
                 },
+                allow_cross_origin=False,
+            )
+            return
+        if parsed.path == "/api/remote-window/session":
+            if not self.check_local_desktop():
+                return
+            handoff_id = parse_qs(parsed.query).get("id", [""])[0]
+            payload = self.server.state.consume_remote_window_session(handoff_id)
+            if payload is None:
+                json_response(
+                    self,
+                    HTTPStatus.NOT_FOUND,
+                    {"ok": False, "error": "远程窗口会话已失效"},
+                    allow_cross_origin=False,
+                )
+                return
+            json_response(
+                self,
+                HTTPStatus.OK,
+                {"ok": True, "session": payload},
                 allow_cross_origin=False,
             )
             return
@@ -2324,6 +2445,34 @@ class RemoteHandler(BaseHTTPRequestHandler):
             return
 
         parsed = urlparse(self.path)
+        if parsed.path == "/api/remote-window/open":
+            if not self.check_local_desktop():
+                return
+            payload = self.read_json_payload()
+            if payload is None:
+                return
+            handoff_id = ""
+            try:
+                normalized = normalize_remote_window_payload(payload)
+                handoff_id = self.server.state.create_remote_window_session(normalized)
+                process_id = launch_remote_window(self.server.state.port, handoff_id)
+            except (OSError, ValueError) as exc:
+                if handoff_id:
+                    self.server.state.consume_remote_window_session(handoff_id)
+                json_response(
+                    self,
+                    HTTPStatus.BAD_REQUEST,
+                    {"ok": False, "error": str(exc)},
+                    allow_cross_origin=False,
+                )
+                return
+            json_response(
+                self,
+                HTTPStatus.OK,
+                {"ok": True, "process_id": process_id},
+                allow_cross_origin=False,
+            )
+            return
         if parsed.path == "/api/settings":
             if not self.check_local_desktop():
                 return
@@ -3459,6 +3608,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--ui-shell", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--ui-url", default="", help=argparse.SUPPRESS)
     parser.add_argument("--ui-maximized", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--ui-remote", action="store_true", help=argparse.SUPPRESS)
     return parser
 
 
@@ -3498,7 +3648,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.ui_shell:
         if not args.ui_url.startswith("http://127.0.0.1:"):
             return 2
-        return run_webview_shell(args.ui_url, args.ui_maximized)
+        return run_webview_shell(args.ui_url, args.ui_maximized, args.ui_remote)
     if not (1 <= args.port <= 65535):
         raise SystemExit("TCP 端口必须在 1 到 65535 之间。")
     if not (1 <= args.discovery_port <= 65535):
@@ -3559,7 +3709,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         ui_process = subprocess.Popen(
             webview_shell_command(
-                f"http://127.0.0.1:{args.port}/",
+                f"http://127.0.0.1:{args.port}/?v={quote(APP_VERSION)}",
                 bool(settings.values["start_maximized"]),
             ),
             cwd=str(application_path()),
