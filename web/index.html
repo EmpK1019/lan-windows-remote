@@ -1156,13 +1156,13 @@
     async function installUpdate() {
       const button = $("installUpdate");
       button.disabled = true;
-      button.textContent = "正在下载…";
+        button.textContent = "正在下载并校验…";
       try {
         const response = await fetch("/api/update/install", {method: "POST", cache: "no-store"});
         const payload = await response.json();
         if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
-        showToast(payload.message || "安装程序已启动");
-        button.textContent = "安装程序已启动";
+        showToast(payload.message || "安装程序已启动，请在 UAC 窗口选择“是”");
+        button.textContent = "请确认 UAC";
       } catch (error) {
         showToast(error.message || "更新安装失败");
         button.disabled = false;

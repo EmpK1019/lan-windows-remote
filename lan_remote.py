@@ -51,7 +51,7 @@ if platform.system() == "Windows":
 
 
 APP_NAME = "Windows LAN Remote"
-APP_VERSION = "0.6.1"
+APP_VERSION = "0.6.2"
 GITHUB_REPOSITORY = "EmpK1019/lan-windows-remote"
 GITHUB_LATEST_RELEASE_API = f"https://api.github.com/repos/{GITHUB_REPOSITORY}/releases/latest"
 DEFAULT_PORT = 8765
@@ -916,12 +916,19 @@ def latest_release() -> dict[str, Any]:
     latest_version = tag_name.removeprefix("v")
     assets = payload.get("assets", []) if isinstance(payload.get("assets"), list) else []
     installer_url = ""
+    installer_digest = ""
+    installer_size = 0
     for asset in assets:
         if not isinstance(asset, dict):
             continue
         name = str(asset.get("name", ""))
         if name.lower().startswith("windowslanremotesetup-") and name.lower().endswith(".exe"):
             installer_url = str(asset.get("browser_download_url", ""))
+            installer_digest = str(asset.get("digest", ""))
+            try:
+                installer_size = int(asset.get("size", 0) or 0)
+            except (TypeError, ValueError):
+                installer_size = 0
             break
     return {
         "ok": True,
@@ -929,6 +936,8 @@ def latest_release() -> dict[str, Any]:
         "latest_version": latest_version,
         "update_available": version_key(latest_version) > version_key(APP_VERSION),
         "installer_url": installer_url,
+        "installer_digest": installer_digest,
+        "installer_size": installer_size,
         "html_url": str(payload.get("html_url", f"https://github.com/{GITHUB_REPOSITORY}/releases")),
         "release_notes": str(payload.get("body", ""))[:4000],
         "message": "发现新版本" if version_key(latest_version) > version_key(APP_VERSION) else "当前已是最新版本",
@@ -950,6 +959,13 @@ def download_and_launch_update(release: dict[str, Any]) -> Path:
         raise RuntimeError("此版本没有可用的 Windows 安装包")
 
     destination = Path(tempfile.gettempdir()) / f"WindowsLANRemoteSetup-{latest_version}.exe"
+    expected_digest = str(release.get("installer_digest", "")).strip().lower()
+    try:
+        asset_size = int(release.get("installer_size", 0) or 0)
+    except (TypeError, ValueError):
+        asset_size = 0
+    if asset_size > 250 * 1024 * 1024:
+        raise RuntimeError("安装包大小异常")
     request = Request(
         installer_url,
         headers={"User-Agent": f"Windows-LAN-Remote/{APP_VERSION}", "Accept": "application/octet-stream"},
@@ -963,6 +979,7 @@ def download_and_launch_update(release: dict[str, Any]) -> Path:
             if expected > 250 * 1024 * 1024:
                 raise RuntimeError("安装包大小异常")
             total = 0
+            digest = hashlib.sha256()
             with destination.open("wb") as stream:
                 while True:
                     chunk = response.read(1024 * 1024)
@@ -971,9 +988,23 @@ def download_and_launch_update(release: dict[str, Any]) -> Path:
                     total += len(chunk)
                     if total > 250 * 1024 * 1024:
                         raise RuntimeError("安装包大小异常")
+                    digest.update(chunk)
                     stream.write(chunk)
             if total < 64 * 1024 or (expected and total != expected):
                 raise RuntimeError("安装包下载不完整")
+            if asset_size and total != asset_size:
+                raise RuntimeError("安装包大小与 GitHub 发布信息不一致")
+            if expected_digest.startswith("sha256:") and not hmac.compare_digest(
+                f"sha256:{digest.hexdigest()}",
+                expected_digest,
+            ):
+                raise RuntimeError("安装包 SHA-256 校验失败")
+    except RuntimeError:
+        try:
+            destination.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
     except (HTTPError, URLError, TimeoutError, OSError) as exc:
         try:
             destination.unlink(missing_ok=True)
@@ -981,7 +1012,12 @@ def download_and_launch_update(release: dict[str, Any]) -> Path:
             pass
         raise RuntimeError("安装包下载失败，请稍后重试") from exc
 
-    subprocess.Popen([str(destination)], close_fds=True)
+    try:
+        # The bootstrapper starts as a normal process and requests UAC itself.
+        # This lets the HTTP handler return before the installer stops the old app.
+        subprocess.Popen([str(destination), "--from-update"], close_fds=True)
+    except OSError as exc:
+        raise RuntimeError("安装程序无法启动，请从下载目录手动运行安装包") from exc
     return destination
 
 
@@ -2506,7 +2542,7 @@ class RemoteHandler(BaseHTTPRequestHandler):
             json_response(
                 self,
                 HTTPStatus.OK,
-                {"ok": True, "message": "安装程序已启动，请按提示完成更新"},
+                {"ok": True, "message": "安装包已校验，安装程序已启动，请在 UAC 窗口选择“是”"},
                 allow_cross_origin=False,
             )
             return
