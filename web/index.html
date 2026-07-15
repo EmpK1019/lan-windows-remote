@@ -1,0 +1,1298 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>LAN Remote</title>
+  <style>
+    :root {
+      --bg: #0f1014;
+      --rail: #121318;
+      --nav: #15161b;
+      --panel: #18191f;
+      --panel-2: #202229;
+      --panel-3: #282b34;
+      --line: #2a2c34;
+      --line-soft: #23252c;
+      --text: #f2f3f7;
+      --muted: #989ba6;
+      --faint: #656976;
+      --blue: #1d7452;
+      --blue-soft: #1d3e31;
+      --green: #36c68b;
+      --red: #ff5c72;
+      --amber: #ffb648;
+      --shadow: 0 24px 80px rgba(0, 0, 0, .48);
+    }
+
+    * { box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; }
+    body {
+      margin: 0;
+      min-width: 920px;
+      overflow: hidden;
+      background:
+        radial-gradient(circle at 70% -20%, rgba(29, 116, 82, .12), transparent 30%),
+        var(--bg);
+      color: var(--text);
+      font: 14px/1.5 "Segoe UI", "Microsoft YaHei UI", system-ui, sans-serif;
+    }
+
+    button, input { font: inherit; }
+    button { color: inherit; }
+    svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+
+    .app {
+      display: grid;
+      grid-template-columns: 68px 170px minmax(440px, 1fr) 330px;
+      grid-template-rows: 58px 1fr;
+      width: 100vw;
+      height: 100vh;
+      border: 1px solid #32343c;
+      border-radius: 12px;
+      overflow: hidden;
+      background: rgba(15, 16, 20, .96);
+    }
+
+    .brand-rail {
+      grid-row: 1 / 3;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 12px 0;
+      gap: 8px;
+      border-right: 1px solid var(--line);
+      background: var(--rail);
+    }
+
+    .logo {
+      display: grid;
+      place-items: center;
+      width: 40px;
+      height: 40px;
+      margin-bottom: 6px;
+      border: 1px solid #454853;
+      border-radius: 13px;
+      background: var(--blue);
+      color: white;
+      box-shadow: inset 0 1px 0 rgba(255,255,255,.08);
+    }
+
+    .logo img { width: 100%; height: 100%; border-radius: 12px; object-fit: cover; }
+
+    .rail-button {
+      display: grid;
+      place-items: center;
+      width: 42px;
+      height: 42px;
+      border: 0;
+      border-radius: 10px;
+      background: transparent;
+      color: #9498a3;
+      cursor: pointer;
+    }
+
+    .rail-button.active { color: #70caa5; background: #1a3329; }
+    .rail-button.bottom { margin-top: auto; }
+    .rail-button svg { width: 19px; height: 19px; }
+
+    .topbar {
+      grid-column: 2 / 5;
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      padding: 9px 16px;
+      border-bottom: 1px solid var(--line-soft);
+      background: rgba(20, 21, 26, .95);
+    }
+
+    .app-name {
+      width: 140px;
+      font-weight: 700;
+      letter-spacing: .2px;
+      color: #dfe2ea;
+    }
+
+    .search {
+      position: relative;
+      width: min(480px, 44vw);
+    }
+
+    .search svg {
+      position: absolute;
+      left: 13px;
+      top: 10px;
+      width: 17px;
+      height: 17px;
+      color: #858997;
+    }
+
+    .search input {
+      width: 100%;
+      height: 38px;
+      padding: 0 14px 0 40px;
+      border: 1px solid transparent;
+      border-radius: 9px;
+      outline: none;
+      background: #242731;
+      color: var(--text);
+      transition: .18s ease;
+    }
+
+    .search input:focus { border-color: #2c7a5d; box-shadow: 0 0 0 3px rgba(29,116,82,.15); }
+    .search input::placeholder { color: #858a98; }
+
+    .top-status {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-left: auto;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .pulse {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--green);
+      box-shadow: 0 0 0 5px rgba(50,213,131,.09);
+    }
+
+    .sidebar {
+      grid-column: 2;
+      grid-row: 2;
+      padding: 22px 12px;
+      border-right: 1px solid var(--line);
+      background: var(--nav);
+    }
+
+    .sidebar h2 { margin: 0 10px 20px; font-size: 18px; }
+
+    .nav-item {
+      display: flex;
+      align-items: center;
+      gap: 11px;
+      width: 100%;
+      height: 42px;
+      margin: 4px 0;
+      padding: 0 10px;
+      border: 0;
+      border-radius: 8px;
+      background: transparent;
+      color: #b8bbc5;
+      text-align: left;
+    }
+
+    .nav-item svg { width: 18px; height: 18px; color: #60b995; }
+    .nav-item .count { margin-left: auto; color: #7f838f; font-size: 12px; }
+    .nav-item.active { background: #204f3e; color: white; }
+    .nav-item.active .count { color: #ccd9f2; }
+
+    .nav-note {
+      margin: 28px 10px 0;
+      padding-top: 20px;
+      border-top: 1px solid var(--line);
+      color: #6f7380;
+      font-size: 12px;
+      line-height: 1.7;
+    }
+
+    .access-card {
+      display: none;
+      margin: 22px 6px 0;
+      padding: 12px;
+      border: 1px solid #28684f;
+      border-radius: 9px;
+      background: linear-gradient(145deg, rgba(28, 91, 67, .46), rgba(24, 46, 38, .62));
+    }
+
+    .access-card.show { display: block; }
+    .access-label { display: flex; align-items: center; gap: 6px; color: #abd9c6; font-size: 11px; }
+    .access-label svg { width: 14px; height: 14px; color: #67bf9b; }
+    .access-code {
+      display: block;
+      margin: 8px 0 6px;
+      overflow-wrap: anywhere;
+      color: white;
+      font: 600 12px/1.35 ui-monospace, "Cascadia Mono", Consolas, monospace;
+      letter-spacing: .2px;
+      user-select: all;
+    }
+
+    .access-help { color: #7d988d; font-size: 10px; line-height: 1.5; }
+    .copy-code {
+      width: 100%;
+      height: 28px;
+      margin-top: 9px;
+      border: 1px solid #337b5f;
+      border-radius: 6px;
+      background: rgba(29, 116, 82, .35);
+      color: #ccebdd;
+      font-size: 11px;
+      cursor: pointer;
+    }
+
+    .copy-code:hover { background: rgba(29, 116, 82, .55); }
+
+    .content {
+      grid-column: 3;
+      grid-row: 2;
+      display: flex;
+      min-width: 0;
+      flex-direction: column;
+      overflow: hidden;
+      background: #111217;
+    }
+
+    .content-head {
+      display: flex;
+      align-items: center;
+      height: 58px;
+      min-height: 58px;
+      padding: 0 20px;
+      border-bottom: 1px solid var(--line-soft);
+    }
+
+    .content-head h3 { margin: 0; font-size: 15px; font-weight: 600; }
+    .content-head .actions { display: flex; gap: 4px; margin-left: auto; }
+    .icon-button {
+      display: grid;
+      place-items: center;
+      width: 34px;
+      height: 34px;
+      border: 0;
+      border-radius: 7px;
+      background: transparent;
+      color: #858a96;
+      cursor: pointer;
+    }
+
+    .icon-button:hover { color: #daddE5; background: #22242b; }
+    .icon-button.spinning svg { animation: spin .8s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .table-head, .device-row {
+      display: grid;
+      grid-template-columns: minmax(190px, 1.4fr) minmax(130px, .8fr) 110px 90px;
+      align-items: center;
+      column-gap: 12px;
+    }
+
+    .table-head {
+      height: 42px;
+      min-height: 42px;
+      padding: 0 20px;
+      color: #6f7380;
+      font-size: 12px;
+    }
+
+    .device-list {
+      flex: 1;
+      overflow: auto;
+      padding: 0 10px 20px;
+      scrollbar-color: #3b3e47 transparent;
+      scrollbar-width: thin;
+    }
+
+    .device-row {
+      min-height: 54px;
+      padding: 6px 10px;
+      border: 1px solid transparent;
+      border-radius: 8px;
+      color: #d8dae1;
+      cursor: pointer;
+      transition: background .15s, border-color .15s;
+    }
+
+    .device-row:hover { background: #1b1d23; }
+    .device-row.selected { background: #1a3b2f; border-color: #28684f; color: white; }
+    .device-main { display: flex; align-items: center; min-width: 0; gap: 10px; }
+    .device-platform { display: grid; place-items: center; width: 22px; color: var(--blue); }
+    .device-platform svg { width: 18px; height: 18px; fill: currentColor; stroke: none; }
+    .device-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .local-tag, .mode-tag {
+      display: inline-flex;
+      margin-left: 7px;
+      padding: 1px 5px;
+      border: 1px solid #51545e;
+      border-radius: 4px;
+      color: #aeb1bb;
+      font-size: 10px;
+      vertical-align: 1px;
+    }
+
+    .mode-tag { border-color: #4f4936; color: #d8b56e; }
+    .cell-muted { overflow: hidden; color: #8d919d; text-overflow: ellipsis; white-space: nowrap; }
+    .online { display: inline-flex; align-items: center; gap: 7px; color: #aeb1bb; }
+    .online::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--green); }
+    .row-action { display: flex; justify-content: flex-end; gap: 3px; }
+    .row-action button { width: 31px; height: 31px; }
+
+    .empty-state {
+      display: none;
+      height: 100%;
+      place-items: center;
+      color: #747884;
+      text-align: center;
+    }
+
+    .empty-state.show { display: grid; }
+    .empty-state svg { width: 44px; height: 44px; margin-bottom: 10px; color: #474a55; }
+
+    .details {
+      grid-column: 4;
+      grid-row: 2;
+      overflow-y: auto;
+      padding: 20px 16px;
+      border-left: 1px solid var(--line);
+      background: #15161a;
+    }
+
+    .details-empty {
+      display: grid;
+      min-height: 100%;
+      place-items: center;
+      color: #686c77;
+      text-align: center;
+    }
+
+    .details-empty svg { width: 50px; height: 50px; margin-bottom: 10px; color: #3d4049; }
+    .device-detail { display: none; }
+    .device-detail.show { display: block; }
+
+    .detail-title { display: flex; align-items: center; gap: 11px; margin-bottom: 16px; }
+    .detail-title .device-platform { width: 28px; }
+    .detail-title .device-platform svg { width: 22px; height: 22px; }
+    .detail-name { min-width: 0; }
+    .detail-name strong { display: block; overflow: hidden; font-size: 15px; text-overflow: ellipsis; white-space: nowrap; }
+    .detail-name span { color: var(--muted); font-size: 12px; }
+
+    .preview {
+      position: relative;
+      display: grid;
+      height: 150px;
+      place-items: center;
+      overflow: hidden;
+      border: 1px solid #383b45;
+      border-radius: 10px;
+      background:
+        radial-gradient(circle at 20% 20%, #465078 0 3%, transparent 3.5%),
+        linear-gradient(140deg, #252b3b 0 40%, #333947 40% 60%, #20242e 60%);
+    }
+
+    .preview::before, .preview::after { content: ""; position: absolute; border-radius: 50%; filter: blur(10px); opacity: .45; }
+    .preview::before { width: 130px; height: 130px; top: -50px; right: -20px; background: #c68769; }
+    .preview::after { width: 140px; height: 90px; bottom: -40px; left: -20px; background: #43739c; }
+    .preview-content { z-index: 1; display: grid; gap: 7px; place-items: center; color: white; text-shadow: 0 1px 4px #000; }
+    .preview-content svg { width: 28px; height: 28px; }
+
+    .control-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 10px; }
+    .control-card {
+      position: relative;
+      display: grid;
+      height: 72px;
+      place-items: center;
+      align-content: center;
+      gap: 5px;
+      border: 1px solid #30323a;
+      border-radius: 9px;
+      background: #24262c;
+      color: #e4e5e9;
+      cursor: pointer;
+      transition: transform .15s, background .15s, border-color .15s;
+    }
+
+    .control-card:hover:not(:disabled) { transform: translateY(-1px); border-color: #485268; background: #2a2d35; }
+    .control-card:disabled { color: #777b86; cursor: not-allowed; }
+    .control-card svg { width: 24px; height: 24px; }
+    .control-card span { font-size: 12px; }
+    .control-card.primary { border-color: #2d775a; background: linear-gradient(145deg, #245b46, #1d392f); }
+    .control-card.wide { grid-column: 1 / 3; }
+    .soon { position: absolute; top: 6px; right: 7px; padding: 1px 5px; border-radius: 4px; background: #3b3d45; color: #999ca6; font-size: 9px; }
+
+    .info-card {
+      margin-top: 14px;
+      padding: 13px;
+      border: 1px solid #2b2d34;
+      border-radius: 9px;
+      background: #1c1e23;
+    }
+
+    .info-line { display: flex; justify-content: space-between; gap: 16px; padding: 5px 0; font-size: 12px; }
+    .info-line span:first-child { color: #777b86; }
+    .info-line span:last-child { color: #b8bbc4; text-align: right; word-break: break-all; }
+
+    .modal, .remote-session {
+      position: fixed;
+      inset: 0;
+      z-index: 20;
+      display: none;
+    }
+
+    .modal.show { display: grid; place-items: center; background: rgba(4,5,8,.7); backdrop-filter: blur(7px); }
+    .dialog {
+      width: 420px;
+      padding: 24px;
+      border: 1px solid #3a3d47;
+      border-radius: 14px;
+      background: #1b1d23;
+      box-shadow: var(--shadow);
+    }
+
+    .dialog-head { display: flex; align-items: flex-start; gap: 13px; }
+    .dialog-icon { display: grid; place-items: center; width: 42px; height: 42px; border-radius: 11px; background: #204d3b; color: #78c5a6; }
+    .dialog-head h3 { margin: 1px 0 3px; font-size: 17px; }
+    .dialog-head p { margin: 0; color: var(--muted); font-size: 12px; }
+    .code-input {
+      width: 100%;
+      height: 44px;
+      margin-top: 20px;
+      padding: 0 13px;
+      border: 1px solid #414550;
+      border-radius: 8px;
+      outline: 0;
+      background: #111318;
+      color: white;
+      letter-spacing: 1px;
+    }
+
+    .code-input:focus { border-color: var(--blue); box-shadow: 0 0 0 3px rgba(29,116,82,.16); }
+    .dialog-error { min-height: 22px; padding-top: 6px; color: #ff8393; font-size: 12px; }
+    .dialog-actions { display: flex; justify-content: flex-end; gap: 9px; margin-top: 10px; }
+    .button { min-width: 82px; height: 36px; border: 1px solid #3b3e47; border-radius: 7px; background: #282a31; cursor: pointer; }
+    .button:hover { background: #30333b; }
+    .button.primary { border-color: #2b815e; background: #1d7452; color: white; }
+    .button.primary:hover { background: #278462; }
+
+    .remote-session.show { display: flex; flex-direction: column; background: #08090c; }
+    .remote-toolbar {
+      z-index: 2;
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      min-height: 52px;
+      padding: 8px 12px;
+      border-bottom: 1px solid #31343b;
+      background: #181a20;
+      box-shadow: 0 4px 18px rgba(0,0,0,.3);
+    }
+
+    .remote-toolbar strong { margin-right: 8px; }
+    .remote-toolbar .button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-width: auto; padding: 0 11px; }
+    .remote-toolbar .button svg { width: 17px; height: 17px; }
+    .remote-toolbar .button.active { border-color: var(--blue); background: #204f3e; color: #95d5ba; }
+    .remote-status { margin-left: auto; color: var(--muted); font-size: 12px; }
+    .remote-status.error { color: #ff7d8e; }
+    .remote-stage { position: relative; display: grid; flex: 1; min-height: 0; place-items: center; overflow: hidden; outline: 0; background: #050609; }
+    #remoteScreen { display: block; width: 100%; height: 100%; object-fit: contain; user-select: none; -webkit-user-drag: none; cursor: default; }
+    .remote-stage.controlling #remoteScreen { cursor: crosshair; }
+    .remote-hint { position: absolute; pointer-events: none; color: #6f7380; }
+    .remote-hint.hidden { display: none; }
+
+    .toast {
+      position: fixed;
+      right: 28px;
+      bottom: 24px;
+      z-index: 50;
+      max-width: 380px;
+      padding: 10px 14px;
+      border: 1px solid #3c3f48;
+      border-radius: 8px;
+      background: #24262c;
+      color: #e5e6ea;
+      box-shadow: 0 12px 35px rgba(0,0,0,.34);
+      opacity: 0;
+      transform: translateY(10px);
+      pointer-events: none;
+      transition: .2s ease;
+    }
+
+    .toast.show { opacity: 1; transform: translateY(0); }
+
+    .settings-view {
+      display: none;
+      grid-column: 2 / 5;
+      grid-row: 2;
+      grid-template-columns: 230px minmax(0, 1fr);
+      min-height: 0;
+      background: #111217;
+    }
+
+    .app.settings-mode .sidebar,
+    .app.settings-mode .content,
+    .app.settings-mode .details { display: none; }
+    .app.settings-mode .settings-view { display: grid; }
+    .app.settings-mode .search { visibility: hidden; }
+
+    .settings-nav {
+      padding: 22px 14px;
+      border-right: 1px solid var(--line);
+      background: var(--nav);
+    }
+
+    .settings-nav h2 { margin: 0 10px 20px; font-size: 18px; }
+    .settings-nav .nav-item.active { background: #1a3b2f; }
+    .settings-nav-note { margin: 22px 10px; color: #777b86; font-size: 12px; line-height: 1.7; }
+
+    .settings-content { overflow-y: auto; padding: 26px 34px 38px; scrollbar-color: #3b3e47 transparent; }
+    .settings-content-head { display: flex; align-items: center; max-width: 760px; margin-bottom: 20px; }
+    .settings-content-head h3 { margin: 0; font-size: 18px; }
+    .settings-content-head p { margin: 4px 0 0; color: var(--muted); font-size: 12px; }
+    .settings-content-head .button { margin-left: auto; }
+
+    .settings-section { max-width: 760px; margin-bottom: 18px; }
+    .settings-section-title { display: flex; align-items: center; gap: 8px; margin: 0 0 9px; font-size: 14px; font-weight: 600; }
+    .settings-section-title svg { width: 17px; height: 17px; color: #72c5a4; }
+    .settings-card { overflow: hidden; border: 1px solid #2b2e36; border-radius: 10px; background: #1b1d22; }
+    .setting-row { display: flex; align-items: center; gap: 20px; min-height: 62px; padding: 12px 16px; border-bottom: 1px solid #282a31; }
+    .setting-row:last-child { border-bottom: 0; }
+    .setting-copy { min-width: 0; flex: 1; }
+    .setting-copy strong { display: block; font-size: 13px; font-weight: 600; }
+    .setting-copy small { display: block; margin-top: 3px; color: #7f838e; font-size: 11px; }
+    .setting-input, .setting-select {
+      width: 260px;
+      height: 36px;
+      padding: 0 11px;
+      border: 1px solid #3a3d46;
+      border-radius: 7px;
+      outline: none;
+      background: #111318;
+      color: #e9eaee;
+    }
+    .setting-input:focus, .setting-select:focus { border-color: #2d825f; box-shadow: 0 0 0 3px rgba(29,116,82,.14); }
+    .setting-select { width: 170px; }
+    .switch { position: relative; width: 40px; height: 22px; flex: 0 0 auto; }
+    .switch input { position: absolute; opacity: 0; }
+    .switch span { position: absolute; inset: 0; border-radius: 20px; background: #3a3d45; transition: .18s ease; }
+    .switch span::after { content: ""; position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; border-radius: 50%; background: #d8dae0; transition: .18s ease; }
+    .switch input:checked + span { background: var(--blue); }
+    .switch input:checked + span::after { transform: translateX(18px); background: white; }
+    .settings-code { color: #d7f2e6; font: 600 15px/1 ui-monospace, "Cascadia Mono", Consolas, monospace; letter-spacing: 1.2px; user-select: all; }
+    .setting-actions { display: flex; align-items: center; gap: 8px; }
+    .button.compact { min-width: 0; height: 32px; padding: 0 11px; font-size: 12px; }
+    .button.danger { border-color: #664049; color: #ff9aa8; background: #322429; }
+    .update-state { max-width: 280px; color: #9a9eaa; font-size: 12px; text-align: right; }
+    .update-state.available { color: #75d0aa; }
+    .update-action { display: none; }
+    .update-action.show { display: inline-flex; align-items: center; justify-content: center; }
+    .reduce-motion *, .reduce-motion *::before, .reduce-motion *::after { animation-duration: .001ms !important; transition-duration: .001ms !important; }
+
+    @media (max-width: 1160px) {
+      .app { grid-template-columns: 64px 155px minmax(420px, 1fr) 285px; }
+      .table-head, .device-row { grid-template-columns: minmax(180px, 1.3fr) 120px 90px 70px; }
+      .settings-view { grid-template-columns: 190px minmax(0, 1fr); }
+    }
+  </style>
+</head>
+<body>
+  <svg aria-hidden="true" style="position:absolute;width:0;height:0;overflow:hidden">
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></symbol>
+    <symbol id="i-monitor" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8M12 17v4"/></symbol>
+    <symbol id="i-eye" viewBox="0 0 24 24"><path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12Z"/><circle cx="12" cy="12" r="2.5"/></symbol>
+    <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 7v5h-5M4 17v-5h5"/><path d="M18.5 9A7 7 0 0 0 6 7M5.5 15A7 7 0 0 0 18 17"/></symbol>
+    <symbol id="i-settings" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2.8 2.8-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6v.2h-4V21a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1L4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9A1.7 1.7 0 0 0 3 14H3v-4h.1a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9L4.2 7 7 4.2l.1.1a1.7 1.7 0 0 0 1.9.3 1.7 1.7 0 0 0 1-1.6V3h4v.1a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1L19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.2v4H21a1.7 1.7 0 0 0-1.6 1Z"/></symbol>
+    <symbol id="i-grid" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></symbol>
+    <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></symbol>
+    <symbol id="i-windows" viewBox="0 0 24 24"><path d="M3 5.2 10.5 4v7.2H3V5.2Zm8.5-1.4L21 2.4v8.8h-9.5V3.8ZM3 12.2h7.5v7.3L3 18.3v-6.1Zm8.5 0H21v9.4l-9.5-1.8v-7.6Z"/></symbol>
+    <symbol id="i-link" viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7.5.5l2-2a5 5 0 0 0-7-7l-1.1 1.1"/><path d="M14 11a5 5 0 0 0-7.5-.5l-2 2a5 5 0 0 0 7 7l1.1-1.1"/></symbol>
+    <symbol id="i-keyboard" viewBox="0 0 24 24"><rect x="2" y="5" width="20" height="14" rx="2"/><path d="M6 9h.01M10 9h.01M14 9h.01M18 9h.01M6 13h.01M10 13h.01M14 13h.01M18 13h.01M8 16h8"/></symbol>
+    <symbol id="i-expand" viewBox="0 0 24 24"><path d="M8 3H3v5M16 3h5v5M8 21H3v-5M16 21h5v-5"/></symbol>
+    <symbol id="i-x" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></symbol>
+    <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3 6h7l2 2h9v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6Z"/></symbol>
+    <symbol id="i-terminal" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="m7 9 3 3-3 3M13 16h4"/></symbol>
+    <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 3 20 6v5c0 5-3.5 8.5-8 10-4.5-1.5-8-5-8-10V6l8-3Z"/><path d="m9 12 2 2 4-4"/></symbol>
+    <symbol id="i-star" viewBox="0 0 24 24"><path d="m12 2.5 2.9 5.9 6.5.9-4.7 4.6 1.1 6.5-5.8-3.1-5.8 3.1 1.1-6.5-4.7-4.6 6.5-.9L12 2.5Z"/></symbol>
+  </svg>
+
+  <div class="app" id="app">
+    <aside class="brand-rail">
+      <div class="logo" title="LAN Remote"><img src="/app-icon.png" alt="LAN Remote"></div>
+      <button class="rail-button active" id="railDevices" title="全部设备"><svg><use href="#i-monitor"/></svg></button>
+      <button class="rail-button bottom" id="railSettings" title="设置"><svg><use href="#i-settings"/></svg></button>
+    </aside>
+
+    <header class="topbar">
+      <div class="app-name">LAN Remote</div>
+      <label class="search">
+        <svg><use href="#i-search"/></svg>
+        <input id="searchInput" type="search" placeholder="搜索局域网设备" autocomplete="off">
+      </label>
+      <div class="top-status"><span class="pulse"></span><span id="discoveryStatus">正在发现设备</span></div>
+    </header>
+
+    <nav class="sidebar">
+      <h2>设备</h2>
+      <button class="nav-item active" id="allDevicesNav"><svg><use href="#i-monitor"/></svg><span>全部设备</span><span class="count" id="allCount">0</span></button>
+      <div class="nav-note">设备会通过局域网广播自动出现。两台电脑都需要运行 LAN Remote。</div>
+    </nav>
+
+    <main class="content">
+      <div class="content-head">
+        <h3>全部设备</h3>
+        <div class="actions">
+          <button class="icon-button" id="refreshButton" title="刷新"><svg><use href="#i-refresh"/></svg></button>
+        </div>
+      </div>
+      <div class="table-head"><span>设备名</span><span>地址</span><span>状态</span><span style="text-align:right">操作</span></div>
+      <div class="device-list" id="deviceList"></div>
+      <div class="empty-state" id="emptyState"><div><svg><use href="#i-monitor"/></svg><div>没有找到匹配的设备</div></div></div>
+    </main>
+
+    <aside class="details">
+      <div class="details-empty" id="detailsEmpty"><div><svg><use href="#i-monitor"/></svg><div>选择一台设备</div></div></div>
+      <section class="device-detail" id="deviceDetail">
+        <div class="detail-title">
+          <span class="device-platform"><svg><use href="#i-windows"/></svg></span>
+          <div class="detail-name"><strong id="detailName"></strong><span id="detailState"></span></div>
+        </div>
+        <div class="preview">
+          <div class="preview-content"><svg><use href="#i-monitor"/></svg><span>桌面控制</span></div>
+        </div>
+        <div class="control-grid">
+          <button class="control-card primary wide" id="controlButton"><svg><use href="#i-monitor"/></svg><span>桌面控制</span></button>
+          <button class="control-card wide" id="viewButton"><svg><use href="#i-eye"/></svg><span>桌面观看</span></button>
+        </div>
+        <div class="info-card">
+          <div class="info-line"><span>设备地址</span><span id="detailAddress"></span></div>
+          <div class="info-line"><span>设备 ID</span><span id="detailId"></span></div>
+          <div class="info-line"><span>系统</span><span id="detailOs"></span></div>
+          <div class="info-line"><span>控制权限</span><span id="detailMode"></span></div>
+        </div>
+      </section>
+    </aside>
+
+    <section class="settings-view" id="settingsView">
+      <nav class="settings-nav">
+        <h2>设置</h2>
+        <button class="nav-item active" type="button"><svg><use href="#i-settings"/></svg><span>常规与安全</span></button>
+        <div class="settings-nav-note">所有设置保存在本机，不会上传。涉及远程连接的更改会立即生效。</div>
+      </nav>
+      <main class="settings-content">
+        <div class="settings-content-head">
+          <div><h3>常规与安全</h3><p>管理本机身份、访问权限、远程体验和软件更新。</p></div>
+          <button class="button primary" id="saveSettings" type="button">保存设置</button>
+        </div>
+
+        <section class="settings-section">
+          <h4 class="settings-section-title"><svg><use href="#i-monitor"/></svg>本机信息</h4>
+          <div class="settings-card">
+            <div class="setting-row">
+              <div class="setting-copy"><strong>设备名称</strong><small>其他局域网电脑会看到这个名称。</small></div>
+              <input class="setting-input" id="settingDeviceName" maxlength="64" autocomplete="off">
+            </div>
+            <div class="setting-row">
+              <div class="setting-copy"><strong>本机访问码</strong><small>另一台电脑首次连接时需要输入；验证后 30 分钟内免输。</small></div>
+              <div class="setting-actions"><code class="settings-code" id="localAccessCode"></code><button class="button compact" id="copyCode" type="button">复制</button><button class="button compact danger" id="regenerateCode" type="button">重置</button></div>
+            </div>
+          </div>
+        </section>
+
+        <section class="settings-section">
+          <h4 class="settings-section-title"><svg><use href="#i-shield"/></svg>连接与权限</h4>
+          <div class="settings-card">
+            <div class="setting-row"><div class="setting-copy"><strong>允许局域网发现</strong><small>关闭后本机不会广播，也不会接收设备发现信息。</small></div><label class="switch"><input id="settingDiscovery" type="checkbox"><span></span></label></div>
+            <div class="setting-row"><div class="setting-copy"><strong>仅允许桌面观看</strong><small>拒绝远程鼠标和键盘输入。</small></div><label class="switch"><input id="settingViewOnly" type="checkbox"><span></span></label></div>
+            <div class="setting-row"><div class="setting-copy"><strong>允许锁屏与安全桌面控制</strong><small id="secureDesktopStatus">需要管理员安装的安全桌面服务。</small></div><label class="switch"><input id="settingSecureDesktop" type="checkbox"><span></span></label></div>
+            <div class="setting-row"><div class="setting-copy"><strong>30 分钟内记住访问码</strong><small>只保存在当前软件会话中，超时后自动清除。</small></div><label class="switch"><input id="settingRememberCodes" type="checkbox"><span></span></label></div>
+          </div>
+        </section>
+
+        <section class="settings-section">
+          <h4 class="settings-section-title"><svg><use href="#i-eye"/></svg>远程体验</h4>
+          <div class="settings-card">
+            <div class="setting-row"><div class="setting-copy"><strong>画面刷新速度</strong><small>网络较慢时选择“流畅优先”可减少带宽占用。</small></div><select class="setting-select" id="settingFrameDelay"><option value="80">响应优先</option><option value="120">平衡</option><option value="220">流畅优先</option></select></div>
+            <div class="setting-row"><div class="setting-copy"><strong>减少界面动效</strong><small>关闭大部分过渡动画。</small></div><label class="switch"><input id="settingReduceMotion" type="checkbox"><span></span></label></div>
+          </div>
+        </section>
+
+        <section class="settings-section">
+          <h4 class="settings-section-title"><svg><use href="#i-settings"/></svg>系统</h4>
+          <div class="settings-card">
+            <div class="setting-row"><div class="setting-copy"><strong>登录 Windows 后启动</strong><small>在当前用户登录后自动运行 LAN Remote。</small></div><label class="switch"><input id="settingLaunchAtLogin" type="checkbox"><span></span></label></div>
+            <div class="setting-row"><div class="setting-copy"><strong>启动时最大化</strong><small>下次启动软件时生效。</small></div><label class="switch"><input id="settingStartMaximized" type="checkbox"><span></span></label></div>
+          </div>
+        </section>
+
+        <section class="settings-section">
+          <h4 class="settings-section-title"><svg><use href="#i-refresh"/></svg>软件更新</h4>
+          <div class="settings-card">
+            <div class="setting-row"><div class="setting-copy"><strong>自动检查 GitHub 最新版本</strong><small>启动后检查远端 Release，不会在后台静默安装。</small></div><label class="switch"><input id="settingAutoUpdate" type="checkbox"><span></span></label></div>
+            <div class="setting-row"><div class="setting-copy"><strong id="versionLabel">当前版本</strong><small id="updateDescription">尚未检查更新</small></div><div class="setting-actions"><span class="update-state" id="updateState"></span><button class="button compact" id="checkUpdate" type="button">立即检查</button><button class="button compact primary update-action" id="installUpdate" type="button">下载并安装</button></div></div>
+          </div>
+        </section>
+      </main>
+    </section>
+  </div>
+
+  <div class="modal" id="pairModal" role="dialog" aria-modal="true">
+    <form class="dialog" id="pairForm">
+      <div class="dialog-head">
+        <div class="dialog-icon"><svg><use href="#i-shield"/></svg></div>
+        <div><h3>连接到 <span id="pairDeviceName"></span></h3><p>在目标电脑的 LAN Remote 设置中查看“本机访问码”</p></div>
+      </div>
+      <input class="code-input" id="codeInput" type="password" placeholder="访问码" autocomplete="one-time-code" spellcheck="false">
+      <div class="dialog-error" id="pairError"></div>
+      <div class="dialog-actions">
+        <button class="button" type="button" id="pairCancel">取消</button>
+        <button class="button primary" type="submit" id="pairSubmit">连接</button>
+      </div>
+    </form>
+  </div>
+
+  <section class="remote-session" id="remoteSession">
+    <div class="remote-toolbar">
+      <strong id="remoteName">远程桌面</strong>
+      <button class="button" id="keyboardButton"><svg><use href="#i-keyboard"/></svg><span>键盘</span></button>
+      <button class="button" id="fullscreenButton"><svg><use href="#i-expand"/></svg><span>全屏</span></button>
+      <button class="button" id="closeSession"><svg><use href="#i-x"/></svg><span>断开</span></button>
+      <span class="remote-status" id="remoteStatus">正在连接…</span>
+    </div>
+    <div class="remote-stage" id="remoteStage" tabindex="0">
+      <img id="remoteScreen" alt="远程屏幕" draggable="false">
+      <div class="remote-hint" id="remoteHint">正在获取远程画面…</div>
+    </div>
+  </section>
+  <div class="toast" id="toast"></div>
+
+  <script>
+    "use strict";
+
+    const $ = (id) => document.getElementById(id);
+    const state = {
+      devices: [],
+      selectedId: "",
+      pairMode: "control",
+      session: null,
+      loadingFrame: false,
+      keyboardEnabled: false,
+      lastMoveAt: 0,
+      refreshTimer: 0,
+      toastTimer: 0,
+      settings: {frame_delay_ms: 120, remember_codes: true, auto_check_updates: true},
+      latestUpdate: null
+    };
+
+    function escapeHtml(value) {
+      return String(value ?? "").replace(/[&<>'"]/g, (char) => ({"&":"&amp;", "<":"&lt;", ">":"&gt;", "'":"&#39;", "\"":"&quot;"}[char]));
+    }
+
+    function deviceOrigin(device) {
+      if (device.is_self) return location.origin;
+      const host = device.ip.includes(":") ? `[${device.ip}]` : device.ip;
+      return `http://${host}:${device.port}`;
+    }
+
+    function selectedDevice() {
+      return state.devices.find((device) => device.id === state.selectedId) || null;
+    }
+
+    function showToast(message) {
+      const toast = $("toast");
+      toast.textContent = message;
+      toast.classList.add("show");
+      clearTimeout(state.toastTimer);
+      state.toastTimer = setTimeout(() => toast.classList.remove("show"), 2400);
+    }
+
+    function applySettings(settings) {
+      state.settings = {...state.settings, ...settings};
+      $("settingDeviceName").value = state.settings.device_name || "";
+      $("settingDiscovery").checked = Boolean(state.settings.discovery_enabled);
+      $("settingViewOnly").checked = Boolean(state.settings.view_only);
+      $("settingSecureDesktop").checked = Boolean(state.settings.secure_desktop_enabled);
+      $("secureDesktopStatus").textContent = state.settings.secure_desktop_available
+        ? "系统服务已就绪，锁屏和 UAC 安全桌面可继续连接。"
+        : "系统服务未运行，请使用管理员安装包修复安装。";
+      $("settingRememberCodes").checked = Boolean(state.settings.remember_codes);
+      $("settingFrameDelay").value = String(state.settings.frame_delay_ms || 120);
+      $("settingReduceMotion").checked = Boolean(state.settings.reduce_motion);
+      $("settingLaunchAtLogin").checked = Boolean(state.settings.launch_at_login);
+      $("settingStartMaximized").checked = Boolean(state.settings.start_maximized);
+      $("settingAutoUpdate").checked = Boolean(state.settings.auto_check_updates);
+      $("localAccessCode").textContent = state.settings.access_code || "";
+      $("versionLabel").textContent = `当前版本 ${state.settings.app_version || ""}`;
+      document.body.classList.toggle("reduce-motion", Boolean(state.settings.reduce_motion));
+    }
+
+    function settingsPayload() {
+      return {
+        device_name: $("settingDeviceName").value.trim(),
+        discovery_enabled: $("settingDiscovery").checked,
+        view_only: $("settingViewOnly").checked,
+        secure_desktop_enabled: $("settingSecureDesktop").checked,
+        remember_codes: $("settingRememberCodes").checked,
+        frame_delay_ms: Number($("settingFrameDelay").value),
+        reduce_motion: $("settingReduceMotion").checked,
+        launch_at_login: $("settingLaunchAtLogin").checked,
+        start_maximized: $("settingStartMaximized").checked,
+        auto_check_updates: $("settingAutoUpdate").checked
+      };
+    }
+
+    async function loadSettings() {
+      try {
+        const response = await fetch("/api/settings", {cache: "no-store"});
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const payload = await response.json();
+        applySettings(payload.settings || {});
+      } catch (error) {
+        showToast(`设置加载失败：${error.message}`);
+      }
+    }
+
+    async function saveSettings(extra = {}) {
+      const button = $("saveSettings");
+      button.disabled = true;
+      try {
+        const response = await fetch("/api/settings", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({...settingsPayload(), ...extra}),
+          cache: "no-store"
+        });
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
+        applySettings(payload.settings || {});
+        if (!state.settings.remember_codes) clearCachedAccessCodes();
+        await refreshDevices(false);
+        showToast(extra.regenerate_access_code ? "访问码已重置" : "设置已保存");
+        return true;
+      } catch (error) {
+        showToast(error.message || "设置保存失败");
+        return false;
+      } finally {
+        button.disabled = false;
+      }
+    }
+
+    function clearCachedAccessCodes() {
+      for (let index = sessionStorage.length - 1; index >= 0; index -= 1) {
+        const key = sessionStorage.key(index);
+        if (key?.startsWith("lan-remote-token:")) sessionStorage.removeItem(key);
+      }
+    }
+
+    function cachedAccessCode(deviceId) {
+      const key = `lan-remote-token:${deviceId}`;
+      const raw = sessionStorage.getItem(key);
+      if (!raw || !state.settings.remember_codes) return "";
+      try {
+        const saved = JSON.parse(raw);
+        if (!saved.token || Number(saved.expiresAt) <= Date.now()) {
+          sessionStorage.removeItem(key);
+          return "";
+        }
+        return String(saved.token);
+      } catch {
+        sessionStorage.removeItem(key);
+        return "";
+      }
+    }
+
+    function showDevicesView() {
+      $("app").classList.remove("settings-mode");
+      $("railDevices").classList.add("active");
+      $("railSettings").classList.remove("active");
+      $("searchInput").value = "";
+      renderDevices();
+    }
+
+    function showSettingsView() {
+      $("app").classList.add("settings-mode");
+      $("railDevices").classList.remove("active");
+      $("railSettings").classList.add("active");
+    }
+
+    async function checkForUpdates(silent = false) {
+      const button = $("checkUpdate");
+      button.disabled = true;
+      $("updateState").classList.remove("available");
+      $("updateState").textContent = "正在检查…";
+      try {
+        const response = await fetch(`/api/update?t=${Date.now()}`, {cache: "no-store"});
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
+        state.latestUpdate = payload;
+        $("updateState").textContent = payload.update_available ? `发现 ${payload.latest_version}` : payload.message;
+        $("updateState").classList.toggle("available", Boolean(payload.update_available));
+        $("updateDescription").textContent = payload.update_available ? "新安装包已发布，可下载并覆盖安装。" : `GitHub 最新版本：${payload.latest_version}`;
+        $("installUpdate").classList.toggle("show", Boolean(payload.update_available && payload.installer_url));
+        if (!silent) showToast(payload.message || "更新检查完成");
+      } catch (error) {
+        $("updateState").textContent = "检查失败";
+        $("updateDescription").textContent = error.message || "暂时无法连接 GitHub";
+        $("installUpdate").classList.remove("show");
+        if (!silent) showToast(error.message || "更新检查失败");
+      } finally {
+        button.disabled = false;
+      }
+    }
+
+    async function installUpdate() {
+      const button = $("installUpdate");
+      button.disabled = true;
+      button.textContent = "正在下载…";
+      try {
+        const response = await fetch("/api/update/install", {method: "POST", cache: "no-store"});
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
+        showToast(payload.message || "安装程序已启动");
+        button.textContent = "安装程序已启动";
+      } catch (error) {
+        showToast(error.message || "更新安装失败");
+        button.disabled = false;
+        button.textContent = "下载并安装";
+      }
+    }
+
+    async function copyLocalAccessCode() {
+      const code = $("localAccessCode").textContent;
+      if (!code) return;
+      try {
+        await navigator.clipboard.writeText(code);
+      } catch {
+        const field = document.createElement("textarea");
+        field.value = code;
+        field.style.position = "fixed";
+        field.style.opacity = "0";
+        document.body.appendChild(field);
+        field.select();
+        document.execCommand("copy");
+        field.remove();
+      }
+      showToast("访问码已复制");
+    }
+
+    async function refreshDevices(animate = false) {
+      if (animate) $("refreshButton").classList.add("spinning");
+      try {
+        const response = await fetch(`/api/devices?t=${Date.now()}`, {cache: "no-store"});
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const payload = await response.json();
+        state.devices = payload.devices || [];
+        if (!state.selectedId && state.devices.length) {
+          state.selectedId = state.devices.find((device) => !device.is_self)?.id || state.devices[0].id;
+        } else if (state.selectedId && !state.devices.some((device) => device.id === state.selectedId)) {
+          state.selectedId = state.devices[0]?.id || "";
+        }
+        $("discoveryStatus").textContent = `发现 ${state.devices.length} 台在线设备`;
+        renderDevices();
+      } catch (error) {
+        $("discoveryStatus").textContent = "发现服务不可用";
+        if (animate) showToast(`刷新失败：${error.message}`);
+      } finally {
+        if (animate) setTimeout(() => $("refreshButton").classList.remove("spinning"), 350);
+      }
+    }
+
+    function renderDevices() {
+      const query = $("searchInput").value.trim().toLowerCase();
+      const visible = state.devices.filter((device) => `${device.name} ${device.ip}`.toLowerCase().includes(query));
+      $("allCount").textContent = state.devices.length;
+      $("deviceList").innerHTML = visible.map((device) => `
+        <div class="device-row ${device.id === state.selectedId ? "selected" : ""}" data-id="${escapeHtml(device.id)}">
+          <div class="device-main">
+            <span class="device-platform"><svg><use href="#i-windows"/></svg></span>
+            <span class="device-name" title="${escapeHtml(device.name)}">${escapeHtml(device.name)}${device.is_self ? '<span class="local-tag">本机</span>' : ""}${device.view_only ? '<span class="mode-tag">只读</span>' : ""}</span>
+          </div>
+          <span class="cell-muted">${escapeHtml(device.ip)}:${device.port}</span>
+          <span class="online">在线</span>
+          <span class="row-action"><button class="icon-button quick-connect" data-id="${escapeHtml(device.id)}" title="桌面控制"><svg><use href="#i-monitor"/></svg></button></span>
+        </div>`).join("");
+      $("emptyState").classList.toggle("show", visible.length === 0);
+      renderDetails();
+    }
+
+    function renderDetails() {
+      const device = selectedDevice();
+      $("detailsEmpty").style.display = device ? "none" : "grid";
+      $("deviceDetail").classList.toggle("show", Boolean(device));
+      if (!device) return;
+      $("detailName").textContent = device.name;
+      $("detailState").textContent = device.is_self ? "本机 · 在线" : "局域网设备 · 在线";
+      $("detailAddress").textContent = `${device.ip}:${device.port}`;
+      $("detailId").textContent = device.id;
+      $("detailOs").textContent = device.os || "Windows";
+      $("detailMode").textContent = device.view_only ? "仅允许观看" : "允许控制";
+      $("controlButton").disabled = Boolean(device.view_only);
+    }
+
+    function selectDevice(id) {
+      state.selectedId = id;
+      document.querySelectorAll(".device-row").forEach((row) => row.classList.toggle("selected", row.dataset.id === id));
+      renderDetails();
+    }
+
+    function openPair(mode) {
+      const device = selectedDevice();
+      if (!device) return;
+      if (mode === "control" && device.view_only) {
+        showToast("这台设备当前只允许观看");
+        return;
+      }
+      state.pairMode = mode;
+      $("pairDeviceName").textContent = device.name;
+      $("pairError").textContent = "";
+      const saved = cachedAccessCode(device.id);
+      $("codeInput").value = saved;
+      $("pairModal").classList.add("show");
+      if (saved) {
+        setTimeout(() => $("pairForm").requestSubmit(), 20);
+      } else {
+        setTimeout(() => $("codeInput").focus(), 30);
+      }
+    }
+
+    function closePair() {
+      $("pairModal").classList.remove("show");
+      $("pairError").textContent = "";
+    }
+
+    async function verifyAndConnect(event) {
+      event.preventDefault();
+      const device = selectedDevice();
+      const token = $("codeInput").value.trim();
+      if (!device || !token) {
+        $("pairError").textContent = "请输入访问码";
+        return;
+      }
+      const submit = $("pairSubmit");
+      submit.disabled = true;
+      submit.textContent = "验证中…";
+      $("pairError").textContent = "";
+      try {
+        const response = await fetch(`${deviceOrigin(device)}/api/verify`, {
+          method: "POST",
+          headers: {"X-Remote-Token": token},
+          cache: "no-store"
+        });
+        if (response.status === 401) throw new Error("访问码不正确");
+        if (!response.ok) throw new Error(`连接失败（${response.status}）`);
+        if (state.settings.remember_codes) {
+          sessionStorage.setItem(`lan-remote-token:${device.id}`, JSON.stringify({
+            token,
+            expiresAt: Date.now() + 30 * 60 * 1000
+          }));
+        } else {
+          sessionStorage.removeItem(`lan-remote-token:${device.id}`);
+        }
+        closePair();
+        startSession(device, token, state.pairMode === "view");
+      } catch (error) {
+        $("pairError").textContent = error.message || "无法连接到设备";
+      } finally {
+        submit.disabled = false;
+        submit.textContent = "连接";
+      }
+    }
+
+    function startSession(device, token, viewOnly) {
+      state.session = {device, token, viewOnly, connected: true};
+      state.loadingFrame = false;
+      state.keyboardEnabled = false;
+      $("remoteName").textContent = `${device.name} · ${viewOnly ? "观看" : "控制"}`;
+      $("keyboardButton").style.display = viewOnly ? "none" : "inline-flex";
+      $("keyboardButton").classList.remove("active");
+      $("remoteStage").classList.toggle("controlling", !viewOnly);
+      $("remoteHint").classList.remove("hidden");
+      $("remoteSession").classList.add("show");
+      setRemoteStatus("正在获取远程画面…");
+      refreshScreen();
+    }
+
+    function stopSession() {
+      if (state.session) state.session.connected = false;
+      state.session = null;
+      state.loadingFrame = false;
+      state.keyboardEnabled = false;
+      $("remoteScreen").removeAttribute("src");
+      $("remoteSession").classList.remove("show");
+      if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+    }
+
+    function setRemoteStatus(text, error = false) {
+      $("remoteStatus").textContent = text;
+      $("remoteStatus").classList.toggle("error", error);
+    }
+
+    function endpoint(path) {
+      const session = state.session;
+      if (!session) return "";
+      const joiner = path.includes("?") ? "&" : "?";
+      return `${deviceOrigin(session.device)}${path}${joiner}token=${encodeURIComponent(session.token)}`;
+    }
+
+    function refreshScreen() {
+      const session = state.session;
+      if (!session?.connected || state.loadingFrame) return;
+      state.loadingFrame = true;
+      const frame = new Image();
+      frame.onload = () => {
+        if (!state.session?.connected) return;
+        $("remoteScreen").src = frame.src;
+        $("remoteHint").classList.add("hidden");
+        state.loadingFrame = false;
+        setRemoteStatus(`已连接 · ${frame.naturalWidth} × ${frame.naturalHeight}`);
+        state.refreshTimer = setTimeout(refreshScreen, Number(state.settings.frame_delay_ms) || 120);
+      };
+      frame.onerror = () => {
+        state.loadingFrame = false;
+        setRemoteStatus("画面连接中断，正在重试…", true);
+        if (state.session?.connected) state.refreshTimer = setTimeout(refreshScreen, 850);
+      };
+      frame.src = endpoint(`/screen?t=${Date.now()}`);
+    }
+
+    function remotePoint(event) {
+      const image = $("remoteScreen");
+      if (!image.naturalWidth || !image.naturalHeight) return null;
+      const rect = image.getBoundingClientRect();
+      const scale = Math.min(rect.width / image.naturalWidth, rect.height / image.naturalHeight);
+      const width = image.naturalWidth * scale;
+      const height = image.naturalHeight * scale;
+      const x = (event.clientX - rect.left - (rect.width - width) / 2) / scale;
+      const y = (event.clientY - rect.top - (rect.height - height) / 2) / scale;
+      if (x < 0 || y < 0 || x > image.naturalWidth || y > image.naturalHeight) return null;
+      return {x: Math.round(x), y: Math.round(y)};
+    }
+
+    async function sendInput(payload) {
+      const session = state.session;
+      if (!session?.connected || session.viewOnly) return;
+      try {
+        const response = await fetch(endpoint("/input"), {
+          method: "POST",
+          headers: {"Content-Type": "application/json", "X-Remote-Token": session.token},
+          body: JSON.stringify(payload),
+          cache: "no-store"
+        });
+        if (!response.ok) throw new Error(String(response.status));
+      } catch {
+        setRemoteStatus("控制指令发送失败", true);
+      }
+    }
+
+    function pointerPayload(event, type) {
+      const point = remotePoint(event);
+      if (!point) return null;
+      return {type, x: point.x, y: point.y, button: event.button, delta: event.deltaY || 0};
+    }
+
+    $("deviceList").addEventListener("click", (event) => {
+      const row = event.target.closest(".device-row");
+      if (!row) return;
+      selectDevice(row.dataset.id);
+      if (event.target.closest(".quick-connect")) openPair("control");
+    });
+    $("deviceList").addEventListener("dblclick", (event) => {
+      if (event.target.closest("button")) return;
+      const row = event.target.closest(".device-row");
+      if (!row) return;
+      selectDevice(row.dataset.id);
+      openPair(selectedDevice()?.view_only ? "view" : "control");
+    });
+    $("searchInput").addEventListener("input", renderDevices);
+    $("refreshButton").addEventListener("click", () => refreshDevices(true));
+    $("railDevices").addEventListener("click", showDevicesView);
+    $("railSettings").addEventListener("click", showSettingsView);
+    $("allDevicesNav").addEventListener("click", () => {
+      $("searchInput").value = "";
+      renderDevices();
+    });
+    $("copyCode").addEventListener("click", copyLocalAccessCode);
+    $("saveSettings").addEventListener("click", () => saveSettings());
+    $("regenerateCode").addEventListener("click", () => {
+      if (window.confirm("重置后，其他电脑保存的旧访问码会立即失效。确定继续吗？")) saveSettings({regenerate_access_code: true});
+    });
+    $("checkUpdate").addEventListener("click", () => checkForUpdates(false));
+    $("installUpdate").addEventListener("click", installUpdate);
+    $("controlButton").addEventListener("click", () => openPair("control"));
+    $("viewButton").addEventListener("click", () => openPair("view"));
+    $("pairForm").addEventListener("submit", verifyAndConnect);
+    $("pairCancel").addEventListener("click", closePair);
+    $("pairModal").addEventListener("mousedown", (event) => { if (event.target === $("pairModal")) closePair(); });
+    $("closeSession").addEventListener("click", stopSession);
+
+    $("keyboardButton").addEventListener("click", () => {
+      state.keyboardEnabled = !state.keyboardEnabled;
+      $("keyboardButton").classList.toggle("active", state.keyboardEnabled);
+      if (state.keyboardEnabled) {
+        $("remoteStage").focus();
+        setRemoteStatus("键盘控制已开启，按 Esc 关闭");
+      } else {
+        setRemoteStatus("键盘控制已关闭");
+      }
+    });
+
+    $("fullscreenButton").addEventListener("click", async () => {
+      try {
+        if (window.pywebview?.api?.toggle_fullscreen) {
+          const fullscreen = await window.pywebview.api.toggle_fullscreen();
+          $("fullscreenButton").querySelector("span").textContent = fullscreen ? "退出全屏" : "全屏";
+        } else if (document.fullscreenElement) {
+          await document.exitFullscreen();
+          $("fullscreenButton").querySelector("span").textContent = "全屏";
+        } else {
+          await $("remoteSession").requestFullscreen();
+          $("fullscreenButton").querySelector("span").textContent = "退出全屏";
+        }
+      } catch (error) {
+        showToast(`无法切换全屏：${error.message}`);
+      }
+    });
+
+    $("remoteStage").addEventListener("contextmenu", (event) => event.preventDefault());
+    $("remoteStage").addEventListener("pointermove", (event) => {
+      const now = performance.now();
+      if (now - state.lastMoveAt < 28) return;
+      state.lastMoveAt = now;
+      const payload = pointerPayload(event, "mouse_move");
+      if (payload) sendInput(payload);
+    });
+    $("remoteStage").addEventListener("pointerdown", (event) => {
+      $("remoteStage").focus();
+      $("remoteStage").setPointerCapture(event.pointerId);
+      const payload = pointerPayload(event, "mouse_down");
+      if (payload) sendInput(payload);
+      event.preventDefault();
+    });
+    $("remoteStage").addEventListener("pointerup", (event) => {
+      const payload = pointerPayload(event, "mouse_up");
+      if (payload) sendInput(payload);
+      event.preventDefault();
+    });
+    $("remoteStage").addEventListener("wheel", (event) => {
+      const payload = pointerPayload(event, "mouse_wheel");
+      if (payload) sendInput(payload);
+      event.preventDefault();
+    }, {passive: false});
+
+    window.addEventListener("keydown", (event) => {
+      if (!state.session?.connected || state.session.viewOnly || !state.keyboardEnabled) return;
+      if (event.key === "Escape") {
+        state.keyboardEnabled = false;
+        $("keyboardButton").classList.remove("active");
+        setRemoteStatus("键盘控制已关闭");
+        event.preventDefault();
+        return;
+      }
+      sendInput({type: "key_down", key: event.key, code: event.code});
+      event.preventDefault();
+    });
+    window.addEventListener("keyup", (event) => {
+      if (!state.session?.connected || state.session.viewOnly || !state.keyboardEnabled) return;
+      sendInput({type: "key_up", key: event.key, code: event.code});
+      event.preventDefault();
+    });
+
+    (async function initialize() {
+      await loadSettings();
+      await refreshDevices();
+      if (state.settings.auto_check_updates) checkForUpdates(true);
+    })();
+    setInterval(() => refreshDevices(false), 2500);
+  </script>
+</body>
+</html>

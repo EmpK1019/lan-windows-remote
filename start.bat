@@ -1,4 +1,7 @@
 @echo off
 cd /d "%~dp0"
-python lan_remote.py
-pause
+if exist ".venv-build\Scripts\pythonw.exe" (
+  start "" ".venv-build\Scripts\pythonw.exe" "lan_remote.py"
+) else (
+  start "" pythonw "lan_remote.py"
+)

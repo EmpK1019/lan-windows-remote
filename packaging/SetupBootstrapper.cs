@@ -20,17 +20,21 @@ namespace WindowsLANRemoteSetup
                 Directory.CreateDirectory(tempDir);
                 ExtractPayload(tempDir);
 
-                string installCmd = Path.Combine(tempDir, "install.cmd");
-                if (!File.Exists(installCmd))
+                string installScript = Path.Combine(tempDir, "install.ps1");
+                if (!File.Exists(installScript))
                 {
-                    throw new FileNotFoundException("Installer payload is missing install.cmd.");
+                    throw new FileNotFoundException("Installer payload is missing install.ps1.");
                 }
 
                 ProcessStartInfo startInfo = new ProcessStartInfo();
-                startInfo.FileName = installCmd;
+                startInfo.FileName = "powershell.exe";
+                startInfo.Arguments = "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File \"" + installScript + "\"";
                 startInfo.WorkingDirectory = tempDir;
-                startInfo.UseShellExecute = true;
-                startInfo.WindowStyle = ProcessWindowStyle.Normal;
+                startInfo.UseShellExecute = false;
+                startInfo.CreateNoWindow = true;
+                startInfo.RedirectStandardOutput = true;
+                startInfo.RedirectStandardError = true;
+                startInfo.WindowStyle = ProcessWindowStyle.Hidden;
 
                 using (Process process = Process.Start(startInfo))
                 {
@@ -39,10 +43,19 @@ namespace WindowsLANRemoteSetup
                         throw new InvalidOperationException("Could not start installer payload.");
                     }
 
+                    string standardOutput = process.StandardOutput.ReadToEnd();
+                    string standardError = process.StandardError.ReadToEnd();
                     process.WaitForExit();
                     if (process.ExitCode != 0)
                     {
-                        throw new InvalidOperationException("Installer payload exited with code " + process.ExitCode + ".");
+                        string details = !String.IsNullOrWhiteSpace(standardError) ? standardError : standardOutput;
+                        if (String.IsNullOrWhiteSpace(details))
+                        {
+                            details = "No additional error details were returned.";
+                        }
+
+                        throw new InvalidOperationException(
+                            "Installer payload exited with code " + process.ExitCode + ".\n\n" + details.Trim());
                     }
                 }
 

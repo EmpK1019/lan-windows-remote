@@ -1,5 +1,5 @@
 param(
-    [string]$Version = "0.1.0",
+    [string]$Version = "0.5.0",
     [switch]$SkipDependencyInstall
 )
 
@@ -14,6 +14,10 @@ $StageDir = Join-Path $BuildDir "installer-stage"
 $PayloadZip = Join-Path $BuildDir "WindowsLANRemotePayload-$Version.zip"
 $VenvPython = Join-Path $Root ".venv-build\Scripts\python.exe"
 $InstallerPath = Join-Path $DistDir "WindowsLANRemoteSetup-$Version.exe"
+$PortableBaseName = "WindowsLANRemote-$Version"
+$PortablePath = Join-Path $DistDir "$PortableBaseName.exe"
+$ServicePath = Join-Path $DistDir "WindowsLANRemoteService-$Version.exe"
+$IconPath = Join-Path $Root "assets\lan-remote-icon.ico"
 
 function Assert-Tool {
     param([string]$Name)
@@ -55,14 +59,32 @@ Get-ChildItem -LiteralPath $DistDir -Filter "~WindowsLANRemoteSetup*.CAB" -Error
     --noconfirm `
     --clean `
     --onefile `
-    --console `
-    --name "WindowsLANRemote" `
+    --windowed `
+    --name $PortableBaseName `
+    --add-data "$((Join-Path $Root 'web'));web" `
+    --add-data "$((Join-Path $Root 'assets'));assets" `
+    --icon $IconPath `
     --distpath $DistDir `
     --workpath (Join-Path $BuildDir "pyinstaller") `
     --specpath (Join-Path $BuildDir "pyinstaller-spec") `
     (Join-Path $Root "lan_remote.py")
+if ($LASTEXITCODE -ne 0) {
+    throw "PyInstaller failed with exit code $LASTEXITCODE."
+}
 
-Copy-Item -LiteralPath (Join-Path $DistDir "WindowsLANRemote.exe") -Destination (Join-Path $StageDir "WindowsLANRemote.exe") -Force
+& $CscPath `
+    /nologo `
+    /target:winexe `
+    "/out:$ServicePath" `
+    "/win32icon:$IconPath" `
+    /reference:System.ServiceProcess.dll `
+    (Join-Path $PackagingDir "SecureDesktopService.cs")
+if ($LASTEXITCODE -ne 0) {
+    throw "Secure desktop service compilation failed with exit code $LASTEXITCODE."
+}
+
+Copy-Item -LiteralPath $PortablePath -Destination (Join-Path $StageDir "WindowsLANRemote.exe") -Force
+Copy-Item -LiteralPath $ServicePath -Destination (Join-Path $StageDir "WindowsLANRemoteService.exe") -Force
 Copy-Item -LiteralPath (Join-Path $Root "README.md") -Destination (Join-Path $StageDir "README.md") -Force
 Copy-Item -LiteralPath (Join-Path $PackagingDir "install.cmd") -Destination (Join-Path $StageDir "install.cmd") -Force
 Copy-Item -LiteralPath (Join-Path $PackagingDir "install.ps1") -Destination (Join-Path $StageDir "install.ps1") -Force
@@ -80,6 +102,7 @@ if (Test-Path -LiteralPath $PayloadZip) {
 }
 
 Compress-Archive -LiteralPath (Join-Path $StageDir "WindowsLANRemote.exe"), `
+    (Join-Path $StageDir "WindowsLANRemoteService.exe"), `
     (Join-Path $StageDir "README.md"), `
     (Join-Path $StageDir "install.cmd"), `
     (Join-Path $StageDir "install.ps1"), `
@@ -94,6 +117,8 @@ $CompilerArgs = @(
     "/nologo",
     "/target:winexe",
     "/out:$InstallerPath",
+    "/win32icon:$IconPath",
+    "/win32manifest:$((Join-Path $PackagingDir 'setup.manifest'))",
     "/resource:$PayloadZip,Payload.zip",
     "/reference:System.Windows.Forms.dll",
     "/reference:System.IO.Compression.dll",
@@ -111,5 +136,6 @@ if (-not (Test-Path -LiteralPath $InstallerPath)) {
 }
 
 Write-Host "Built:"
-Write-Host "  $(Join-Path $DistDir "WindowsLANRemote.exe")"
+Write-Host "  $PortablePath"
+Write-Host "  $ServicePath"
 Write-Host "  $InstallerPath"
