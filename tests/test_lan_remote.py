@@ -536,6 +536,36 @@ class HttpIntegrationTests(unittest.TestCase):
         self.assertEqual(status, 403)
         self.assertEqual(self.state.device_name, "Renamed")
 
+    def test_native_credential_bridge_is_local_encrypted_and_complete(self) -> None:
+        same_origin = f"http://127.0.0.1:{self.state.port}"
+        headers = {"Origin": same_origin, "Content-Type": "application/json"}
+
+        def credential(action: str, **values: object) -> object:
+            body = json.dumps({"action": action, "device_id": "bridge-device", **values}).encode("utf-8")
+            status, _, data = self.request("POST", "/api/native/credentials", body=body, headers=headers)
+            self.assertEqual(status, 200, data)
+            return json.loads(data)["result"]
+
+        self.assertTrue(credential("save_access", password="bridge access secret", device_name="Bridge"))
+        self.assertEqual(credential("load_access"), "bridge access secret")
+        self.assertTrue(credential("save_lock", password="bridge lock secret", device_name="Bridge"))
+        self.assertEqual(credential("status"), {"access_saved": True, "lock_saved": True})
+        credential_file = Path(self.temp_directory.name) / "LAN Remote" / "credentials.json"
+        stored = credential_file.read_text(encoding="utf-8")
+        self.assertNotIn("bridge access secret", stored)
+        self.assertNotIn("bridge lock secret", stored)
+        self.assertTrue(credential("clear_access"))
+        self.assertTrue(credential("clear_lock"))
+
+        body = json.dumps({"action": "status", "device_id": "bridge-device"}).encode("utf-8")
+        status, _, _ = self.request(
+            "POST",
+            "/api/native/credentials",
+            body=body,
+            headers={"Origin": "https://evil.example", "Content-Type": "application/json"},
+        )
+        self.assertEqual(status, 403)
+
     def test_update_install_is_single_flight(self) -> None:
         same_origin = f"http://127.0.0.1:{self.state.port}"
         headers = {"Origin": same_origin, "Content-Type": "application/json"}

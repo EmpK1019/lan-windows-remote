@@ -43,11 +43,24 @@ internal static class ControlWindowHostTests
         };
         if (!(bool)tryReadUrl.Invoke(null, valid)) throw new InvalidOperationException("Valid URL was rejected.");
 
+        object[] validMain = {
+            new[] { "--url", "http://127.0.0.1:8765/?v=0.6.6&maximized=1" },
+            null
+        };
+        if (!(bool)tryReadUrl.Invoke(null, validMain)) throw new InvalidOperationException("Valid main-window URL was rejected.");
+
         object[] invalid = {
             new[] { "--url", "http://127.0.0.1:8765/?notremote=1&handoff=abcdefghijklmnop" },
             null
         };
         if ((bool)tryReadUrl.Invoke(null, invalid)) throw new InvalidOperationException("Invalid URL was accepted.");
+
+        object[] missingHandoff = {
+            new[] { "--url", "http://127.0.0.1:8765/?remote=1" },
+            null
+        };
+        if ((bool)tryReadUrl.Invoke(null, missingHandoff))
+            throw new InvalidOperationException("Remote URL without handoff was accepted.");
     }
 
     private static void TestFullscreenRestore(Assembly assembly, bool startMaximized)

@@ -1,5 +1,5 @@
 param(
-    [string]$Version = "0.6.5",
+    [string]$Version = "0.6.6",
     [switch]$SkipDependencyInstall
 )
 
@@ -73,6 +73,33 @@ New-Item -ItemType Directory -Force -Path $StageDir | Out-Null
 New-Item -ItemType Directory -Force -Path $DistDir | Out-Null
 New-Item -ItemType Directory -Force -Path $BuildDir | Out-Null
 Get-ChildItem -LiteralPath $DistDir -Filter "~WindowsLANRemoteSetup*.CAB" -ErrorAction SilentlyContinue | Remove-Item -Force
+
+# Windows refuses to remove a directory that is another process's current
+# working directory. Upgrades therefore clear its contents and reuse it.
+$DirectoryProbe = Join-Path $BuildDir "directory-in-use-probe"
+if (Test-Path -LiteralPath $DirectoryProbe) {
+    Remove-Item -LiteralPath $DirectoryProbe -Recurse -Force
+}
+New-Item -ItemType Directory -Force -Path $DirectoryProbe | Out-Null
+Set-Content -LiteralPath (Join-Path $DirectoryProbe "old-version.txt") -Value "old" -Encoding ASCII
+$DirectoryHolder = Start-Process `
+    -FilePath "powershell.exe" `
+    -ArgumentList '-NoProfile -NonInteractive -Command "Start-Sleep -Seconds 20"' `
+    -WorkingDirectory $DirectoryProbe `
+    -WindowStyle Hidden `
+    -PassThru
+try {
+    Start-Sleep -Milliseconds 400
+    Get-ChildItem -LiteralPath $DirectoryProbe -Force | Remove-Item -Recurse -Force
+    if ((Get-ChildItem -LiteralPath $DirectoryProbe -Force | Measure-Object).Count -ne 0) {
+        throw "Directory-in-use upgrade regression test failed."
+    }
+}
+finally {
+    Stop-Process -Id $DirectoryHolder.Id -Force -ErrorAction SilentlyContinue
+    Wait-Process -Id $DirectoryHolder.Id -Timeout 5 -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $DirectoryProbe -Recurse -Force -ErrorAction SilentlyContinue
+}
 
 & $VenvPython -m PyInstaller `
     --noconfirm `

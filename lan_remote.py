@@ -52,7 +52,7 @@ if platform.system() == "Windows":
 
 
 APP_NAME = "Windows LAN Remote"
-APP_VERSION = "0.6.5"
+APP_VERSION = "0.6.6"
 GITHUB_REPOSITORY = "EmpK1019/lan-windows-remote"
 GITHUB_LATEST_RELEASE_API = f"https://api.github.com/repos/{GITHUB_REPOSITORY}/releases/latest"
 DEFAULT_PORT = 8765
@@ -87,6 +87,7 @@ LOCAL_DESKTOP_PATHS = frozenset(
         "/api/update",
         "/api/update/install",
         "/api/native/clipboard",
+        "/api/native/credentials",
         "/api/native/try-auto-unlock",
     }
 )
@@ -2777,6 +2778,18 @@ def webview_shell_command(
     return [sys.executable, str(Path(__file__).resolve()), *arguments]
 
 
+def main_window_command(url: str, maximized: bool) -> list[str]:
+    if maximized:
+        url = f"{url}&maximized=1"
+    if getattr(sys, "frozen", False):
+        control_host = Path(sys.executable).resolve().parent / "WindowsLANRemoteControlHost.exe"
+    else:
+        control_host = application_path("dist", f"WindowsLANRemote-{APP_VERSION}", "WindowsLANRemoteControlHost.exe")
+    if control_host.exists():
+        return [str(control_host), "--url", url]
+    return webview_shell_command(url, False)
+
+
 def normalize_remote_window_payload(payload: dict[str, Any]) -> dict[str, Any]:
     raw_device = payload.get("device")
     if not isinstance(raw_device, dict):
@@ -3179,6 +3192,56 @@ class RemoteHandler(BaseHTTPRequestHandler):
                 token,
             )
             json_response(self, HTTPStatus.OK, result, allow_cross_origin=False)
+            return
+        if parsed.path == "/api/native/credentials":
+            if not self.check_local_desktop():
+                return
+            payload = self.read_json_payload()
+            if payload is None:
+                return
+            action = payload.get("action")
+            device_id = payload.get("device_id")
+            if not isinstance(action, str) or not isinstance(device_id, str) or not 1 <= len(device_id) <= 64:
+                json_response(
+                    self,
+                    HTTPStatus.BAD_REQUEST,
+                    {"ok": False, "error": "invalid credential request"},
+                    allow_cross_origin=False,
+                )
+                return
+            credential_api = self.server.state.get_credential_api()
+            try:
+                if action == "status":
+                    result: Any = credential_api.credential_status(device_id)
+                elif action == "load_access":
+                    result = credential_api.load_access_password(device_id)
+                elif action == "save_access":
+                    password = payload.get("password")
+                    device_name = payload.get("device_name", "")
+                    if not isinstance(password, str) or not isinstance(device_name, str) or not 1 <= len(password) <= 512:
+                        raise ValueError("invalid access credential")
+                    result = credential_api.save_access_password(device_id, password, device_name)
+                elif action == "clear_access":
+                    result = credential_api.clear_access_password(device_id)
+                elif action == "save_lock":
+                    password = payload.get("password")
+                    device_name = payload.get("device_name", "")
+                    if not isinstance(password, str) or not isinstance(device_name, str) or not 1 <= len(password) <= 128:
+                        raise ValueError("invalid lock credential")
+                    result = credential_api.save_lock_password(device_id, password, device_name)
+                elif action == "clear_lock":
+                    result = credential_api.clear_lock_password(device_id)
+                else:
+                    raise ValueError("unsupported credential action")
+            except (OSError, ValueError) as exc:
+                json_response(
+                    self,
+                    HTTPStatus.BAD_REQUEST,
+                    {"ok": False, "error": str(exc)},
+                    allow_cross_origin=False,
+                )
+                return
+            json_response(self, HTTPStatus.OK, {"ok": True, "result": result}, allow_cross_origin=False)
             return
         if parsed.path == "/api/native/clipboard":
             if not self.check_local_desktop():
@@ -4612,7 +4675,7 @@ def main(argv: list[str] | None = None) -> int:
     ui_process: subprocess.Popen[Any] | None = None
     try:
         ui_process = subprocess.Popen(
-            webview_shell_command(
+            main_window_command(
                 f"http://127.0.0.1:{args.port}/?v={quote(APP_VERSION)}",
                 bool(settings.values["start_maximized"]),
             ),

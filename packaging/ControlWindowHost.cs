@@ -56,11 +56,13 @@ namespace WindowsLANRemoteControlHost
                 return false;
             }
 
-            string remote = HttpUtility.ParseQueryString(parsed.Query).Get("remote");
-            string handoff = HttpUtility.ParseQueryString(parsed.Query).Get("handoff");
-            if (!String.Equals(remote, "1", StringComparison.Ordinal) ||
-                String.IsNullOrWhiteSpace(handoff) ||
-                handoff.Length < 16 || handoff.Length > 64)
+            System.Collections.Specialized.NameValueCollection query = HttpUtility.ParseQueryString(parsed.Query);
+            string remote = query.Get("remote");
+            string handoff = query.Get("handoff");
+            bool isRemoteWindow = String.Equals(remote, "1", StringComparison.Ordinal);
+            if ((!String.IsNullOrEmpty(remote) && !isRemoteWindow) ||
+                (isRemoteWindow && (String.IsNullOrWhiteSpace(handoff) || handoff.Length < 16 || handoff.Length > 64)) ||
+                (!isRemoteWindow && !String.IsNullOrEmpty(handoff)))
             {
                 return false;
             }
@@ -78,6 +80,7 @@ namespace WindowsLANRemoteControlHost
         private readonly Uri sessionUrl;
         private readonly WebView2 browser;
         private readonly JavaScriptSerializer serializer = new JavaScriptSerializer();
+        private readonly bool remoteWindow;
         private bool fullscreen;
         private bool maximized;
         private Rectangle restoredBounds;
@@ -93,13 +96,21 @@ namespace WindowsLANRemoteControlHost
         public ControlWindow(Uri url)
         {
             sessionUrl = url;
-            Text = "LAN Remote · 远程控制";
+            System.Collections.Specialized.NameValueCollection query = HttpUtility.ParseQueryString(url.Query);
+            remoteWindow = String.Equals(query.Get("remote"), "1", StringComparison.Ordinal);
+            bool startMaximized = String.Equals(query.Get("maximized"), "1", StringComparison.Ordinal);
+            Text = remoteWindow ? "LAN Remote · 远程控制" : "LAN Remote";
             StartPosition = FormStartPosition.CenterScreen;
             FormBorderStyle = FormBorderStyle.None;
             BackColor = Color.FromArgb(15, 16, 20);
-            ClientSize = new Size(1280, 800);
-            MinimumSize = new Size(720, 480);
+            ClientSize = remoteWindow ? new Size(1280, 800) : new Size(1200, 760);
+            MinimumSize = remoteWindow ? new Size(720, 480) : new Size(920, 600);
             KeyPreview = true;
+            if (startMaximized)
+            {
+                WindowState = FormWindowState.Maximized;
+                maximized = true;
+            }
 
             browser = new WebView2();
             browser.Dock = DockStyle.Fill;
@@ -197,7 +208,7 @@ namespace WindowsLANRemoteControlHost
                     {
                         { "maximized", maximized },
                         { "fullscreen", fullscreen },
-                        { "remote_window", true }
+                        { "remote_window", remoteWindow }
                     };
                     break;
                 case "drag":
@@ -270,6 +281,16 @@ namespace WindowsLANRemoteControlHost
     pending.delete(String(id));
     resolve(result);
   };
+  const credentialCall = (action, payload = {}) => fetch('/api/native/credentials', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({action, ...payload}),
+    cache: 'no-store'
+  }).then(async (response) => {
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || !data.ok) throw new Error(data.error || 'Credential operation failed');
+    return data.result;
+  });
   window.pywebview = {api: {
     set_window_title: (title) => call('set_title', String(title || 'LAN Remote')),
     minimize_window: () => call('minimize'),
@@ -277,6 +298,16 @@ namespace WindowsLANRemoteControlHost
     toggle_fullscreen: () => call('toggle_fullscreen'),
     close_window: () => call('close'),
     window_state: () => call('window_state'),
+    credential_status: (deviceId) => credentialCall('status', {device_id: String(deviceId || '')}),
+    load_access_password: (deviceId) => credentialCall('load_access', {device_id: String(deviceId || '')}),
+    save_access_password: (deviceId, password, deviceName) => credentialCall('save_access', {
+      device_id: String(deviceId || ''), password: String(password || ''), device_name: String(deviceName || '')
+    }),
+    clear_access_password: (deviceId) => credentialCall('clear_access', {device_id: String(deviceId || '')}),
+    save_lock_password: (deviceId, password, deviceName) => credentialCall('save_lock', {
+      device_id: String(deviceId || ''), password: String(password || ''), device_name: String(deviceName || '')
+    }),
+    clear_lock_password: (deviceId) => credentialCall('clear_lock', {device_id: String(deviceId || '')}),
     try_auto_unlock: (deviceJson, token) => fetch('/api/native/try-auto-unlock', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},

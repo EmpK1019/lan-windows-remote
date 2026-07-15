@@ -5,7 +5,7 @@ $AppId = "WindowsLANRemote"
 $Publisher = "EmpK1019"
 $ServiceName = "WindowsLANRemoteSecureDesktop"
 $VersionFile = Join-Path $PSScriptRoot "VERSION.txt"
-$Version = if (Test-Path -LiteralPath $VersionFile) { (Get-Content -Raw -LiteralPath $VersionFile).Trim() } else { "0.6.5" }
+$Version = if (Test-Path -LiteralPath $VersionFile) { (Get-Content -Raw -LiteralPath $VersionFile).Trim() } else { "0.6.6" }
 
 $InstallDir = Join-Path $env:ProgramFiles $AppName
 $LegacyInstallDir = Join-Path $env:LOCALAPPDATA "Programs\$AppName"
@@ -78,7 +78,11 @@ function Reset-InstallDirectory {
     for ($Attempt = 1; $Attempt -le 12; $Attempt++) {
         try {
             if (Test-Path -LiteralPath $InstallDir) {
-                Remove-Item -LiteralPath $InstallDir -Recurse -Force
+                Get-ChildItem -LiteralPath $InstallDir -Force |
+                    Remove-Item -Recurse -Force
+            }
+            else {
+                New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
             }
             break
         }
@@ -87,23 +91,35 @@ function Reset-InstallDirectory {
             Start-Sleep -Milliseconds (350 * $Attempt)
         }
     }
-    New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
 }
 
 function Stop-InstalledProcesses {
     $Roots = @($InstallDir, $LegacyInstallDir)
-    $StoppedProcessIds = @()
+    $RootProcessIds = New-Object 'System.Collections.Generic.HashSet[int]'
     Get-Process -ErrorAction SilentlyContinue | ForEach-Object {
         try {
             $ProcessPath = $_.Path
             if ($ProcessPath -and ($Roots | Where-Object { $ProcessPath.StartsWith($_, [StringComparison]::OrdinalIgnoreCase) })) {
-                $StoppedProcessIds += $_.Id
-                Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue
+                $RootProcessIds.Add([int]$_.Id) | Out-Null
             }
         }
         catch { }
     }
-    foreach ($ProcessId in $StoppedProcessIds) {
+    $AllProcessIds = New-Object 'System.Collections.Generic.HashSet[int]'
+    foreach ($ProcessId in $RootProcessIds) { $AllProcessIds.Add($ProcessId) | Out-Null }
+    $Processes = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue)
+    do {
+        $Added = $false
+        foreach ($Process in $Processes) {
+            if ($AllProcessIds.Contains([int]$Process.ParentProcessId) -and $AllProcessIds.Add([int]$Process.ProcessId)) {
+                $Added = $true
+            }
+        }
+    } while ($Added)
+    foreach ($ProcessId in $AllProcessIds) {
+        Stop-Process -Id $ProcessId -Force -ErrorAction SilentlyContinue
+    }
+    foreach ($ProcessId in $AllProcessIds) {
         Wait-Process -Id $ProcessId -Timeout 8 -ErrorAction SilentlyContinue
     }
 }
