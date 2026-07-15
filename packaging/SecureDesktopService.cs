@@ -256,8 +256,15 @@ namespace WindowsLANRemoteSecureDesktop
                     Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
                     "Windows LAN Remote");
                 Directory.CreateDirectory(directory);
+                string logPath = Path.Combine(directory, "service.log");
+                string backupPath = Path.Combine(directory, "service.previous.log");
+                if (File.Exists(logPath) && new FileInfo(logPath).Length >= 2 * 1024 * 1024)
+                {
+                    if (File.Exists(backupPath)) File.Delete(backupPath);
+                    File.Move(logPath, backupPath);
+                }
                 File.AppendAllText(
-                    Path.Combine(directory, "service.log"),
+                    logPath,
                     "[" + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + "] " + message + Environment.NewLine,
                     Encoding.UTF8);
             }

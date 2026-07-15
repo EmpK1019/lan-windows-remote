@@ -1055,6 +1055,8 @@
       session: null,
       loadingFrame: false,
       keyboardEnabled: false,
+      remotePressedKeys: new Map(),
+      remotePressedButtons: new Map(),
       lastMoveAt: 0,
       refreshTimer: 0,
       toastTimer: 0,
@@ -1297,6 +1299,11 @@
         if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
         showToast(payload.message || "安装程序已启动，请在 UAC 窗口选择“是”");
         button.textContent = "请确认 UAC";
+        setTimeout(() => {
+          if (!button.isConnected) return;
+          button.disabled = false;
+          button.textContent = "重新下载并安装";
+        }, 22000);
       } catch (error) {
         showToast(error.message || "更新安装失败");
         button.disabled = false;
@@ -1501,6 +1508,8 @@
     }
 
     function startSession(device, token, viewOnly, authMethod = "temporary", credentialExpiresAt = null) {
+      state.remotePressedKeys.clear();
+      state.remotePressedButtons.clear();
       state.session = {device, token, viewOnly, authMethod, credentialExpiresAt, connected: true, monitorId: "all"};
       state.loadingFrame = false;
       state.keyboardEnabled = !viewOnly;
@@ -1530,6 +1539,7 @@
     }
 
     function stopSession(closeWindow = false) {
+      releaseAllRemoteInput();
       if (state.session) state.session.connected = false;
       clearTimeout(state.refreshTimer);
       resetClipboardSync();
@@ -1735,6 +1745,7 @@
 
     function openRemoteFiles() {
       if (!state.session?.connected || state.session.viewOnly) return;
+      releaseAllRemoteInput();
       $("fileDeviceName").textContent = `· ${state.session.device.name}`;
       $("fileModal").classList.add("show");
       loadRemoteDirectory(state.filePath || "");
@@ -1877,6 +1888,44 @@
       }
     }
 
+    function remoteKeyId(key, code) {
+      return code || key;
+    }
+
+    function releaseRemoteKeys() {
+      if (!state.session?.connected || state.session.viewOnly) {
+        state.remotePressedKeys.clear();
+        return;
+      }
+      const pressed = Array.from(state.remotePressedKeys.values());
+      state.remotePressedKeys.clear();
+      pressed.forEach(({key, code}) => sendInput({type: "key_up", key, code}));
+    }
+
+    function releaseRemoteButtons() {
+      if (!state.session?.connected || state.session.viewOnly) {
+        state.remotePressedButtons.clear();
+        return;
+      }
+      const pressed = Array.from(state.remotePressedButtons.values());
+      state.remotePressedButtons.clear();
+      pressed.forEach((payload) => sendInput({...payload, type: "mouse_up"}));
+    }
+
+    function releaseAllRemoteInput() {
+      releaseRemoteKeys();
+      releaseRemoteButtons();
+    }
+
+    function setKeyboardEnabled(enabled, statusText = true) {
+      const next = Boolean(enabled && state.session?.connected && !state.session.viewOnly);
+      if (!next) releaseRemoteKeys();
+      state.keyboardEnabled = next;
+      $("keyboardButton").classList.toggle("active", next);
+      if (statusText) setRemoteStatus(next ? "键盘控制已开启，按 Esc 关闭" : "键盘控制已关闭");
+      if (next) $("remoteStage").focus();
+    }
+
     function pointerPayload(event, type) {
       const point = remotePoint(event);
       if (!point) return null;
@@ -1925,6 +1974,7 @@
     $("closeSession").addEventListener("click", () => stopSession(remoteWindowMode));
     $("monitorSelect").addEventListener("change", () => {
       if (!state.session?.connected) return;
+      releaseAllRemoteInput();
       state.session.monitorId = $("monitorSelect").value || "all";
       clearTimeout(state.refreshTimer);
       state.loadingFrame = false;
@@ -2002,14 +2052,7 @@
     });
 
     $("keyboardButton").addEventListener("click", () => {
-      state.keyboardEnabled = !state.keyboardEnabled;
-      $("keyboardButton").classList.toggle("active", state.keyboardEnabled);
-      if (state.keyboardEnabled) {
-        $("remoteStage").focus();
-        setRemoteStatus("键盘控制已开启，按 Esc 关闭");
-      } else {
-        setRemoteStatus("键盘控制已关闭");
-      }
+      setKeyboardEnabled(!state.keyboardEnabled);
     });
 
     $("fullscreenButton").addEventListener("click", async () => {
@@ -2035,19 +2078,32 @@
       if (now - state.lastMoveAt < 28) return;
       state.lastMoveAt = now;
       const payload = pointerPayload(event, "mouse_move");
-      if (payload) sendInput(payload);
+      if (payload) {
+        state.remotePressedButtons.forEach((pressed, button) => {
+          state.remotePressedButtons.set(button, {...pressed, x: payload.x, y: payload.y, monitor: payload.monitor});
+        });
+        sendInput(payload);
+      }
     });
     $("remoteStage").addEventListener("pointerdown", (event) => {
       $("remoteStage").focus();
       $("remoteStage").setPointerCapture(event.pointerId);
       const payload = pointerPayload(event, "mouse_down");
-      if (payload) sendInput(payload);
+      if (payload) {
+        state.remotePressedButtons.set(event.button, payload);
+        sendInput(payload);
+      }
       event.preventDefault();
     });
     $("remoteStage").addEventListener("pointerup", (event) => {
-      const payload = pointerPayload(event, "mouse_up");
-      if (payload) sendInput(payload);
+      const payload = pointerPayload(event, "mouse_up") || state.remotePressedButtons.get(event.button);
+      state.remotePressedButtons.delete(event.button);
+      if (payload) sendInput({...payload, type: "mouse_up"});
       event.preventDefault();
+    });
+    $("remoteStage").addEventListener("pointercancel", releaseRemoteButtons);
+    $("remoteStage").addEventListener("lostpointercapture", () => {
+      if (state.remotePressedButtons.size) releaseRemoteButtons();
     });
     $("remoteStage").addEventListener("wheel", (event) => {
       const payload = pointerPayload(event, "mouse_wheel");
@@ -2059,20 +2115,31 @@
       if (!state.session?.connected || state.session.viewOnly || !state.keyboardEnabled) return;
       if ($("fileModal").classList.contains("show") || event.target.closest("input, select, textarea, button")) return;
       if (event.key === "Escape") {
-        state.keyboardEnabled = false;
-        $("keyboardButton").classList.remove("active");
-        setRemoteStatus("键盘控制已关闭");
+        setKeyboardEnabled(false);
         event.preventDefault();
         return;
       }
+      state.remotePressedKeys.set(remoteKeyId(event.key, event.code), {key: event.key, code: event.code});
       sendInput({type: "key_down", key: event.key, code: event.code});
       event.preventDefault();
     });
     window.addEventListener("keyup", (event) => {
-      if (!state.session?.connected || state.session.viewOnly || !state.keyboardEnabled) return;
-      if ($("fileModal").classList.contains("show") || event.target.closest("input, select, textarea, button")) return;
+      if (!state.session?.connected || state.session.viewOnly) return;
+      const id = remoteKeyId(event.key, event.code);
+      const pressed = state.remotePressedKeys.get(id);
+      if (pressed) {
+        state.remotePressedKeys.delete(id);
+        sendInput({type: "key_up", key: pressed.key, code: pressed.code});
+        event.preventDefault();
+        return;
+      }
+      if (!state.keyboardEnabled || $("fileModal").classList.contains("show") || event.target.closest("input, select, textarea, button")) return;
       sendInput({type: "key_up", key: event.key, code: event.code});
       event.preventDefault();
+    });
+    window.addEventListener("blur", releaseAllRemoteInput);
+    document.addEventListener("visibilitychange", () => {
+      if (document.hidden) releaseAllRemoteInput();
     });
 
     function waitForNativeBridge(timeoutMs = 60000) {

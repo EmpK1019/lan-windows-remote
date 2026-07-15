@@ -5,7 +5,7 @@ $AppId = "WindowsLANRemote"
 $Publisher = "EmpK1019"
 $ServiceName = "WindowsLANRemoteSecureDesktop"
 $VersionFile = Join-Path $PSScriptRoot "VERSION.txt"
-$Version = if (Test-Path -LiteralPath $VersionFile) { (Get-Content -Raw -LiteralPath $VersionFile).Trim() } else { "0.6.4" }
+$Version = if (Test-Path -LiteralPath $VersionFile) { (Get-Content -Raw -LiteralPath $VersionFile).Trim() } else { "0.6.5" }
 
 $InstallDir = Join-Path $env:ProgramFiles $AppName
 $LegacyInstallDir = Join-Path $env:LOCALAPPDATA "Programs\$AppName"
@@ -75,22 +75,36 @@ function Reset-InstallDirectory {
     if (-not $Actual.Equals($Expected, [StringComparison]::OrdinalIgnoreCase)) {
         throw "Refusing to replace unexpected installation directory: $Actual"
     }
-    if (Test-Path -LiteralPath $InstallDir) {
-        Remove-Item -LiteralPath $InstallDir -Recurse -Force
+    for ($Attempt = 1; $Attempt -le 12; $Attempt++) {
+        try {
+            if (Test-Path -LiteralPath $InstallDir) {
+                Remove-Item -LiteralPath $InstallDir -Recurse -Force
+            }
+            break
+        }
+        catch {
+            if ($Attempt -eq 12) { throw }
+            Start-Sleep -Milliseconds (350 * $Attempt)
+        }
     }
     New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
 }
 
 function Stop-InstalledProcesses {
     $Roots = @($InstallDir, $LegacyInstallDir)
+    $StoppedProcessIds = @()
     Get-Process -ErrorAction SilentlyContinue | ForEach-Object {
         try {
             $ProcessPath = $_.Path
             if ($ProcessPath -and ($Roots | Where-Object { $ProcessPath.StartsWith($_, [StringComparison]::OrdinalIgnoreCase) })) {
+                $StoppedProcessIds += $_.Id
                 Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue
             }
         }
         catch { }
+    }
+    foreach ($ProcessId in $StoppedProcessIds) {
+        Wait-Process -Id $ProcessId -Timeout 8 -ErrorAction SilentlyContinue
     }
 }
 

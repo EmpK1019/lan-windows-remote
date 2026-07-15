@@ -1,5 +1,5 @@
 param(
-    [string]$Version = "0.6.4",
+    [string]$Version = "0.6.5",
     [switch]$SkipDependencyInstall
 )
 
@@ -51,6 +51,21 @@ if (-not $SkipDependencyInstall) {
     & $VenvPython -m pip install -r (Join-Path $PackagingDir "requirements-build.txt")
 }
 
+$SourceText = Get-Content -Raw -Encoding UTF8 (Join-Path $Root "lan_remote.py")
+$VersionMatch = [regex]::Match($SourceText, 'APP_VERSION\s*=\s*"([^"]+)"')
+if (-not $VersionMatch.Success -or $VersionMatch.Groups[1].Value -ne $Version) {
+    throw "Build version $Version does not match lan_remote.py APP_VERSION."
+}
+
+& $VenvPython -m py_compile (Join-Path $Root "lan_remote.py") (Join-Path $Root "tests\test_lan_remote.py")
+if ($LASTEXITCODE -ne 0) {
+    throw "Python syntax validation failed with exit code $LASTEXITCODE."
+}
+& $VenvPython -m unittest discover -s (Join-Path $Root "tests") -v
+if ($LASTEXITCODE -ne 0) {
+    throw "Automated tests failed with exit code $LASTEXITCODE."
+}
+
 if (Test-Path -LiteralPath $StageDir) {
     Remove-Item -LiteralPath $StageDir -Recurse -Force
 }
@@ -97,6 +112,7 @@ $ControlHostCompilerArgs = @(
     "/win32icon:$IconPath",
     "/reference:System.Drawing.dll",
     "/reference:System.Web.Extensions.dll",
+    "/reference:System.Web.dll",
     "/reference:System.Windows.Forms.dll",
     "/reference:$((Join-Path $WebViewLibDir 'Microsoft.Web.WebView2.Core.dll'))",
     "/reference:$((Join-Path $WebViewLibDir 'Microsoft.Web.WebView2.WinForms.dll'))",
@@ -106,10 +122,43 @@ $ControlHostCompilerArgs = @(
 if ($LASTEXITCODE -ne 0) {
     throw "Native control window host compilation failed with exit code $LASTEXITCODE."
 }
+if (-not (Test-Path -LiteralPath $ControlHostPath)) {
+    throw "Native control window host was not created at $ControlHostPath"
+}
 
 Copy-Item -LiteralPath (Join-Path $WebViewLibDir "Microsoft.Web.WebView2.Core.dll") -Destination $PortableDir -Force
 Copy-Item -LiteralPath (Join-Path $WebViewLibDir "Microsoft.Web.WebView2.WinForms.dll") -Destination $PortableDir -Force
 Copy-Item -LiteralPath (Join-Path $WebViewLibDir "runtimes\win-x64\native\WebView2Loader.dll") -Destination $PortableDir -Force
+
+$ControlHostTestPath = Join-Path $BuildDir "ControlWindowHostTests.exe"
+& $CscPath `
+    /nologo `
+    /target:exe `
+    "/out:$ControlHostTestPath" `
+    /reference:System.Drawing.dll `
+    /reference:System.Windows.Forms.dll `
+    (Join-Path $Root "tests\ControlWindowHostTests.cs")
+if ($LASTEXITCODE -ne 0) {
+    throw "Control window host test compilation failed with exit code $LASTEXITCODE."
+}
+& $ControlHostTestPath $ControlHostPath
+if ($LASTEXITCODE -ne 0) {
+    throw "Control window host state tests failed with exit code $LASTEXITCODE."
+}
+
+foreach ($InteractiveTest in @("PackagedKeyboardE2ETests", "PackagedMouseE2ETests")) {
+    $InteractiveTestPath = Join-Path $BuildDir "$InteractiveTest.exe"
+    & $CscPath `
+        /nologo `
+        /target:exe `
+        "/out:$InteractiveTestPath" `
+        /reference:System.Drawing.dll `
+        /reference:System.Windows.Forms.dll `
+        (Join-Path $Root "tests\$InteractiveTest.cs")
+    if ($LASTEXITCODE -ne 0) {
+        throw "$InteractiveTest compilation failed with exit code $LASTEXITCODE."
+    }
+}
 
 $StagedAppDir = Join-Path $StageDir "app"
 Copy-Item -LiteralPath $PortableDir -Destination $StagedAppDir -Recurse -Force
@@ -162,7 +211,27 @@ if (-not (Test-Path -LiteralPath $InstallerPath)) {
     throw "Installer was not created at $InstallerPath"
 }
 
+$LaunchProbe = Start-Process -FilePath $InstallerPath -ArgumentList "--launch-probe" -WindowStyle Hidden -Wait -PassThru
+if ($LaunchProbe.ExitCode -ne 0) {
+    throw "Installer launch probe failed with exit code $($LaunchProbe.ExitCode)."
+}
+
+$RequiredPortableFiles = @(
+    $PortableExecutable,
+    $ControlHostPath,
+    (Join-Path $PortableDir "Microsoft.Web.WebView2.Core.dll"),
+    (Join-Path $PortableDir "Microsoft.Web.WebView2.WinForms.dll"),
+    (Join-Path $PortableDir "WebView2Loader.dll")
+)
+foreach ($RequiredFile in $RequiredPortableFiles) {
+    if (-not (Test-Path -LiteralPath $RequiredFile)) {
+        throw "Build output is incomplete: $RequiredFile"
+    }
+}
+
 Write-Host "Built:"
 Write-Host "  $PortableArchive"
 Write-Host "  $ServicePath"
 Write-Host "  $InstallerPath"
+Get-FileHash -Algorithm SHA256 $PortableArchive, $ServicePath, $InstallerPath |
+    ForEach-Object { Write-Host "  SHA256 $([IO.Path]::GetFileName($_.Path)) $($_.Hash)" }

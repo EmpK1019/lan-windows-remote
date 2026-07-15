@@ -6,6 +6,7 @@ using System.Reflection;
 using System.Security.Principal;
 using System.Text;
 using System.Threading;
+using System.Threading.Tasks;
 using System.Windows.Forms;
 
 namespace WindowsLANRemoteSetup
@@ -62,9 +63,12 @@ namespace WindowsLANRemoteSetup
                         throw new InvalidOperationException("Could not start installer payload.");
                     }
 
-                    string standardOutput = process.StandardOutput.ReadToEnd();
-                    string standardError = process.StandardError.ReadToEnd();
+                    Task<string> standardOutputTask = process.StandardOutput.ReadToEndAsync();
+                    Task<string> standardErrorTask = process.StandardError.ReadToEndAsync();
                     process.WaitForExit();
+                    Task.WaitAll(standardOutputTask, standardErrorTask);
+                    string standardOutput = standardOutputTask.Result;
+                    string standardError = standardErrorTask.Result;
                     if (process.ExitCode != 0)
                     {
                         string details = !String.IsNullOrWhiteSpace(standardError) ? standardError : standardOutput;

@@ -33,7 +33,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from http import HTTPStatus
-from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
@@ -52,7 +52,7 @@ if platform.system() == "Windows":
 
 
 APP_NAME = "Windows LAN Remote"
-APP_VERSION = "0.6.4"
+APP_VERSION = "0.6.5"
 GITHUB_REPOSITORY = "EmpK1019/lan-windows-remote"
 GITHUB_LATEST_RELEASE_API = f"https://api.github.com/repos/{GITHUB_REPOSITORY}/releases/latest"
 DEFAULT_PORT = 8765
@@ -69,10 +69,32 @@ MAX_CLIPBOARD_CHARS = 1_000_000
 MAX_CLIPBOARD_PAYLOAD_BYTES = MAX_CLIPBOARD_CHARS * 4 + 1024
 MAX_FILE_TRANSFER_BYTES = 2 * 1024 * 1024 * 1024
 FILE_TRANSFER_CHUNK_BYTES = 1024 * 1024
+CLIENT_SOCKET_TIMEOUT_SECONDS = 30
 REMOTE_WINDOW_HANDOFF_TTL_SECONDS = 60
+MAX_SESSION_TOKENS = 512
+MAX_REMOTE_WINDOW_HANDOFFS = 64
+AUTH_FAILURE_LIMIT = 6
+AUTH_FAILURE_WINDOW_SECONDS = 60
+AUTH_FAILURE_BLOCK_SECONDS = 30
+UPDATE_INSTALL_RETRY_SECONDS = 20
+LOCAL_DESKTOP_PATHS = frozenset(
+    {
+        "/api/devices",
+        "/api/local-access-code",
+        "/api/remote-window/session",
+        "/api/remote-window/open",
+        "/api/settings",
+        "/api/update",
+        "/api/update/install",
+        "/api/native/clipboard",
+        "/api/native/try-auto-unlock",
+    }
+)
 SCREEN_LOCK = threading.Lock()
 CLIPBOARD_LOCK = threading.Lock()
 GDIPLUS_LOCK = threading.Lock()
+FILE_UPLOAD_LOCK = threading.Lock()
+ACTIVE_FILE_UPLOADS: set[Path] = set()
 GDIPLUS_TOKEN = ctypes.c_void_p()
 GDIPLUS_STARTED = False
 
@@ -248,6 +270,8 @@ INDEX_HTML = r"""<!doctype html>
         return;
       }
       connected = true;
+      keyboardEnabled = !viewOnly;
+      keyboardButton.classList.toggle("active", keyboardEnabled);
       empty.classList.add("hidden");
       setStatus("正在连接...");
       refreshScreen();
@@ -596,6 +620,7 @@ class DiscoveryRegistry:
 class SettingsStore:
     DEFAULTS: dict[str, Any] = {
         "device_name": "",
+        "device_id": "",
         "view_only": False,
         "discovery_enabled": True,
         "frame_delay_ms": 120,
@@ -621,6 +646,53 @@ class SettingsStore:
                         self.values[key] = payload[key]
         except (OSError, ValueError, TypeError):
             pass
+        self._normalize_loaded_values()
+
+    def _normalize_loaded_values(self) -> None:
+        boolean_keys = {
+            "view_only",
+            "discovery_enabled",
+            "remember_codes",
+            "launch_at_login",
+            "start_maximized",
+            "reduce_motion",
+            "auto_check_updates",
+            "secure_desktop_enabled",
+        }
+        for key in boolean_keys:
+            if not isinstance(self.values.get(key), bool):
+                self.values[key] = self.DEFAULTS[key]
+        device_name = self.values.get("device_name")
+        if not isinstance(device_name, str) or len(device_name.strip()) > 64:
+            self.values["device_name"] = self.DEFAULTS["device_name"]
+        else:
+            self.values["device_name"] = device_name.strip()
+        device_id = self.values.get("device_id")
+        if (
+            not isinstance(device_id, str)
+            or len(device_id) != 12
+            or any(character not in "0123456789abcdef" for character in device_id.lower())
+        ):
+            self.values["device_id"] = ""
+        else:
+            self.values["device_id"] = device_id.lower()
+        try:
+            frame_delay = int(self.values.get("frame_delay_ms"))
+        except (TypeError, ValueError):
+            frame_delay = int(self.DEFAULTS["frame_delay_ms"])
+        self.values["frame_delay_ms"] = frame_delay if frame_delay in {80, 120, 220} else 120
+        for key in ("permanent_password_salt", "permanent_password_hash"):
+            if not isinstance(self.values.get(key), str):
+                self.values[key] = ""
+        try:
+            salt = base64.b64decode(self.values["permanent_password_salt"], validate=True)
+            digest = base64.b64decode(self.values["permanent_password_hash"], validate=True)
+            password_record_valid = len(salt) == 16 and len(digest) == hashlib.sha256().digest_size
+        except (ValueError, TypeError):
+            password_record_valid = False
+        if not password_record_valid:
+            self.values["permanent_password_salt"] = ""
+            self.values["permanent_password_hash"] = ""
 
     def save(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -728,12 +800,21 @@ class ServerState:
     permanent_auth_cache: dict[str, tuple[str, float]] = field(default_factory=dict, repr=False)
     permanent_auth_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
     permanent_auth_secret: bytes = field(default_factory=lambda: secrets.token_bytes(32), repr=False)
+    permanent_verify_slots: threading.BoundedSemaphore = field(
+        default_factory=lambda: threading.BoundedSemaphore(2),
+        repr=False,
+    )
+    auth_failures: dict[str, tuple[int, float, float]] = field(default_factory=dict, repr=False)
+    auth_failure_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
     session_tokens: dict[str, tuple[str, float, str]] = field(default_factory=dict, repr=False)
     session_token_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
     remote_window_sessions: dict[str, tuple[dict[str, Any], float]] = field(default_factory=dict, repr=False)
     remote_window_session_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
     credential_api: Any = field(default=None, repr=False)
     credential_api_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+    update_install_started: bool = field(default=False, repr=False)
+    update_install_started_at: float = field(default=0.0, repr=False)
+    update_install_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
     def get_credential_api(self) -> Any:
         with self.credential_api_lock:
@@ -754,7 +835,33 @@ class ServerState:
             self.token_expires_at = time.time() + TEMPORARY_ACCESS_CODE_TTL_SECONDS
             return self.token, self.token_expires_at
 
-    def authenticate(self, supplied: str) -> dict[str, Any] | None:
+    def _permanent_auth_allowed(self, client_id: str, now: float) -> bool:
+        key = client_id or "unknown"
+        with self.auth_failure_lock:
+            item = self.auth_failures.get(key)
+            if item is None:
+                return True
+            count, window_started, blocked_until = item
+            if blocked_until > now:
+                return False
+            if now - window_started > AUTH_FAILURE_WINDOW_SECONDS:
+                self.auth_failures.pop(key, None)
+                return True
+            return count < AUTH_FAILURE_LIMIT
+
+    def _record_permanent_auth_failure(self, client_id: str, now: float) -> None:
+        key = client_id or "unknown"
+        with self.auth_failure_lock:
+            count, window_started, _ = self.auth_failures.get(key, (0, now, 0.0))
+            if now - window_started > AUTH_FAILURE_WINDOW_SECONDS:
+                count, window_started = 0, now
+            count += 1
+            blocked_until = now + AUTH_FAILURE_BLOCK_SECONDS if count >= AUTH_FAILURE_LIMIT else 0.0
+            if len(self.auth_failures) >= 256 and key not in self.auth_failures:
+                self.auth_failures.pop(next(iter(self.auth_failures)), None)
+            self.auth_failures[key] = (count, window_started, blocked_until)
+
+    def authenticate(self, supplied: str, client_id: str = "") -> dict[str, Any] | None:
         temporary_code, expires_at = self.temporary_access_code()
         now = time.time()
         password_marker = str(self.settings.values.get("permanent_password_hash", ""))
@@ -772,18 +879,32 @@ class ServerState:
             return {"auth_method": "temporary", "credential_expires_at": int(expires_at * 1000)}
         if not supplied:
             return None
+        if not password_marker:
+            return None
         cache_key = hmac.new(self.permanent_auth_secret, supplied.encode("utf-8"), hashlib.sha256).hexdigest()
         with self.permanent_auth_lock:
             cached = self.permanent_auth_cache.get(cache_key)
             if cached and cached[0] == password_marker and cached[1] > now:
                 return {"auth_method": "permanent", "credential_expires_at": None}
-        if self.settings.verify_permanent_password(supplied):
-            with self.permanent_auth_lock:
-                if len(self.permanent_auth_cache) >= 16:
-                    self.permanent_auth_cache.clear()
-                self.permanent_auth_cache[cache_key] = (password_marker, now + 12 * 60 * 60)
-            return {"auth_method": "permanent", "credential_expires_at": None}
-        return None
+        if not self._permanent_auth_allowed(client_id, now):
+            return None
+        if not self.permanent_verify_slots.acquire(blocking=False):
+            return None
+        try:
+            if not self._permanent_auth_allowed(client_id, time.time()):
+                return None
+            if self.settings.verify_permanent_password(supplied):
+                with self.auth_failure_lock:
+                    self.auth_failures.pop(client_id or "unknown", None)
+                with self.permanent_auth_lock:
+                    if len(self.permanent_auth_cache) >= 16:
+                        self.permanent_auth_cache.clear()
+                    self.permanent_auth_cache[cache_key] = (password_marker, now + 12 * 60 * 60)
+                return {"auth_method": "permanent", "credential_expires_at": None}
+            self._record_permanent_auth_failure(client_id, time.time())
+            return None
+        finally:
+            self.permanent_verify_slots.release()
 
     def create_session_token(self, authentication: dict[str, Any]) -> str:
         method = str(authentication.get("auth_method", ""))
@@ -804,6 +925,8 @@ class ServerState:
                 for key, value in self.session_tokens.items()
                 if value[1] > now
             }
+            while len(self.session_tokens) >= MAX_SESSION_TOKENS:
+                self.session_tokens.pop(next(iter(self.session_tokens)), None)
             self.session_tokens[session_token] = (method, expires_at, marker)
         return session_token
 
@@ -816,6 +939,8 @@ class ServerState:
                 for key, value in self.remote_window_sessions.items()
                 if value[1] > now
             }
+            while len(self.remote_window_sessions) >= MAX_REMOTE_WINDOW_HANDOFFS:
+                self.remote_window_sessions.pop(next(iter(self.remote_window_sessions)), None)
             self.remote_window_sessions[handoff_id] = (
                 payload,
                 now + REMOTE_WINDOW_HANDOFF_TTL_SECONDS,
@@ -881,6 +1006,19 @@ def get_lan_ips() -> list[str]:
 def stable_device_id(device_name: str) -> str:
     seed = f"{device_name}|{uuid.getnode():012x}".encode("utf-8", "replace")
     return hashlib.sha256(seed).hexdigest()[:12]
+
+
+def persistent_device_id(settings: SettingsStore, device_name: str) -> str:
+    stored = str(settings.values.get("device_id", ""))
+    if len(stored) == 12 and all(character in "0123456789abcdef" for character in stored):
+        return stored
+    generated = stable_device_id(device_name)
+    settings.values["device_id"] = generated
+    try:
+        settings.save()
+    except OSError:
+        pass
+    return generated
 
 
 def generate_access_code() -> str:
@@ -974,6 +1112,13 @@ def download_and_launch_update(release: dict[str, Any]) -> Path:
 
     destination = Path(tempfile.gettempdir()) / f"WindowsLANRemoteSetup-{latest_version}.exe"
     expected_digest = str(release.get("installer_digest", "")).strip().lower()
+    digest_hex = expected_digest.removeprefix("sha256:")
+    if (
+        not expected_digest.startswith("sha256:")
+        or len(digest_hex) != 64
+        or any(character not in "0123456789abcdef" for character in digest_hex)
+    ):
+        raise RuntimeError("GitHub 发布信息缺少有效的安装包 SHA-256 摘要")
     try:
         asset_size = int(release.get("installer_size", 0) or 0)
     except (TypeError, ValueError):
@@ -1008,7 +1153,7 @@ def download_and_launch_update(release: dict[str, Any]) -> Path:
                 raise RuntimeError("安装包下载不完整")
             if asset_size and total != asset_size:
                 raise RuntimeError("安装包大小与 GitHub 发布信息不一致")
-            if expected_digest.startswith("sha256:") and not hmac.compare_digest(
+            if not hmac.compare_digest(
                 f"sha256:{digest.hexdigest()}",
                 expected_digest,
             ):
@@ -1166,6 +1311,28 @@ def is_local_machine_client(raw_ip: str) -> bool:
             return True
         return str(address) in get_lan_ips()
     except ValueError:
+        return False
+
+
+def is_trusted_local_origin(value: str, port: int) -> bool:
+    try:
+        parsed = urlparse(value)
+        host = (parsed.hostname or "").lower()
+        if host == "localhost":
+            loopback = True
+        else:
+            address = ipaddress.ip_address(host)
+            if getattr(address, "ipv4_mapped", None):
+                address = address.ipv4_mapped
+            loopback = address.is_loopback
+        return (
+            parsed.scheme == "http"
+            and loopback
+            and parsed.port == port
+            and not parsed.username
+            and not parsed.password
+        )
+    except (ValueError, TypeError):
         return False
 
 
@@ -1818,18 +1985,25 @@ def write_text_clipboard(text: str) -> int:
             kernel32.GlobalFree(memory)
 
 
+def local_drive_type(path: Path) -> int:
+    anchor = path.anchor
+    if not anchor:
+        return 0
+    return int(ctypes.windll.kernel32.GetDriveTypeW(str(anchor)))
+
+
 def local_file_path(value: str, *, must_exist: bool = True) -> Path:
     if not value:
         path = Path.home()
     else:
         path = Path(value).expanduser()
-    if not path.is_absolute() or str(path).startswith("\\\\"):
+    if not path.is_absolute() or str(path).startswith("\\\\") or local_drive_type(path) == 4:
         raise ValueError("只允许访问本机磁盘上的绝对路径")
     try:
         resolved = path.resolve(strict=must_exist)
     except OSError as exc:
         raise ValueError("文件路径不存在或无法访问") from exc
-    if str(resolved).startswith("\\\\"):
+    if str(resolved).startswith("\\\\") or local_drive_type(resolved) == 4:
         raise ValueError("不允许访问网络共享路径")
     return resolved
 
@@ -1855,6 +2029,8 @@ def file_browser_roots() -> list[dict[str, str]]:
     for index in range(26):
         if mask & (1 << index):
             drive = f"{chr(65 + index)}:\\"
+            if local_drive_type(Path(drive)) in {0, 1, 4}:
+                continue
             if Path(drive).resolve() == home:
                 continue
             roots.append({"name": f"本地磁盘 ({drive[:2]})", "path": drive})
@@ -2131,6 +2307,8 @@ def send_mouse_event(payload: dict[str, Any]) -> None:
         return
     if event_type == "mouse_wheel":
         delta = int(payload.get("delta", 0))
+        if delta == 0:
+            return
         wheel_delta = -120 if delta > 0 else 120
         user32.mouse_event(0x0800, 0, 0, wheel_delta, 0)
         return
@@ -2180,7 +2358,41 @@ def send_unicode_text(text: str) -> None:
         raise ctypes.WinError()
 
 
+def validate_remote_input_payload(payload: dict[str, Any]) -> None:
+    input_type = payload.get("type")
+    if input_type not in {"mouse_move", "mouse_down", "mouse_up", "mouse_wheel", "key_down", "key_up", "key_press", "text"}:
+        raise ValueError("unsupported input type")
+    if input_type.startswith("mouse_"):
+        for key in ("x", "y"):
+            value = payload.get(key, 0)
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise ValueError(f"mouse {key} must be numeric")
+        monitor = payload.get("monitor", "all")
+        if not isinstance(monitor, str) or len(monitor) > 128:
+            raise ValueError("invalid monitor id")
+        if input_type in {"mouse_down", "mouse_up"}:
+            button = payload.get("button", 0)
+            if isinstance(button, bool) or not isinstance(button, int) or button not in {0, 1, 2}:
+                raise ValueError("invalid mouse button")
+        if input_type == "mouse_wheel":
+            delta = payload.get("delta", 0)
+            if isinstance(delta, bool) or not isinstance(delta, (int, float)):
+                raise ValueError("mouse wheel delta must be numeric")
+    elif input_type in {"key_down", "key_up", "key_press"}:
+        key = payload.get("key", "")
+        code = payload.get("code", "")
+        if not isinstance(key, str) or not isinstance(code, str) or len(key) > 64 or len(code) > 64:
+            raise ValueError("invalid keyboard input")
+        if not key and not code:
+            raise ValueError("keyboard key is required")
+    else:
+        text = payload.get("text")
+        if not isinstance(text, str) or not 1 <= len(text) <= 256:
+            raise ValueError("text input length is invalid")
+
+
 def handle_remote_input(payload: dict[str, Any]) -> None:
+    validate_remote_input_payload(payload)
     input_type = str(payload.get("type", ""))
     if input_type.startswith("mouse_"):
         send_mouse_event(payload)
@@ -2197,7 +2409,8 @@ class SecureDesktopState:
     secret: str
 
 
-class SecureDesktopServer(HTTPServer):
+class SecureDesktopServer(ThreadingHTTPServer):
+    daemon_threads = True
 
     def __init__(
         self,
@@ -2212,6 +2425,10 @@ class SecureDesktopServer(HTTPServer):
 class SecureDesktopHandler(BaseHTTPRequestHandler):
     server: SecureDesktopServer
     server_version = "LANRemoteSecure/0.5"
+
+    def setup(self) -> None:
+        super().setup()
+        self.connection.settimeout(CLIENT_SOCKET_TIMEOUT_SECONDS)
 
     def log_message(self, format: str, *args: Any) -> None:
         return
@@ -2274,10 +2491,14 @@ class SecureDesktopHandler(BaseHTTPRequestHandler):
             json_response(self, HTTPStatus.BAD_REQUEST, {"ok": False, "error": "invalid payload"}, False)
             return
         try:
-            payload = json.loads((self.rfile.read(length) if length else b"{}").decode("utf-8"))
+            raw_body = self.rfile.read(length) if length else b"{}"
+            payload = json.loads(raw_body.decode("utf-8"))
             if not isinstance(payload, dict):
                 raise ValueError("object required")
             handle_remote_input(payload)
+        except (OSError, TimeoutError):
+            json_response(self, HTTPStatus.REQUEST_TIMEOUT, {"ok": False, "error": "request body timed out"}, False)
+            return
         except (UnicodeDecodeError, ValueError, json.JSONDecodeError) as exc:
             json_response(self, HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(exc)}, False)
             return
@@ -2612,10 +2833,15 @@ class RemoteHandler(BaseHTTPRequestHandler):
     server: RemoteServer
     server_version = "LANRemote/0.2"
 
+    def setup(self) -> None:
+        super().setup()
+        self.connection.settimeout(CLIENT_SOCKET_TIMEOUT_SECONDS)
+
     def log_message(self, format: str, *args: Any) -> None:
         # Screen polling and input are both high-frequency. Screen URLs also
         # carry the one-time token, so never echo those request paths.
         if urlparse(self.path).path in {
+            "/health",
             "/screen",
             "/input",
             "/clipboard",
@@ -2634,8 +2860,11 @@ class RemoteHandler(BaseHTTPRequestHandler):
     def do_OPTIONS(self) -> None:
         if not self.check_client_allowed():
             return
+        path = urlparse(self.path).path
+        if path in LOCAL_DESKTOP_PATHS and not self.check_local_desktop():
+            return
         self.send_response(HTTPStatus.NO_CONTENT)
-        send_common_headers(self)
+        send_common_headers(self, allow_cross_origin=path not in LOCAL_DESKTOP_PATHS)
         self.send_header("Content-Length", "0")
         self.end_headers()
 
@@ -2667,6 +2896,8 @@ class RemoteHandler(BaseHTTPRequestHandler):
             self.wfile.write(icon_data)
             return
         if parsed.path == "/api/devices":
+            if not self.check_local_desktop():
+                return
             ips = get_lan_ips()
             local_device = {
                 "id": self.server.state.device_id,
@@ -2678,16 +2909,15 @@ class RemoteHandler(BaseHTTPRequestHandler):
                 "is_self": True,
             }
             devices = [local_device, *self.server.state.registry.online_devices()]
-            json_response(self, HTTPStatus.OK, {"ok": True, "devices": devices})
+            json_response(
+                self,
+                HTTPStatus.OK,
+                {"ok": True, "devices": devices},
+                allow_cross_origin=False,
+            )
             return
         if parsed.path == "/api/local-access-code":
-            if not is_local_machine_client(self.client_address[0]):
-                json_response(
-                    self,
-                    HTTPStatus.FORBIDDEN,
-                    {"ok": False, "error": "access code is only available on this computer"},
-                    allow_cross_origin=False,
-                )
+            if not self.check_local_desktop():
                 return
             access_code, expires_at = self.server.state.temporary_access_code()
             json_response(
@@ -2879,6 +3109,9 @@ class RemoteHandler(BaseHTTPRequestHandler):
                     data, content_type = capture_secure_desktop(monitor_id)
                 else:
                     data, content_type = capture_screen_image(monitor_id)
+            except ValueError as exc:
+                json_response(self, HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(exc)})
+                return
             except Exception as exc:
                 json_response(self, HTTPStatus.INTERNAL_SERVER_ERROR, {"ok": False, "error": str(exc)})
                 return
@@ -2990,9 +3223,27 @@ class RemoteHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/update/install":
             if not self.check_local_desktop():
                 return
+            with self.server.state.update_install_lock:
+                now = time.time()
+                if (
+                    self.server.state.update_install_started
+                    and now - self.server.state.update_install_started_at < UPDATE_INSTALL_RETRY_SECONDS
+                ):
+                    json_response(
+                        self,
+                        HTTPStatus.CONFLICT,
+                        {"ok": False, "error": "更新安装程序已经启动"},
+                        allow_cross_origin=False,
+                    )
+                    return
+                self.server.state.update_install_started = True
+                self.server.state.update_install_started_at = now
             try:
                 release = latest_release()
                 if not release.get("update_available"):
+                    with self.server.state.update_install_lock:
+                        self.server.state.update_install_started = False
+                        self.server.state.update_install_started_at = 0.0
                     json_response(
                         self,
                         HTTPStatus.CONFLICT,
@@ -3002,10 +3253,24 @@ class RemoteHandler(BaseHTTPRequestHandler):
                     return
                 download_and_launch_update(release)
             except RuntimeError as exc:
+                with self.server.state.update_install_lock:
+                    self.server.state.update_install_started = False
+                    self.server.state.update_install_started_at = 0.0
                 json_response(
                     self,
                     HTTPStatus.BAD_GATEWAY,
                     {"ok": False, "error": str(exc)},
+                    allow_cross_origin=False,
+                )
+                return
+            except Exception:
+                with self.server.state.update_install_lock:
+                    self.server.state.update_install_started = False
+                    self.server.state.update_install_started_at = 0.0
+                json_response(
+                    self,
+                    HTTPStatus.INTERNAL_SERVER_ERROR,
+                    {"ok": False, "error": "更新安装程序启动失败"},
                     allow_cross_origin=False,
                 )
                 return
@@ -3075,6 +3340,7 @@ class RemoteHandler(BaseHTTPRequestHandler):
             return
 
         try:
+            validate_remote_input_payload(payload)
             if secure_desktop_active():
                 if not self.server.state.settings.values["secure_desktop_enabled"]:
                     json_response(self, HTTPStatus.LOCKED, {"ok": False, "error": "secure desktop control disabled"})
@@ -3082,6 +3348,9 @@ class RemoteHandler(BaseHTTPRequestHandler):
                 send_secure_input(payload)
             else:
                 handle_remote_input(payload)
+        except ValueError as exc:
+            json_response(self, HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(exc)})
+            return
         except Exception as exc:
             json_response(self, HTTPStatus.INTERNAL_SERVER_ERROR, {"ok": False, "error": str(exc)})
             return
@@ -3097,6 +3366,8 @@ class RemoteHandler(BaseHTTPRequestHandler):
             return
         query = parse_qs(parsed.query)
         temporary: Path | None = None
+        destination: Path | None = None
+        reserved = False
         try:
             directory = local_file_path(query.get("path", [""])[0])
             if not directory.is_dir():
@@ -3106,6 +3377,12 @@ class RemoteHandler(BaseHTTPRequestHandler):
             if destination.parent != directory.resolve():
                 raise ValueError("上传路径无效")
             overwrite = query.get("overwrite", ["0"])[0] == "1"
+            with FILE_UPLOAD_LOCK:
+                if destination in ACTIVE_FILE_UPLOADS:
+                    json_response(self, HTTPStatus.CONFLICT, {"ok": False, "error": "upload already in progress"})
+                    return
+                ACTIVE_FILE_UPLOADS.add(destination)
+                reserved = True
             if destination.exists() and not overwrite:
                 json_response(self, HTTPStatus.CONFLICT, {"ok": False, "error": "同名文件已存在"})
                 return
@@ -3126,7 +3403,7 @@ class RemoteHandler(BaseHTTPRequestHandler):
                     remaining -= len(chunk)
             os.replace(temporary, destination)
             temporary = None
-        except (ConnectionError, OSError, ValueError) as exc:
+        except (ConnectionError, OSError, TimeoutError, ValueError) as exc:
             if temporary:
                 try:
                     temporary.unlink(missing_ok=True)
@@ -3134,6 +3411,10 @@ class RemoteHandler(BaseHTTPRequestHandler):
                     pass
             json_response(self, HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(exc)})
             return
+        finally:
+            if reserved and destination is not None:
+                with FILE_UPLOAD_LOCK:
+                    ACTIVE_FILE_UPLOADS.discard(destination)
         json_response(
             self,
             HTTPStatus.OK,
@@ -3149,7 +3430,11 @@ class RemoteHandler(BaseHTTPRequestHandler):
         if length < 0 or length > max_bytes:
             json_response(self, HTTPStatus.REQUEST_ENTITY_TOO_LARGE, {"ok": False, "error": "payload too large"})
             return None
-        raw_body = self.rfile.read(length) if length else b"{}"
+        try:
+            raw_body = self.rfile.read(length) if length else b"{}"
+        except (OSError, TimeoutError):
+            json_response(self, HTTPStatus.REQUEST_TIMEOUT, {"ok": False, "error": "request body timed out"})
+            return None
         try:
             payload = json.loads(raw_body.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError):
@@ -3163,7 +3448,16 @@ class RemoteHandler(BaseHTTPRequestHandler):
     def update_settings(self, payload: dict[str, Any]) -> None:
         state = self.server.state
         values = state.settings.values
-        device_name = str(payload.get("device_name", state.device_name)).strip()
+        raw_device_name = payload.get("device_name", state.device_name)
+        if not isinstance(raw_device_name, str):
+            json_response(
+                self,
+                HTTPStatus.BAD_REQUEST,
+                {"ok": False, "error": "设备名格式无效"},
+                allow_cross_origin=False,
+            )
+            return
+        device_name = raw_device_name.strip()
         if not 1 <= len(device_name) <= 64:
             json_response(
                 self,
@@ -3225,6 +3519,14 @@ class RemoteHandler(BaseHTTPRequestHandler):
                 allow_cross_origin=False,
             )
             return
+        if payload.get("regenerate_access_code") not in {None, False, True}:
+            json_response(
+                self,
+                HTTPStatus.BAD_REQUEST,
+                {"ok": False, "error": "刷新临时访问码参数无效"},
+                allow_cross_origin=False,
+            )
+            return
         if permanent_password is not None and payload.get("clear_permanent_password") is True:
             json_response(
                 self,
@@ -3234,29 +3536,41 @@ class RemoteHandler(BaseHTTPRequestHandler):
             )
             return
 
-        state.device_name = device_name
-        state.view_only = bool(payload.get("view_only", state.view_only))
-        values["device_name"] = device_name
-        values["view_only"] = state.view_only
-        values["frame_delay_ms"] = frame_delay
-        for key in boolean_keys - {"view_only", "launch_at_login"}:
-            if key in payload:
-                values[key] = payload[key]
-        launch_at_login = bool(payload.get("launch_at_login", startup_enabled()))
+        original_values = dict(values)
+        original_device_name = state.device_name
+        original_view_only = state.view_only
+        original_startup = startup_enabled()
+        launch_at_login = bool(payload.get("launch_at_login", original_startup))
         try:
+            state.device_name = device_name
+            state.view_only = bool(payload.get("view_only", state.view_only))
+            values["device_name"] = device_name
+            values["view_only"] = state.view_only
+            values["frame_delay_ms"] = frame_delay
+            for key in boolean_keys - {"view_only", "launch_at_login"}:
+                if key in payload:
+                    values[key] = payload[key]
             set_startup_enabled(launch_at_login)
             values["launch_at_login"] = launch_at_login
-            if payload.get("regenerate_access_code") is True:
-                state.rotate_temporary_access_code()
             if permanent_password is not None:
                 state.settings.set_permanent_password(permanent_password)
             elif payload.get("clear_permanent_password") is True:
                 state.settings.clear_permanent_password()
+            state.settings.save()
+            if payload.get("regenerate_access_code") is True:
+                state.rotate_temporary_access_code()
             if self.server.discovery_service:
                 self.server.discovery_service.update_identity(state.device_name, state.view_only)
                 self.server.discovery_service.set_enabled(bool(values["discovery_enabled"]))
-            state.settings.save()
         except OSError as exc:
+            values.clear()
+            values.update(original_values)
+            state.device_name = original_device_name
+            state.view_only = original_view_only
+            try:
+                set_startup_enabled(original_startup)
+            except OSError:
+                pass
             json_response(
                 self,
                 HTTPStatus.INTERNAL_SERVER_ERROR,
@@ -3273,7 +3587,10 @@ class RemoteHandler(BaseHTTPRequestHandler):
 
     def check_local_desktop(self) -> bool:
         if is_local_machine_client(self.client_address[0]):
-            return True
+            origin = self.headers.get("Origin", "").strip()
+            fetch_site = self.headers.get("Sec-Fetch-Site", "").strip().lower()
+            if (not origin or is_trusted_local_origin(origin, self.server.state.port)) and fetch_site != "cross-site":
+                return True
         json_response(
             self,
             HTTPStatus.FORBIDDEN,
@@ -3293,7 +3610,7 @@ class RemoteHandler(BaseHTTPRequestHandler):
         header_token = self.headers.get("X-Remote-Token", "")
         body_token = str((payload or {}).get("token", ""))
         supplied = query_token or header_token or body_token
-        authentication = self.server.state.authenticate(supplied)
+        authentication = self.server.state.authenticate(supplied, self.client_address[0])
         if authentication is not None:
             return authentication
         json_response(self, HTTPStatus.UNAUTHORIZED, {"ok": False, "error": "bad token"})
@@ -3377,7 +3694,7 @@ class RemoteSessionWindow(tk.Toplevel):
         self.token = token
         self.view_only = view_only
         self.active = True
-        self.keyboard_enabled = False
+        self.keyboard_enabled = not view_only
         self.fullscreen_enabled = False
         self.last_move_at = 0.0
         self.latest_lock = threading.Lock()
@@ -3409,9 +3726,9 @@ class RemoteSessionWindow(tk.Toplevel):
         if not view_only:
             self.keyboard_button = tk.Button(
                 toolbar,
-                text="键盘控制：关",
+                text="键盘控制：开",
                 command=self.toggle_keyboard,
-                bg="#262930",
+                bg="#176b4d",
                 fg="#e6e8ed",
                 activebackground="#30343d",
                 activeforeground="white",
@@ -4252,7 +4569,7 @@ def main(argv: list[str] | None = None) -> int:
         view_only=view_only,
         allow_non_lan=bool(args.allow_non_lan),
         started_at=time.time(),
-        device_id=stable_device_id(device_name),
+        device_id=persistent_device_id(settings, device_name),
         device_name=device_name,
         port=args.port,
         registry=registry,

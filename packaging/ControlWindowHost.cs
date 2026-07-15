@@ -4,6 +4,7 @@ using System.Drawing;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Threading.Tasks;
+using System.Web;
 using System.Web.Script.Serialization;
 using System.Windows.Forms;
 using Microsoft.Web.WebView2.Core;
@@ -50,9 +51,16 @@ namespace WindowsLANRemoteControlHost
             if (!Uri.TryCreate(value, UriKind.Absolute, out parsed) ||
                 !String.Equals(parsed.Scheme, Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase) ||
                 !String.Equals(parsed.Host, "127.0.0.1", StringComparison.Ordinal) ||
-                parsed.Port < 1 || parsed.Port > 65535 ||
-                !parsed.Query.Contains("remote=1") ||
-                !parsed.Query.Contains("handoff="))
+                parsed.Port < 1 || parsed.Port > 65535)
+            {
+                return false;
+            }
+
+            string remote = HttpUtility.ParseQueryString(parsed.Query).Get("remote");
+            string handoff = HttpUtility.ParseQueryString(parsed.Query).Get("handoff");
+            if (!String.Equals(remote, "1", StringComparison.Ordinal) ||
+                String.IsNullOrWhiteSpace(handoff) ||
+                handoff.Length < 16 || handoff.Length > 64)
             {
                 return false;
             }
@@ -73,6 +81,8 @@ namespace WindowsLANRemoteControlHost
         private bool fullscreen;
         private bool maximized;
         private Rectangle restoredBounds;
+        private bool restoredMaximized;
+        private bool restoredTopMost;
 
         [DllImport("user32.dll")]
         private static extern bool ReleaseCapture();
@@ -96,7 +106,22 @@ namespace WindowsLANRemoteControlHost
             browser.DefaultBackgroundColor = BackColor;
             Controls.Add(browser);
 
-            Shown += async delegate { await InitializeBrowser(); };
+            Shown += async delegate
+            {
+                try
+                {
+                    await InitializeBrowser();
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show(
+                        "The remote control window could not start.\n\n" + ex.Message,
+                        "LAN Remote",
+                        MessageBoxButtons.OK,
+                        MessageBoxIcon.Error);
+                    Close();
+                }
+            };
         }
 
         private async Task InitializeBrowser()
@@ -152,8 +177,15 @@ namespace WindowsLANRemoteControlHost
                     WindowState = FormWindowState.Minimized;
                     break;
                 case "toggle_maximize":
-                    maximized = !maximized;
-                    WindowState = maximized ? FormWindowState.Maximized : FormWindowState.Normal;
+                    if (fullscreen)
+                    {
+                        ToggleFullscreen();
+                    }
+                    else
+                    {
+                        maximized = WindowState != FormWindowState.Maximized;
+                        WindowState = maximized ? FormWindowState.Maximized : FormWindowState.Normal;
+                    }
                     result = maximized;
                     break;
                 case "toggle_fullscreen":
@@ -192,7 +224,9 @@ namespace WindowsLANRemoteControlHost
         {
             if (!fullscreen)
             {
-                restoredBounds = Bounds;
+                restoredMaximized = WindowState == FormWindowState.Maximized || maximized;
+                restoredBounds = restoredMaximized ? RestoreBounds : Bounds;
+                restoredTopMost = TopMost;
                 WindowState = FormWindowState.Normal;
                 Bounds = Screen.FromControl(this).Bounds;
                 TopMost = true;
@@ -200,9 +234,24 @@ namespace WindowsLANRemoteControlHost
             }
             else
             {
-                TopMost = false;
+                TopMost = restoredTopMost;
+                WindowState = FormWindowState.Normal;
                 Bounds = restoredBounds;
                 fullscreen = false;
+                if (restoredMaximized)
+                {
+                    WindowState = FormWindowState.Maximized;
+                }
+                maximized = restoredMaximized;
+            }
+        }
+
+        protected override void OnSizeChanged(EventArgs e)
+        {
+            base.OnSizeChanged(e);
+            if (!fullscreen && WindowState != FormWindowState.Minimized)
+            {
+                maximized = WindowState == FormWindowState.Maximized;
             }
         }
 
