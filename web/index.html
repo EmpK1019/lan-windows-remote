@@ -1657,7 +1657,7 @@
       event.preventDefault();
     });
 
-    function waitForNativeBridge(timeoutMs = 6000) {
+    function waitForNativeBridge(timeoutMs = 60000) {
       const bridgeReady = () => typeof window.pywebview?.api?.set_window_title === "function";
       if (bridgeReady()) return Promise.resolve(true);
       return new Promise((resolve) => {

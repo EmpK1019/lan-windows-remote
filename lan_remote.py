@@ -51,7 +51,7 @@ if platform.system() == "Windows":
 
 
 APP_NAME = "Windows LAN Remote"
-APP_VERSION = "0.6.2"
+APP_VERSION = "0.6.3"
 GITHUB_REPOSITORY = "EmpK1019/lan-windows-remote"
 GITHUB_LATEST_RELEASE_API = f"https://api.github.com/repos/{GITHUB_REPOSITORY}/releases/latest"
 DEFAULT_PORT = 8765
@@ -2044,31 +2044,53 @@ class DesktopApi:
         self._unlock_attempts: set[str] = set()
         self._unlock_lock = threading.Lock()
 
+    def _defer_window_action(self, action: Any) -> None:
+        """Run native window calls after the current JS bridge call returns.
+
+        Calling a WinForms Window method synchronously from a pywebview JS API
+        handler can deadlock: WebView2's UI thread waits for the API result while
+        the Python handler uses Control.Invoke to wait for that same UI thread.
+        """
+        window = self.window
+        if window is None:
+            return
+
+        def invoke() -> None:
+            time.sleep(0.05)
+            try:
+                action(window)
+            except Exception:
+                pass
+
+        threading.Thread(
+            target=invoke,
+            name="lan-remote-window-action",
+            daemon=True,
+        ).start()
+
     def toggle_fullscreen(self) -> bool:
         if self.window is None:
             return self.fullscreen
-        self.window.toggle_fullscreen()
         self.fullscreen = not self.fullscreen
+        self._defer_window_action(lambda window: window.toggle_fullscreen())
         return self.fullscreen
 
     def minimize_window(self) -> bool:
-        if self.window is not None:
-            self.window.minimize()
+        self._defer_window_action(lambda window: window.minimize())
         return True
 
     def toggle_maximize_window(self) -> bool:
         if self.window is None:
             return self.maximized
         if self.maximized:
-            self.window.restore()
+            self._defer_window_action(lambda window: window.restore())
         else:
-            self.window.maximize()
+            self._defer_window_action(lambda window: window.maximize())
         self.maximized = not self.maximized
         return self.maximized
 
     def close_window(self) -> bool:
-        if self.window is not None:
-            self.window.destroy()
+        self._defer_window_action(lambda window: window.destroy())
         return True
 
     def window_state(self) -> dict[str, bool]:
@@ -2080,8 +2102,7 @@ class DesktopApi:
 
     def set_window_title(self, title: str) -> bool:
         safe_title = str(title).strip()[:160] or "LAN Remote"
-        if self.window is not None:
-            self.window.set_title(safe_title)
+        self._defer_window_action(lambda window: window.set_title(safe_title))
         return True
 
     def credential_status(self, device_id: str) -> dict[str, bool]:
@@ -2209,12 +2230,23 @@ def run_webview_shell(
     )
     desktop_api.window = window
     try:
-        webview.start(
-            gui="edgechromium",
-            debug=False,
-            private_mode=True,
-            icon=str(application_path("assets", "lan-remote-icon.ico")),
-        )
+        start_options: dict[str, Any] = {
+            "gui": "edgechromium",
+            "debug": False,
+            "private_mode": True,
+            "icon": str(application_path("assets", "lan-remote-icon.ico")),
+        }
+        if remote_window:
+            # A bundled control window is much quicker to initialize with a
+            # reusable WebView2 cache. Keep it isolated from the main host:
+            # sharing one folder across separate Python.NET processes can lock
+            # both native message loops. Remote credentials never enter browser
+            # storage; they remain protected by Windows DPAPI.
+            start_options["private_mode"] = False
+            start_options["storage_path"] = str(
+                Path(os.environ.get("LOCALAPPDATA", Path.home())) / "LAN Remote" / "WebView2-remote"
+            )
+        webview.start(**start_options)
     except Exception as exc:
         ctypes.windll.user32.MessageBoxW(
             None,

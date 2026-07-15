@@ -5,7 +5,7 @@ $AppId = "WindowsLANRemote"
 $Publisher = "EmpK1019"
 $ServiceName = "WindowsLANRemoteSecureDesktop"
 $VersionFile = Join-Path $PSScriptRoot "VERSION.txt"
-$Version = if (Test-Path -LiteralPath $VersionFile) { (Get-Content -Raw -LiteralPath $VersionFile).Trim() } else { "0.6.2" }
+$Version = if (Test-Path -LiteralPath $VersionFile) { (Get-Content -Raw -LiteralPath $VersionFile).Trim() } else { "0.6.3" }
 
 $InstallDir = Join-Path $env:ProgramFiles $AppName
 $LegacyInstallDir = Join-Path $env:LOCALAPPDATA "Programs\$AppName"
@@ -15,7 +15,8 @@ $UninstallKey = "HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\$AppI
 $LegacyUninstallKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\$AppId"
 $ExecutableName = "WindowsLANRemote-$Version.exe"
 $ServiceExecutableName = "WindowsLANRemoteService-$Version.exe"
-$SourceExecutable = Join-Path $PSScriptRoot "WindowsLANRemote.exe"
+$SourceAppDir = Join-Path $PSScriptRoot "app"
+$SourceExecutable = Join-Path $SourceAppDir $ExecutableName
 $SourceServiceExecutable = Join-Path $PSScriptRoot "WindowsLANRemoteService.exe"
 $InstalledExecutable = Join-Path $InstallDir $ExecutableName
 $InstalledServiceExecutable = Join-Path $InstallDir $ServiceExecutableName
@@ -49,6 +50,35 @@ function Copy-WithRetry {
             Start-Sleep -Milliseconds (300 * $Attempt)
         }
     }
+}
+
+function Copy-ApplicationWithRetry {
+    param([string]$Source, [string]$Destination, [int]$Attempts = 8)
+    if (-not (Test-Path -LiteralPath $SourceExecutable)) {
+        throw "Installer payload is missing $ExecutableName."
+    }
+    for ($Attempt = 1; $Attempt -le $Attempts; $Attempt++) {
+        try {
+            Get-ChildItem -LiteralPath $Source -Force | Copy-Item -Destination $Destination -Recurse -Force
+            return
+        }
+        catch {
+            if ($Attempt -eq $Attempts) { throw }
+            Start-Sleep -Milliseconds (300 * $Attempt)
+        }
+    }
+}
+
+function Reset-InstallDirectory {
+    $Expected = [IO.Path]::GetFullPath((Join-Path $env:ProgramFiles $AppName)).TrimEnd('\')
+    $Actual = [IO.Path]::GetFullPath($InstallDir).TrimEnd('\')
+    if (-not $Actual.Equals($Expected, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Refusing to replace unexpected installation directory: $Actual"
+    }
+    if (Test-Path -LiteralPath $InstallDir) {
+        Remove-Item -LiteralPath $InstallDir -Recurse -Force
+    }
+    New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
 }
 
 function Stop-InstalledProcesses {
@@ -133,10 +163,10 @@ try {
         ForEach-Object { Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue }
     Stop-InstalledProcesses
 
-    New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
+    Reset-InstallDirectory
     New-Item -ItemType Directory -Force -Path $StartMenuDir | Out-Null
 
-    Copy-WithRetry -Source $SourceExecutable -Destination $InstalledExecutable
+    Copy-ApplicationWithRetry -Source $SourceAppDir -Destination $InstallDir
     Copy-WithRetry -Source $SourceServiceExecutable -Destination $InstalledServiceExecutable
     Copy-WithRetry -Source (Join-Path $PSScriptRoot "README.md") -Destination (Join-Path $InstallDir "README.md")
     Copy-WithRetry -Source (Join-Path $PSScriptRoot "uninstall.cmd") -Destination (Join-Path $InstallDir "uninstall.cmd")
@@ -153,6 +183,12 @@ try {
     $AppShortcut.WorkingDirectory = $InstallDir
     $AppShortcut.Description = "Start Windows LAN Remote"
     $AppShortcut.Save()
+
+    $RunKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
+    $ExistingRunValue = Get-ItemProperty -Path $RunKey -Name "LAN Remote" -ErrorAction SilentlyContinue
+    if ($ExistingRunValue) {
+        Set-ItemProperty -Path $RunKey -Name "LAN Remote" -Value "`"$InstalledExecutable`""
+    }
 
     $UninstallShortcut = $Shell.CreateShortcut((Join-Path $StartMenuDir "Uninstall $AppName.lnk"))
     $UninstallShortcut.TargetPath = Join-Path $InstallDir "uninstall.cmd"
