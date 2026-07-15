@@ -7,11 +7,14 @@ LAN Remote 是一个 Windows 桌面软件，只在局域网内工作。启动后
 ## 已实现功能
 
 - Windows 独立软件窗口（内嵌 WebView2）
+- 无边框自绘标题栏，支持最小化、最大化、还原和关闭
 - 局域网设备自动发现与在线状态
 - 搜索和刷新设备
 - 双击设备直接开始桌面控制
-- 设置页显示、复制或重置本机访问码
-- 访问码验证成功后 30 分钟内自动重连
+- 设置页显示、复制或立即刷新临时访问码
+- 临时访问码每 30 分钟自动轮换，到期后旧码立即失效
+- 可设置永久访问密码，并在受信任控制端长期免输连接
+- 对方锁屏密码使用 Windows DPAPI 加密保存在控制端，可在确认锁屏后自动输入一次
 - 远程桌面实时画面
 - 鼠标移动、单击、右键和滚轮
 - 常用键盘按键与组合键
@@ -29,9 +32,10 @@ LAN Remote 是一个 Windows 桌面软件，只在局域网内工作。启动后
 1. 在控制端和被控端两台 Windows 电脑上安装并运行 LAN Remote。
 2. 第一次启动出现 Windows 防火墙提示时，允许在“专用网络”中通信。
 3. 两台电脑会自动出现在设备列表中。
-4. 在被控电脑的软件“设置”页查看“本机访问码”。
-5. 在控制端双击设备，或点击“桌面控制”“桌面观看”，输入访问码。
-6. 验证成功后的 30 分钟内再次连接不需要重复输入。
+4. 在被控电脑的软件“设置”页查看临时访问码，或先设置一个永久访问密码。
+5. 在控制端双击设备，或点击“桌面控制”“桌面观看”，输入临时访问码或永久访问密码。
+6. 临时访问码可记住到本轮 30 分钟到期；永久密码可使用 Windows 加密后长期记住。
+7. 如需锁屏自动输入，在目标设备的“连接凭据与锁屏自动输入”中保存对方 Windows 密码。
 
 程序运行期间请保持软件窗口开启。关闭窗口会立即停止设备发现和远程控制服务。
 
@@ -52,9 +56,9 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-windows-
 
 构建产物：
 
-- `dist\WindowsLANRemote-0.5.0.exe`：免安装桌面程序
-- `dist\WindowsLANRemoteSetup-0.5.0.exe`：管理员安装包
-- `dist\WindowsLANRemoteService-0.5.0.exe`：构建产生的安全桌面服务组件
+- `dist\WindowsLANRemote-0.6.0.exe`：免安装桌面程序
+- `dist\WindowsLANRemoteSetup-0.6.0.exe`：管理员安装包
+- `dist\WindowsLANRemoteService-0.6.0.exe`：构建产生的安全桌面服务组件
 
 安装包需要 UAC 管理员确认，安装位置为 `%ProgramFiles%\Windows LAN Remote`。它会创建开始菜单快捷方式、卸载项、专用网络防火墙规则，并注册自动启动的 `WindowsLANRemoteSecureDesktop` LocalSystem 服务。服务只在 `127.0.0.1:8767` 上提供经过本机密钥验证的安全桌面通道，不直接对局域网开放。
 
@@ -65,6 +69,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-windows-
 - 只能控制 Windows 电脑。
 - 软件界面依赖 Microsoft Edge WebView2 Runtime；Windows 10/11 安装 Edge 后通常已自带。
 - 锁屏支持面向已登录后锁定的当前控制台会话；尚未登录、切换用户或远程桌面会话不在当前版本保证范围内。
+- 锁屏自动输入适用于已显示 Windows 密码输入框的场景；Windows Hello、PIN、智能卡以及要求 Ctrl+Alt+Delete 的策略可能仍需手动操作。
 - 多显示器作为一张连续的大桌面显示。
 - 当前画面传输适合办公操作和临时维护，不适合游戏或高帧率视频。
 
@@ -72,7 +77,9 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-windows-
 
 - 默认只接受本机、私有网段和链路本地地址访问。
 - 访问码不会通过设备发现广播，只显示在本机软件窗口。
-- 访问码每次启动重新生成。
+- 临时访问码每 30 分钟轮换，永久访问密码只在被控端保存 PBKDF2 哈希。
+- 控制端保存的永久访问密码和 Windows 锁屏密码使用当前用户的 Windows DPAPI 加密，不以明文写入文件。
+- 自动锁屏输入仅在同时确认安全桌面活动且 Windows 会话锁定时执行，并且每次锁屏最多自动尝试一次。
 - 高权限安全桌面助手仅监听本机回环地址，并使用安装时随机生成、受 ACL 保护的服务密钥。
 - 安全桌面控制可在设置中关闭。
 - 自动更新只接受 GitHub 官方 HTTPS Release 下载地址，下载后仍由 UAC 安装器完成升级。

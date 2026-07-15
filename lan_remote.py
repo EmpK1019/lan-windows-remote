@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import atexit
+import base64
 import ctypes
 import hashlib
 import hmac
@@ -29,7 +30,7 @@ import tempfile
 import threading
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
 from pathlib import Path
@@ -50,7 +51,7 @@ if platform.system() == "Windows":
 
 
 APP_NAME = "Windows LAN Remote"
-APP_VERSION = "0.5.0"
+APP_VERSION = "0.6.0"
 GITHUB_REPOSITORY = "EmpK1019/lan-windows-remote"
 GITHUB_LATEST_RELEASE_API = f"https://api.github.com/repos/{GITHUB_REPOSITORY}/releases/latest"
 DEFAULT_PORT = 8765
@@ -58,6 +59,9 @@ DEFAULT_DISCOVERY_PORT = 8766
 SECURE_HELPER_PORT = 8767
 DISCOVERY_MAGIC = "windows-lan-remote-v1"
 DISCOVERY_TTL_SECONDS = 9
+TEMPORARY_ACCESS_CODE_TTL_SECONDS = 30 * 60
+PERMANENT_PASSWORD_ITERATIONS = 240_000
+PERMANENT_PASSWORD_MIN_LENGTH = 8
 ACCESS_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 MAX_POST_BYTES = 16 * 1024
 SCREEN_LOCK = threading.Lock()
@@ -403,6 +407,142 @@ def load_embedded_interface() -> str:
 INDEX_HTML = load_embedded_interface()
 
 
+class DATA_BLOB(ctypes.Structure):
+    _fields_ = [("cbData", wintypes.DWORD), ("pbData", ctypes.POINTER(ctypes.c_ubyte))]
+
+
+def dpapi_protect(value: str) -> str:
+    data = value.encode("utf-8")
+    buffer = ctypes.create_string_buffer(data)
+    data_in = DATA_BLOB(len(data), ctypes.cast(buffer, ctypes.POINTER(ctypes.c_ubyte)))
+    data_out = DATA_BLOB()
+    crypt32 = ctypes.windll.crypt32
+    crypt32.CryptProtectData.argtypes = [
+        ctypes.POINTER(DATA_BLOB),
+        wintypes.LPCWSTR,
+        ctypes.POINTER(DATA_BLOB),
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        ctypes.POINTER(DATA_BLOB),
+    ]
+    crypt32.CryptProtectData.restype = wintypes.BOOL
+    if not crypt32.CryptProtectData(
+        ctypes.byref(data_in),
+        "LAN Remote credential",
+        None,
+        None,
+        None,
+        0x1,  # CRYPTPROTECT_UI_FORBIDDEN
+        ctypes.byref(data_out),
+    ):
+        raise ctypes.WinError()
+    try:
+        protected = ctypes.string_at(data_out.pbData, data_out.cbData)
+        return base64.b64encode(protected).decode("ascii")
+    finally:
+        ctypes.windll.kernel32.LocalFree(data_out.pbData)
+
+
+def dpapi_unprotect(value: str) -> str:
+    protected = base64.b64decode(value, validate=True)
+    buffer = ctypes.create_string_buffer(protected)
+    data_in = DATA_BLOB(len(protected), ctypes.cast(buffer, ctypes.POINTER(ctypes.c_ubyte)))
+    data_out = DATA_BLOB()
+    crypt32 = ctypes.windll.crypt32
+    crypt32.CryptUnprotectData.argtypes = [
+        ctypes.POINTER(DATA_BLOB),
+        ctypes.POINTER(wintypes.LPWSTR),
+        ctypes.POINTER(DATA_BLOB),
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        ctypes.POINTER(DATA_BLOB),
+    ]
+    crypt32.CryptUnprotectData.restype = wintypes.BOOL
+    if not crypt32.CryptUnprotectData(
+        ctypes.byref(data_in),
+        None,
+        None,
+        None,
+        None,
+        0x1,
+        ctypes.byref(data_out),
+    ):
+        raise ctypes.WinError()
+    try:
+        return ctypes.string_at(data_out.pbData, data_out.cbData).decode("utf-8")
+    finally:
+        ctypes.windll.kernel32.LocalFree(data_out.pbData)
+
+
+class CredentialVault:
+    """Per-user DPAPI-protected credentials used only by the WebView shell."""
+
+    def __init__(self) -> None:
+        self.path = Path(os.environ.get("APPDATA", Path.home())) / "LAN Remote" / "credentials.json"
+        self._lock = threading.Lock()
+
+    @staticmethod
+    def _key(kind: str, device_id: str) -> str:
+        safe_id = "".join(character for character in device_id if character.isalnum() or character in "-_")[:64]
+        if kind not in {"access", "lock"} or not safe_id:
+            raise ValueError("invalid credential key")
+        return f"{kind}:{safe_id}"
+
+    def _read(self) -> dict[str, Any]:
+        try:
+            payload = json.loads(self.path.read_text(encoding="utf-8"))
+            return payload if isinstance(payload, dict) else {}
+        except (OSError, ValueError, TypeError):
+            return {}
+
+    def _write(self, payload: dict[str, Any]) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = self.path.with_suffix(".tmp")
+        temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        temporary.replace(self.path)
+
+    def has_secret(self, kind: str, device_id: str) -> bool:
+        key = self._key(kind, device_id)
+        with self._lock:
+            item = self._read().get(key)
+        return isinstance(item, dict) and bool(item.get("protected"))
+
+    def get_secret(self, kind: str, device_id: str) -> str:
+        key = self._key(kind, device_id)
+        with self._lock:
+            item = self._read().get(key)
+        if not isinstance(item, dict) or not item.get("protected"):
+            return ""
+        try:
+            return dpapi_unprotect(str(item["protected"]))
+        except (OSError, ValueError, UnicodeError):
+            return ""
+
+    def set_secret(self, kind: str, device_id: str, secret: str, device_name: str = "") -> None:
+        if not secret:
+            raise ValueError("secret is empty")
+        key = self._key(kind, device_id)
+        protected = dpapi_protect(secret)
+        with self._lock:
+            payload = self._read()
+            payload[key] = {
+                "protected": protected,
+                "device_name": device_name[:128],
+                "updated_at": int(time.time()),
+            }
+            self._write(payload)
+
+    def remove_secret(self, kind: str, device_id: str) -> None:
+        key = self._key(kind, device_id)
+        with self._lock:
+            payload = self._read()
+            if key in payload:
+                payload.pop(key, None)
+                self._write(payload)
+
+
 class DiscoveryRegistry:
     """Thread-safe cache of agents recently seen on the local network."""
 
@@ -458,6 +598,8 @@ class SettingsStore:
         "reduce_motion": False,
         "auto_check_updates": True,
         "secure_desktop_enabled": True,
+        "permanent_password_salt": "",
+        "permanent_password_hash": "",
     }
 
     def __init__(self) -> None:
@@ -482,10 +624,47 @@ class SettingsStore:
         )
         temporary.replace(self.path)
 
+    def permanent_password_is_set(self) -> bool:
+        return bool(self.values.get("permanent_password_salt") and self.values.get("permanent_password_hash"))
+
+    def set_permanent_password(self, password: str) -> None:
+        salt = secrets.token_bytes(16)
+        digest = hashlib.pbkdf2_hmac(
+            "sha256",
+            password.encode("utf-8"),
+            salt,
+            PERMANENT_PASSWORD_ITERATIONS,
+        )
+        self.values["permanent_password_salt"] = base64.b64encode(salt).decode("ascii")
+        self.values["permanent_password_hash"] = base64.b64encode(digest).decode("ascii")
+
+    def clear_permanent_password(self) -> None:
+        self.values["permanent_password_salt"] = ""
+        self.values["permanent_password_hash"] = ""
+
+    def verify_permanent_password(self, password: str) -> bool:
+        if not password or not self.permanent_password_is_set():
+            return False
+        try:
+            salt = base64.b64decode(str(self.values["permanent_password_salt"]), validate=True)
+            expected = base64.b64decode(str(self.values["permanent_password_hash"]), validate=True)
+        except (ValueError, TypeError):
+            return False
+        actual = hashlib.pbkdf2_hmac(
+            "sha256",
+            password.encode("utf-8"),
+            salt,
+            PERMANENT_PASSWORD_ITERATIONS,
+        )
+        return hmac.compare_digest(actual, expected)
+
     def public_values(self, state: "ServerState") -> dict[str, Any]:
+        access_code, expires_at = state.temporary_access_code()
         return {
             "device_name": state.device_name,
-            "access_code": state.token,
+            "access_code": access_code,
+            "access_code_expires_at": int(expires_at * 1000),
+            "permanent_password_set": self.permanent_password_is_set(),
             "view_only": state.view_only,
             "discovery_enabled": bool(self.values["discovery_enabled"]),
             "frame_delay_ms": int(self.values["frame_delay_ms"]),
@@ -529,6 +708,7 @@ def set_startup_enabled(enabled: bool) -> None:
 @dataclass
 class ServerState:
     token: str
+    token_expires_at: float
     view_only: bool
     allow_non_lan: bool
     started_at: float
@@ -537,6 +717,78 @@ class ServerState:
     port: int
     registry: DiscoveryRegistry
     settings: SettingsStore
+    token_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+    permanent_auth_cache: dict[str, tuple[str, float]] = field(default_factory=dict, repr=False)
+    permanent_auth_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+    permanent_auth_secret: bytes = field(default_factory=lambda: secrets.token_bytes(32), repr=False)
+    session_tokens: dict[str, tuple[str, float, str]] = field(default_factory=dict, repr=False)
+    session_token_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+
+    def temporary_access_code(self) -> tuple[str, float]:
+        with self.token_lock:
+            if time.time() >= self.token_expires_at:
+                self.token = generate_access_code()
+                self.token_expires_at = time.time() + TEMPORARY_ACCESS_CODE_TTL_SECONDS
+            return self.token, self.token_expires_at
+
+    def rotate_temporary_access_code(self) -> tuple[str, float]:
+        with self.token_lock:
+            self.token = generate_access_code()
+            self.token_expires_at = time.time() + TEMPORARY_ACCESS_CODE_TTL_SECONDS
+            return self.token, self.token_expires_at
+
+    def authenticate(self, supplied: str) -> dict[str, Any] | None:
+        temporary_code, expires_at = self.temporary_access_code()
+        now = time.time()
+        password_marker = str(self.settings.values.get("permanent_password_hash", ""))
+        if supplied:
+            with self.session_token_lock:
+                session = self.session_tokens.get(supplied)
+                if session:
+                    method, session_expires_at, marker = session
+                    marker_valid = marker == (temporary_code if method == "temporary" else password_marker)
+                    if session_expires_at > now and marker_valid:
+                        credential_expiry = int(session_expires_at * 1000) if method == "temporary" else None
+                        return {"auth_method": method, "credential_expires_at": credential_expiry}
+                    self.session_tokens.pop(supplied, None)
+        if supplied and hmac.compare_digest(supplied, temporary_code):
+            return {"auth_method": "temporary", "credential_expires_at": int(expires_at * 1000)}
+        if not supplied:
+            return None
+        cache_key = hmac.new(self.permanent_auth_secret, supplied.encode("utf-8"), hashlib.sha256).hexdigest()
+        with self.permanent_auth_lock:
+            cached = self.permanent_auth_cache.get(cache_key)
+            if cached and cached[0] == password_marker and cached[1] > now:
+                return {"auth_method": "permanent", "credential_expires_at": None}
+        if self.settings.verify_permanent_password(supplied):
+            with self.permanent_auth_lock:
+                if len(self.permanent_auth_cache) >= 16:
+                    self.permanent_auth_cache.clear()
+                self.permanent_auth_cache[cache_key] = (password_marker, now + 12 * 60 * 60)
+            return {"auth_method": "permanent", "credential_expires_at": None}
+        return None
+
+    def create_session_token(self, authentication: dict[str, Any]) -> str:
+        method = str(authentication.get("auth_method", ""))
+        if method == "temporary":
+            with self.token_lock:
+                marker = self.token
+                expires_at = self.token_expires_at
+        elif method == "permanent":
+            marker = str(self.settings.values.get("permanent_password_hash", ""))
+            expires_at = float("inf")
+        else:
+            raise ValueError("invalid authentication method")
+        session_token = secrets.token_urlsafe(32)
+        with self.session_token_lock:
+            now = time.time()
+            self.session_tokens = {
+                key: value
+                for key, value in self.session_tokens.items()
+                if value[1] > now
+            }
+            self.session_tokens[session_token] = (method, expires_at, marker)
+        return session_token
 
 
 def require_windows() -> None:
@@ -908,6 +1160,70 @@ class GUID(ctypes.Structure):
     ]
 
 
+class MOUSEINPUT(ctypes.Structure):
+    _fields_ = [
+        ("dx", wintypes.LONG),
+        ("dy", wintypes.LONG),
+        ("mouseData", wintypes.DWORD),
+        ("dwFlags", wintypes.DWORD),
+        ("time", wintypes.DWORD),
+        ("dwExtraInfo", ctypes.c_size_t),
+    ]
+
+
+class KEYBDINPUT(ctypes.Structure):
+    _fields_ = [
+        ("wVk", wintypes.WORD),
+        ("wScan", wintypes.WORD),
+        ("dwFlags", wintypes.DWORD),
+        ("time", wintypes.DWORD),
+        ("dwExtraInfo", ctypes.c_size_t),
+    ]
+
+
+class HARDWAREINPUT(ctypes.Structure):
+    _fields_ = [("uMsg", wintypes.DWORD), ("wParamL", wintypes.WORD), ("wParamH", wintypes.WORD)]
+
+
+class INPUT_UNION(ctypes.Union):
+    _fields_ = [("mi", MOUSEINPUT), ("ki", KEYBDINPUT), ("hi", HARDWAREINPUT)]
+
+
+class INPUT(ctypes.Structure):
+    _anonymous_ = ("value",)
+    _fields_ = [("type", wintypes.DWORD), ("value", INPUT_UNION)]
+
+
+class WTSINFOEX_LEVEL1(ctypes.Structure):
+    _fields_ = [
+        ("SessionId", wintypes.ULONG),
+        ("SessionState", ctypes.c_int),
+        ("SessionFlags", wintypes.LONG),
+        ("WinStationName", wintypes.WCHAR * 33),
+        ("UserName", wintypes.WCHAR * 21),
+        ("DomainName", wintypes.WCHAR * 18),
+        ("LogonTime", ctypes.c_longlong),
+        ("ConnectTime", ctypes.c_longlong),
+        ("DisconnectTime", ctypes.c_longlong),
+        ("LastInputTime", ctypes.c_longlong),
+        ("CurrentTime", ctypes.c_longlong),
+        ("IncomingBytes", wintypes.DWORD),
+        ("OutgoingBytes", wintypes.DWORD),
+        ("IncomingFrames", wintypes.DWORD),
+        ("OutgoingFrames", wintypes.DWORD),
+        ("IncomingCompressedBytes", wintypes.DWORD),
+        ("OutgoingCompressedBytes", wintypes.DWORD),
+    ]
+
+
+class WTSINFOEX_LEVEL(ctypes.Union):
+    _fields_ = [("Level1", WTSINFOEX_LEVEL1)]
+
+
+class WTSINFOEX(ctypes.Structure):
+    _fields_ = [("Level", wintypes.DWORD), ("Data", WTSINFOEX_LEVEL)]
+
+
 class GDIPLUS_STARTUP_INPUT(ctypes.Structure):
     _fields_ = [
         ("GdiplusVersion", wintypes.UINT),
@@ -931,6 +1247,7 @@ def configure_win32_signatures() -> None:
     gdiplus = ctypes.windll.gdiplus
     ole32 = ctypes.windll.ole32
     kernel32 = ctypes.windll.kernel32
+    wtsapi32 = ctypes.windll.wtsapi32
 
     user32.GetSystemMetrics.argtypes = [ctypes.c_int]
     user32.GetSystemMetrics.restype = ctypes.c_int
@@ -948,6 +1265,8 @@ def configure_win32_signatures() -> None:
     user32.keybd_event.restype = None
     user32.MapVirtualKeyW.argtypes = [wintypes.UINT, wintypes.UINT]
     user32.MapVirtualKeyW.restype = wintypes.UINT
+    user32.SendInput.argtypes = [wintypes.UINT, ctypes.POINTER(INPUT), ctypes.c_int]
+    user32.SendInput.restype = wintypes.UINT
     user32.OpenInputDesktop.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
     user32.OpenInputDesktop.restype = wintypes.HANDLE
     user32.CloseDesktop.argtypes = [wintypes.HANDLE]
@@ -964,6 +1283,22 @@ def configure_win32_signatures() -> None:
     user32.GetThreadDesktop.restype = wintypes.HANDLE
     kernel32.GetCurrentThreadId.argtypes = []
     kernel32.GetCurrentThreadId.restype = wintypes.DWORD
+    kernel32.GetCurrentProcessId.argtypes = []
+    kernel32.GetCurrentProcessId.restype = wintypes.DWORD
+    kernel32.ProcessIdToSessionId.argtypes = [wintypes.DWORD, ctypes.POINTER(wintypes.DWORD)]
+    kernel32.ProcessIdToSessionId.restype = wintypes.BOOL
+    kernel32.LocalFree.argtypes = [ctypes.c_void_p]
+    kernel32.LocalFree.restype = ctypes.c_void_p
+    wtsapi32.WTSQuerySessionInformationW.argtypes = [
+        wintypes.HANDLE,
+        wintypes.DWORD,
+        ctypes.c_int,
+        ctypes.POINTER(ctypes.c_void_p),
+        ctypes.POINTER(wintypes.DWORD),
+    ]
+    wtsapi32.WTSQuerySessionInformationW.restype = wintypes.BOOL
+    wtsapi32.WTSFreeMemory.argtypes = [ctypes.c_void_p]
+    wtsapi32.WTSFreeMemory.restype = None
 
     gdi32.CreateCompatibleDC.argtypes = [wintypes.HDC]
     gdi32.CreateCompatibleDC.restype = wintypes.HDC
@@ -1274,6 +1609,34 @@ def current_thread_desktop_name() -> str:
     return buffer.value
 
 
+def current_session_locked() -> bool:
+    """Return the lock state of the current interactive Windows session."""
+    kernel32 = ctypes.windll.kernel32
+    wtsapi32 = ctypes.windll.wtsapi32
+    session_id = wintypes.DWORD()
+    if not kernel32.ProcessIdToSessionId(kernel32.GetCurrentProcessId(), ctypes.byref(session_id)):
+        return False
+    buffer = ctypes.c_void_p()
+    returned = wintypes.DWORD()
+    # WTSSessionInfoEx = 25. Its level-1 SessionFlags value is 0 when locked
+    # and 1 when unlocked on supported Windows 10/11 systems.
+    if not wtsapi32.WTSQuerySessionInformationW(
+        None,
+        session_id.value,
+        25,
+        ctypes.byref(buffer),
+        ctypes.byref(returned),
+    ):
+        return False
+    try:
+        if returned.value < ctypes.sizeof(WTSINFOEX):
+            return False
+        info = ctypes.cast(buffer, ctypes.POINTER(WTSINFOEX)).contents
+        return info.Level == 1 and info.Data.Level1.SessionFlags == 0
+    finally:
+        wtsapi32.WTSFreeMemory(buffer)
+
+
 def secure_helper_request(
     path: str,
     *,
@@ -1448,12 +1811,41 @@ def send_keyboard_event(payload: dict[str, Any]) -> None:
     user32.keybd_event(vk, scan, flags, 0)
 
 
+def send_key_press(payload: dict[str, Any]) -> None:
+    key_payload = {
+        "key": str(payload.get("key", "")),
+        "code": str(payload.get("code", "")),
+    }
+    send_keyboard_event({**key_payload, "type": "key_down"})
+    time.sleep(0.035)
+    send_keyboard_event({**key_payload, "type": "key_up"})
+
+
+def send_unicode_text(text: str) -> None:
+    if not text or len(text) > 256:
+        raise ValueError("text input length is invalid")
+    encoded = text.encode("utf-16-le")
+    code_units = [int.from_bytes(encoded[index:index + 2], "little") for index in range(0, len(encoded), 2)]
+    inputs: list[INPUT] = []
+    for code_unit in code_units:
+        inputs.append(INPUT(type=1, ki=KEYBDINPUT(0, code_unit, 0x0004, 0, 0)))
+        inputs.append(INPUT(type=1, ki=KEYBDINPUT(0, code_unit, 0x0004 | 0x0002, 0, 0)))
+    array_type = INPUT * len(inputs)
+    sent = ctypes.windll.user32.SendInput(len(inputs), array_type(*inputs), ctypes.sizeof(INPUT))
+    if sent != len(inputs):
+        raise ctypes.WinError()
+
+
 def handle_remote_input(payload: dict[str, Any]) -> None:
     input_type = str(payload.get("type", ""))
     if input_type.startswith("mouse_"):
         send_mouse_event(payload)
     elif input_type in {"key_down", "key_up"}:
         send_keyboard_event(payload)
+    elif input_type == "key_press":
+        send_key_press(payload)
+    elif input_type == "text":
+        send_unicode_text(str(payload.get("text", "")))
 
 
 @dataclass(frozen=True)
@@ -1574,11 +1966,15 @@ class RemoteServer(ThreadingHTTPServer):
 
 
 class DesktopApi:
-    """Small native bridge for operations that HTML fullscreen cannot provide."""
+    """Native window and DPAPI credential bridge for the WebView shell."""
 
-    def __init__(self) -> None:
+    def __init__(self, maximized: bool = False) -> None:
         self.window: Any = None
         self.fullscreen = False
+        self.maximized = maximized
+        self.vault = CredentialVault()
+        self._unlock_attempts: set[str] = set()
+        self._unlock_lock = threading.Lock()
 
     def toggle_fullscreen(self) -> bool:
         if self.window is None:
@@ -1586,6 +1982,120 @@ class DesktopApi:
         self.window.toggle_fullscreen()
         self.fullscreen = not self.fullscreen
         return self.fullscreen
+
+    def minimize_window(self) -> bool:
+        if self.window is not None:
+            self.window.minimize()
+        return True
+
+    def toggle_maximize_window(self) -> bool:
+        if self.window is None:
+            return self.maximized
+        if self.maximized:
+            self.window.restore()
+        else:
+            self.window.maximize()
+        self.maximized = not self.maximized
+        return self.maximized
+
+    def close_window(self) -> bool:
+        if self.window is not None:
+            self.window.destroy()
+        return True
+
+    def window_state(self) -> dict[str, bool]:
+        return {"maximized": self.maximized, "fullscreen": self.fullscreen}
+
+    def credential_status(self, device_id: str) -> dict[str, bool]:
+        return {
+            "access_saved": self.vault.has_secret("access", device_id),
+            "lock_saved": self.vault.has_secret("lock", device_id),
+        }
+
+    def load_access_password(self, device_id: str) -> str:
+        return self.vault.get_secret("access", device_id)
+
+    def save_access_password(self, device_id: str, password: str, device_name: str = "") -> bool:
+        self.vault.set_secret("access", device_id, password, device_name)
+        return True
+
+    def clear_access_password(self, device_id: str) -> bool:
+        self.vault.remove_secret("access", device_id)
+        return True
+
+    def save_lock_password(self, device_id: str, password: str, device_name: str = "") -> bool:
+        if not 1 <= len(password) <= 128:
+            raise ValueError("锁屏密码长度无效")
+        self.vault.set_secret("lock", device_id, password, device_name)
+        with self._unlock_lock:
+            self._unlock_attempts.discard(device_id)
+        return True
+
+    def clear_lock_password(self, device_id: str) -> bool:
+        self.vault.remove_secret("lock", device_id)
+        with self._unlock_lock:
+            self._unlock_attempts.discard(device_id)
+        return True
+
+    @staticmethod
+    def _validated_device(device_json: str) -> dict[str, Any]:
+        device = json.loads(device_json)
+        if not isinstance(device, dict):
+            raise ValueError("设备信息无效")
+        device_id = str(device.get("id", ""))[:64]
+        host = str(device.get("ip", ""))
+        port = int(device.get("port", 0))
+        if not device_id or not is_allowed_client(host, False) or not 1 <= port <= 65535:
+            raise ValueError("设备地址不在受信任的局域网范围内")
+        return {"id": device_id, "ip": host, "port": port}
+
+    @staticmethod
+    def _remote_json(
+        device: dict[str, Any],
+        path: str,
+        access_password: str,
+        payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        data = None
+        method = "GET"
+        headers = {"X-Remote-Token": access_password, "User-Agent": f"Windows-LAN-Remote/{APP_VERSION}"}
+        if payload is not None:
+            data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+            headers["Content-Type"] = "application/json"
+            method = "POST"
+        request = Request(target_url(device, path), data=data, method=method, headers=headers)
+        with urlopen(request, timeout=4) as response:
+            result = json.loads(response.read(256 * 1024).decode("utf-8"))
+        if not isinstance(result, dict):
+            raise ValueError("远端响应无效")
+        return result
+
+    def try_auto_unlock(self, device_json: str, access_password: str) -> dict[str, Any]:
+        try:
+            device = self._validated_device(device_json)
+            status = self._remote_json(device, "/api/session-status", access_password)
+            device_id = str(device["id"])
+            if not status.get("session_locked"):
+                with self._unlock_lock:
+                    self._unlock_attempts.discard(device_id)
+                return {"ok": True, "status": "not_locked"}
+            lock_password = self.vault.get_secret("lock", device_id)
+            if not lock_password:
+                return {"ok": True, "status": "no_credential"}
+            with self._unlock_lock:
+                if device_id in self._unlock_attempts:
+                    return {"ok": True, "status": "already_attempted"}
+                self._unlock_attempts.add(device_id)
+            self._remote_json(device, "/input", access_password, {"type": "key_press", "key": "Enter", "code": "Enter"})
+            time.sleep(0.65)
+            self._remote_json(device, "/input", access_password, {"type": "text", "text": lock_password})
+            time.sleep(0.08)
+            self._remote_json(device, "/input", access_password, {"type": "key_press", "key": "Enter", "code": "Enter"})
+            return {"ok": True, "status": "submitted"}
+        except HTTPError as exc:
+            return {"ok": False, "status": "access_denied" if exc.code == 401 else "remote_error", "error": str(exc)}
+        except (OSError, ValueError, URLError, TimeoutError) as exc:
+            return {"ok": False, "status": "error", "error": str(exc)}
 
 
 def run_webview_shell(url: str, maximized: bool) -> int:
@@ -1595,7 +2105,7 @@ def run_webview_shell(url: str, maximized: bool) -> int:
     runtime combinations. Keeping WebView in a separate process ensures LAN
     discovery, screen streaming and the local API remain responsive.
     """
-    desktop_api = DesktopApi()
+    desktop_api = DesktopApi(maximized=maximized)
     window = webview.create_window(
         "LAN Remote",
         url,
@@ -1608,6 +2118,9 @@ def run_webview_shell(url: str, maximized: bool) -> int:
         text_select=False,
         zoomable=False,
         maximized=maximized,
+        frameless=True,
+        easy_drag=False,
+        shadow=True,
     )
     desktop_api.window = window
     try:
@@ -1711,10 +2224,16 @@ class RemoteHandler(BaseHTTPRequestHandler):
                     allow_cross_origin=False,
                 )
                 return
+            access_code, expires_at = self.server.state.temporary_access_code()
             json_response(
                 self,
                 HTTPStatus.OK,
-                {"ok": True, "name": self.server.state.device_name, "access_code": self.server.state.token},
+                {
+                    "ok": True,
+                    "name": self.server.state.device_name,
+                    "access_code": access_code,
+                    "access_code_expires_at": int(expires_at * 1000),
+                },
                 allow_cross_origin=False,
             )
             return
@@ -1743,6 +2262,22 @@ class RemoteHandler(BaseHTTPRequestHandler):
                 return
             json_response(self, HTTPStatus.OK, result, allow_cross_origin=False)
             return
+        if parsed.path == "/api/session-status":
+            authentication = self.authenticate_request(parsed)
+            if authentication is None:
+                return
+            secure_active = secure_desktop_active()
+            json_response(
+                self,
+                HTTPStatus.OK,
+                {
+                    "ok": True,
+                    "secure_desktop_active": secure_active,
+                    "session_locked": bool(secure_active and current_session_locked()),
+                    **authentication,
+                },
+            )
+            return
         if parsed.path in {"/api/info", "/health"}:
             json_response(
                 self,
@@ -1761,7 +2296,7 @@ class RemoteHandler(BaseHTTPRequestHandler):
             )
             return
         if parsed.path == "/screen":
-            if not self.check_token(parsed):
+            if self.authenticate_request(parsed) is None:
                 return
             try:
                 if secure_desktop_active():
@@ -1827,12 +2362,19 @@ class RemoteHandler(BaseHTTPRequestHandler):
             )
             return
         if parsed.path == "/api/verify":
-            if not self.check_token(parsed):
+            authentication = self.authenticate_request(parsed)
+            if authentication is None:
                 return
+            session_token = self.server.state.create_session_token(authentication)
             json_response(
                 self,
                 HTTPStatus.OK,
-                {"ok": True, "view_only": self.server.state.view_only},
+                {
+                    "ok": True,
+                    "view_only": self.server.state.view_only,
+                    "session_token": session_token,
+                    **authentication,
+                },
             )
             return
         if parsed.path != "/input":
@@ -1843,7 +2385,7 @@ class RemoteHandler(BaseHTTPRequestHandler):
         if payload is None:
             return
 
-        if not self.check_token(parsed, payload):
+        if self.authenticate_request(parsed, payload) is None:
             return
         if self.server.state.view_only:
             json_response(self, HTTPStatus.FORBIDDEN, {"ok": False, "error": "server is view-only"})
@@ -1929,6 +2471,33 @@ class RemoteHandler(BaseHTTPRequestHandler):
                 )
                 return
 
+        permanent_password = payload.get("permanent_password")
+        if permanent_password is not None:
+            if not isinstance(permanent_password, str) or not PERMANENT_PASSWORD_MIN_LENGTH <= len(permanent_password) <= 128:
+                json_response(
+                    self,
+                    HTTPStatus.BAD_REQUEST,
+                    {"ok": False, "error": f"永久访问密码必须为 {PERMANENT_PASSWORD_MIN_LENGTH} 到 128 个字符"},
+                    allow_cross_origin=False,
+                )
+                return
+        if payload.get("clear_permanent_password") not in {None, False, True}:
+            json_response(
+                self,
+                HTTPStatus.BAD_REQUEST,
+                {"ok": False, "error": "清除永久密码参数无效"},
+                allow_cross_origin=False,
+            )
+            return
+        if permanent_password is not None and payload.get("clear_permanent_password") is True:
+            json_response(
+                self,
+                HTTPStatus.BAD_REQUEST,
+                {"ok": False, "error": "不能同时设置和清除永久密码"},
+                allow_cross_origin=False,
+            )
+            return
+
         state.device_name = device_name
         state.view_only = bool(payload.get("view_only", state.view_only))
         values["device_name"] = device_name
@@ -1942,7 +2511,11 @@ class RemoteHandler(BaseHTTPRequestHandler):
             set_startup_enabled(launch_at_login)
             values["launch_at_login"] = launch_at_login
             if payload.get("regenerate_access_code") is True:
-                state.token = generate_access_code()
+                state.rotate_temporary_access_code()
+            if permanent_password is not None:
+                state.settings.set_permanent_password(permanent_password)
+            elif payload.get("clear_permanent_password") is True:
+                state.settings.clear_permanent_password()
             if self.server.discovery_service:
                 self.server.discovery_service.update_identity(state.device_name, state.view_only)
                 self.server.discovery_service.set_enabled(bool(values["discovery_enabled"]))
@@ -1979,15 +2552,16 @@ class RemoteHandler(BaseHTTPRequestHandler):
         json_response(self, HTTPStatus.FORBIDDEN, {"ok": False, "error": "LAN clients only"})
         return False
 
-    def check_token(self, parsed: Any, payload: dict[str, Any] | None = None) -> bool:
+    def authenticate_request(self, parsed: Any, payload: dict[str, Any] | None = None) -> dict[str, Any] | None:
         query_token = parse_qs(parsed.query).get("token", [""])[0]
         header_token = self.headers.get("X-Remote-Token", "")
         body_token = str((payload or {}).get("token", ""))
         supplied = query_token or header_token or body_token
-        if hmac.compare_digest(supplied, self.server.state.token):
-            return True
+        authentication = self.server.state.authenticate(supplied)
+        if authentication is not None:
+            return authentication
         json_response(self, HTTPStatus.UNAUTHORIZED, {"ok": False, "error": "bad token"})
-        return False
+        return None
 
 
 def target_url(device: dict[str, Any], path: str) -> str:
@@ -2937,6 +3511,7 @@ def main(argv: list[str] | None = None) -> int:
     registry = DiscoveryRegistry()
     state = ServerState(
         token=token,
+        token_expires_at=time.time() + TEMPORARY_ACCESS_CODE_TTL_SECONDS,
         view_only=view_only,
         allow_non_lan=bool(args.allow_non_lan),
         started_at=time.time(),

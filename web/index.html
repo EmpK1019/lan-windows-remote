@@ -46,7 +46,7 @@
     .app {
       display: grid;
       grid-template-columns: 68px 170px minmax(440px, 1fr) 330px;
-      grid-template-rows: 58px 1fr;
+      grid-template-rows: 40px 58px 1fr;
       width: 100vw;
       height: 100vh;
       border: 1px solid #32343c;
@@ -55,8 +55,51 @@
       background: rgba(15, 16, 20, .96);
     }
 
+    .window-titlebar {
+      grid-column: 1 / 5;
+      grid-row: 1;
+      display: flex;
+      align-items: stretch;
+      border-bottom: 1px solid #25272e;
+      background: #111217;
+    }
+
+    .window-drag {
+      display: flex;
+      min-width: 0;
+      flex: 1;
+      align-items: center;
+      gap: 9px;
+      padding: 0 12px;
+      color: #d9dce4;
+      font-size: 12px;
+      font-weight: 600;
+      letter-spacing: .15px;
+      cursor: default;
+    }
+
+    .window-drag img { width: 21px; height: 21px; border-radius: 6px; }
+    .window-controls { display: flex; margin-left: auto; }
+    .window-control {
+      display: grid;
+      width: 47px;
+      height: 39px;
+      place-items: center;
+      border: 0;
+      background: transparent;
+      color: #c6c9d1;
+      cursor: pointer;
+    }
+    .window-control:hover { background: #292b32; color: white; }
+    .window-control.close:hover { background: #c42b3e; }
+    .window-control svg { width: 16px; height: 16px; stroke-width: 2.45; }
+    .window-control .restore-icon { display: none; }
+    body.window-maximized .window-control .maximize-icon { display: none; }
+    body.window-maximized .window-control .restore-icon { display: block; }
+    body.window-maximized .app { border-radius: 0; border-color: #202229; }
+
     .brand-rail {
-      grid-row: 1 / 3;
+      grid-row: 2 / 4;
       display: flex;
       flex-direction: column;
       align-items: center;
@@ -99,6 +142,7 @@
 
     .topbar {
       grid-column: 2 / 5;
+      grid-row: 2;
       display: flex;
       align-items: center;
       gap: 14px;
@@ -162,7 +206,7 @@
 
     .sidebar {
       grid-column: 2;
-      grid-row: 2;
+      grid-row: 3;
       padding: 22px 12px;
       border-right: 1px solid var(--line);
       background: var(--nav);
@@ -238,7 +282,7 @@
 
     .content {
       grid-column: 3;
-      grid-row: 2;
+      grid-row: 3;
       display: flex;
       min-width: 0;
       flex-direction: column;
@@ -343,7 +387,7 @@
 
     .details {
       grid-column: 4;
-      grid-row: 2;
+      grid-row: 3;
       overflow-y: auto;
       padding: 20px 16px;
       border-left: 1px solid var(--line);
@@ -461,6 +505,13 @@
     .code-input:focus { border-color: var(--blue); box-shadow: 0 0 0 3px rgba(29,116,82,.16); }
     .dialog-error { min-height: 22px; padding-top: 6px; color: #ff8393; font-size: 12px; }
     .dialog-actions { display: flex; justify-content: flex-end; gap: 9px; margin-top: 10px; }
+    .dialog-options { display: grid; gap: 10px; margin-top: 12px; padding: 12px; border: 1px solid #30333b; border-radius: 9px; background: #15171c; }
+    .dialog-check { display: flex; align-items: center; gap: 8px; color: #b7bac4; font-size: 12px; }
+    .dialog-check input { accent-color: var(--blue); }
+    .dialog-subtitle { margin-top: 2px; color: #7f838e; font-size: 11px; }
+    .dialog-password-row { display: flex; gap: 8px; }
+    .dialog-password-row .code-input { height: 38px; margin: 0; letter-spacing: .2px; }
+    .credential-state { color: #72c5a4; font-size: 11px; }
     .button { min-width: 82px; height: 36px; border: 1px solid #3b3e47; border-radius: 7px; background: #282a31; cursor: pointer; }
     .button:hover { background: #30333b; }
     .button.primary { border-color: #2b815e; background: #1d7452; color: white; }
@@ -514,7 +565,7 @@
     .settings-view {
       display: none;
       grid-column: 2 / 5;
-      grid-row: 2;
+      grid-row: 3;
       grid-template-columns: 230px minmax(0, 1fr);
       min-height: 0;
       background: #111217;
@@ -570,6 +621,9 @@
     .switch input:checked + span { background: var(--blue); }
     .switch input:checked + span::after { transform: translateX(18px); background: white; }
     .settings-code { color: #d7f2e6; font: 600 15px/1 ui-monospace, "Cascadia Mono", Consolas, monospace; letter-spacing: 1.2px; user-select: all; }
+    .password-setting { display: flex; width: 360px; gap: 8px; }
+    .password-setting .setting-input { width: 100%; }
+    .expiry-note { min-width: 74px; color: #86bca6; font: 500 11px/1.3 "Segoe UI", sans-serif; text-align: right; }
     .setting-actions { display: flex; align-items: center; gap: 8px; }
     .button.compact { min-width: 0; height: 32px; padding: 0 11px; font-size: 12px; }
     .button.danger { border-color: #664049; color: #ff9aa8; background: #322429; }
@@ -600,6 +654,9 @@
     <symbol id="i-keyboard" viewBox="0 0 24 24"><rect x="2" y="5" width="20" height="14" rx="2"/><path d="M6 9h.01M10 9h.01M14 9h.01M18 9h.01M6 13h.01M10 13h.01M14 13h.01M18 13h.01M8 16h8"/></symbol>
     <symbol id="i-expand" viewBox="0 0 24 24"><path d="M8 3H3v5M16 3h5v5M8 21H3v-5M16 21h5v-5"/></symbol>
     <symbol id="i-x" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></symbol>
+    <symbol id="i-minus" viewBox="0 0 24 24"><path d="M5 12h14"/></symbol>
+    <symbol id="i-maximize" viewBox="0 0 24 24"><rect x="5" y="5" width="14" height="14" rx=".5"/></symbol>
+    <symbol id="i-restore" viewBox="0 0 24 24"><path d="M8 8V5h11v11h-3"/><rect x="5" y="8" width="11" height="11" rx=".5"/></symbol>
     <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3 6h7l2 2h9v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6Z"/></symbol>
     <symbol id="i-terminal" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="m7 9 3 3-3 3M13 16h4"/></symbol>
     <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 3 20 6v5c0 5-3.5 8.5-8 10-4.5-1.5-8-5-8-10V6l8-3Z"/><path d="m9 12 2 2 4-4"/></symbol>
@@ -607,6 +664,16 @@
   </svg>
 
   <div class="app" id="app">
+    <header class="window-titlebar">
+      <div class="window-drag pywebview-drag-region" id="windowDragRegion">
+        <img src="/app-icon.png" alt=""><span>LAN Remote</span>
+      </div>
+      <div class="window-controls">
+        <button class="window-control" id="windowMinimize" type="button" title="最小化"><svg><use href="#i-minus"/></svg></button>
+        <button class="window-control" id="windowMaximize" type="button" title="最大化"><svg class="maximize-icon"><use href="#i-maximize"/></svg><svg class="restore-icon"><use href="#i-restore"/></svg></button>
+        <button class="window-control close" id="windowClose" type="button" title="关闭"><svg><use href="#i-x"/></svg></button>
+      </div>
+    </header>
     <aside class="brand-rail">
       <div class="logo" title="LAN Remote"><img src="/app-icon.png" alt="LAN Remote"></div>
       <button class="rail-button active" id="railDevices" title="全部设备"><svg><use href="#i-monitor"/></svg></button>
@@ -614,7 +681,6 @@
     </aside>
 
     <header class="topbar">
-      <div class="app-name">LAN Remote</div>
       <label class="search">
         <svg><use href="#i-search"/></svg>
         <input id="searchInput" type="search" placeholder="搜索局域网设备" autocomplete="off">
@@ -653,6 +719,7 @@
         <div class="control-grid">
           <button class="control-card primary wide" id="controlButton"><svg><use href="#i-monitor"/></svg><span>桌面控制</span></button>
           <button class="control-card wide" id="viewButton"><svg><use href="#i-eye"/></svg><span>桌面观看</span></button>
+          <button class="control-card wide" id="credentialButton"><svg><use href="#i-shield"/></svg><span>连接凭据与锁屏自动输入</span></button>
         </div>
         <div class="info-card">
           <div class="info-line"><span>设备地址</span><span id="detailAddress"></span></div>
@@ -683,8 +750,12 @@
               <input class="setting-input" id="settingDeviceName" maxlength="64" autocomplete="off">
             </div>
             <div class="setting-row">
-              <div class="setting-copy"><strong>本机访问码</strong><small>另一台电脑首次连接时需要输入；验证后 30 分钟内免输。</small></div>
-              <div class="setting-actions"><code class="settings-code" id="localAccessCode"></code><button class="button compact" id="copyCode" type="button">复制</button><button class="button compact danger" id="regenerateCode" type="button">重置</button></div>
+              <div class="setting-copy"><strong>临时访问码</strong><small>每 30 分钟自动刷新；到期后旧访问码立即失效。</small></div>
+              <div class="setting-actions"><code class="settings-code" id="localAccessCode"></code><span class="expiry-note" id="accessCodeExpiry"></span><button class="button compact" id="copyCode" type="button">复制</button><button class="button compact danger" id="regenerateCode" type="button">立即刷新</button></div>
+            </div>
+            <div class="setting-row">
+              <div class="setting-copy"><strong>永久访问密码</strong><small id="permanentPasswordStatus">尚未设置。修改前，已记住此密码的设备可一直免输连接。</small></div>
+              <div class="password-setting"><input class="setting-input" id="settingPermanentPassword" type="password" minlength="8" maxlength="128" autocomplete="new-password" placeholder="输入 8–128 位新密码"><button class="button compact primary" id="setPermanentPassword" type="button">设置</button><button class="button compact danger" id="clearPermanentPassword" type="button">清除</button></div>
             </div>
           </div>
         </section>
@@ -695,7 +766,7 @@
             <div class="setting-row"><div class="setting-copy"><strong>允许局域网发现</strong><small>关闭后本机不会广播，也不会接收设备发现信息。</small></div><label class="switch"><input id="settingDiscovery" type="checkbox"><span></span></label></div>
             <div class="setting-row"><div class="setting-copy"><strong>仅允许桌面观看</strong><small>拒绝远程鼠标和键盘输入。</small></div><label class="switch"><input id="settingViewOnly" type="checkbox"><span></span></label></div>
             <div class="setting-row"><div class="setting-copy"><strong>允许锁屏与安全桌面控制</strong><small id="secureDesktopStatus">需要管理员安装的安全桌面服务。</small></div><label class="switch"><input id="settingSecureDesktop" type="checkbox"><span></span></label></div>
-            <div class="setting-row"><div class="setting-copy"><strong>30 分钟内记住访问码</strong><small>只保存在当前软件会话中，超时后自动清除。</small></div><label class="switch"><input id="settingRememberCodes" type="checkbox"><span></span></label></div>
+            <div class="setting-row"><div class="setting-copy"><strong>记住临时访问码直到失效</strong><small>临时访问码只保存在当前软件会话中，并按目标端到期时间清除。</small></div><label class="switch"><input id="settingRememberCodes" type="checkbox"><span></span></label></div>
           </div>
         </section>
 
@@ -730,9 +801,16 @@
     <form class="dialog" id="pairForm">
       <div class="dialog-head">
         <div class="dialog-icon"><svg><use href="#i-shield"/></svg></div>
-        <div><h3>连接到 <span id="pairDeviceName"></span></h3><p>在目标电脑的 LAN Remote 设置中查看“本机访问码”</p></div>
+        <div><h3>连接到 <span id="pairDeviceName"></span></h3><p>可输入目标电脑的临时访问码或永久访问密码</p></div>
       </div>
-      <input class="code-input" id="codeInput" type="password" placeholder="访问码" autocomplete="one-time-code" spellcheck="false">
+      <input class="code-input" id="codeInput" type="password" placeholder="临时访问码或永久访问密码" autocomplete="off" spellcheck="false">
+      <div class="dialog-options">
+        <label class="dialog-check"><input id="rememberPermanentAccess" type="checkbox" checked>如果验证为永久访问密码，使用 Windows 加密后长期记住</label>
+        <div class="dialog-subtitle">锁屏自动输入（可选）</div>
+        <div class="dialog-password-row"><input class="code-input" id="lockPasswordInput" type="password" maxlength="128" placeholder="对方 Windows 锁屏密码" autocomplete="off"></div>
+        <label class="dialog-check"><input id="rememberLockPassword" type="checkbox">加密记住，并在确认对方锁屏时自动输入一次</label>
+        <span class="credential-state" id="credentialState"></span>
+      </div>
       <div class="dialog-error" id="pairError"></div>
       <div class="dialog-actions">
         <button class="button" type="button" id="pairCancel">取消</button>
@@ -770,6 +848,11 @@
       lastMoveAt: 0,
       refreshTimer: 0,
       toastTimer: 0,
+      autoUnlockLastCheck: 0,
+      autoUnlockChecking: false,
+      pairCredentialSource: "",
+      pairCredentialStatus: {access_saved: false, lock_saved: false},
+      refreshingAccessCode: false,
       settings: {frame_delay_ms: 120, remember_codes: true, auto_check_updates: true},
       latestUpdate: null
     };
@@ -812,8 +895,31 @@
       $("settingStartMaximized").checked = Boolean(state.settings.start_maximized);
       $("settingAutoUpdate").checked = Boolean(state.settings.auto_check_updates);
       $("localAccessCode").textContent = state.settings.access_code || "";
+      $("permanentPasswordStatus").textContent = state.settings.permanent_password_set
+        ? "已设置。除非在这里修改或清除，已记住密码的设备可持续免输连接。"
+        : "尚未设置。设置后可在受信任设备上加密记住并长期免输连接。";
+      $("clearPermanentPassword").disabled = !state.settings.permanent_password_set;
       $("versionLabel").textContent = `当前版本 ${state.settings.app_version || ""}`;
       document.body.classList.toggle("reduce-motion", Boolean(state.settings.reduce_motion));
+      updateAccessCodeExpiry();
+    }
+
+    function updateAccessCodeExpiry() {
+      const expiry = Number(state.settings.access_code_expires_at || 0);
+      if (!expiry) {
+        $("accessCodeExpiry").textContent = "";
+        return;
+      }
+      const remaining = Math.max(0, expiry - Date.now());
+      const minutes = Math.floor(remaining / 60000);
+      const seconds = Math.floor((remaining % 60000) / 1000);
+      $("accessCodeExpiry").textContent = remaining > 0
+        ? `${minutes}:${String(seconds).padStart(2, "0")} 后刷新`
+        : "正在刷新…";
+      if (remaining <= 0 && !state.refreshingAccessCode) {
+        state.refreshingAccessCode = true;
+        loadSettings().finally(() => { state.refreshingAccessCode = false; });
+      }
     }
 
     function settingsPayload() {
@@ -867,6 +973,28 @@
       }
     }
 
+    async function setPermanentPassword() {
+      const field = $("settingPermanentPassword");
+      const password = field.value;
+      if (password.length < 8 || password.length > 128) {
+        showToast("永久访问密码必须为 8 到 128 个字符");
+        field.focus();
+        return;
+      }
+      if (await saveSettings({permanent_password: password})) {
+        field.value = "";
+        showToast("永久访问密码已更新，旧密码已立即失效");
+      }
+    }
+
+    async function clearPermanentPassword() {
+      if (!window.confirm("清除后，所有设备保存的永久访问密码都会立即失效。确定继续吗？")) return;
+      if (await saveSettings({clear_permanent_password: true})) {
+        $("settingPermanentPassword").value = "";
+        showToast("永久访问密码已清除");
+      }
+    }
+
     function clearCachedAccessCodes() {
       for (let index = sessionStorage.length - 1; index >= 0; index -= 1) {
         const key = sessionStorage.key(index);
@@ -874,20 +1002,26 @@
       }
     }
 
-    function cachedAccessCode(deviceId) {
+    async function cachedAccessCredential(deviceId) {
+      if (window.pywebview?.api?.load_access_password) {
+        try {
+          const permanent = await window.pywebview.api.load_access_password(deviceId);
+          if (permanent) return {token: String(permanent), source: "permanent"};
+        } catch {}
+      }
       const key = `lan-remote-token:${deviceId}`;
       const raw = sessionStorage.getItem(key);
-      if (!raw || !state.settings.remember_codes) return "";
+      if (!raw || !state.settings.remember_codes) return {token: "", source: ""};
       try {
         const saved = JSON.parse(raw);
         if (!saved.token || Number(saved.expiresAt) <= Date.now()) {
           sessionStorage.removeItem(key);
-          return "";
+          return {token: "", source: ""};
         }
-        return String(saved.token);
+        return {token: String(saved.token), source: "temporary"};
       } catch {
         sessionStorage.removeItem(key);
-        return "";
+        return {token: "", source: ""};
       }
     }
 
@@ -1025,7 +1159,7 @@
       renderDetails();
     }
 
-    function openPair(mode) {
+    async function openPair(mode, forcePrompt = false) {
       const device = selectedDevice();
       if (!device) return;
       if (mode === "control" && device.view_only) {
@@ -1035,10 +1169,23 @@
       state.pairMode = mode;
       $("pairDeviceName").textContent = device.name;
       $("pairError").textContent = "";
-      const saved = cachedAccessCode(device.id);
-      $("codeInput").value = saved;
+      $("lockPasswordInput").value = "";
+      state.pairCredentialStatus = {access_saved: false, lock_saved: false};
+      if (window.pywebview?.api?.credential_status) {
+        try {
+          state.pairCredentialStatus = await window.pywebview.api.credential_status(device.id);
+        } catch {}
+      }
+      $("rememberPermanentAccess").checked = true;
+      $("rememberLockPassword").checked = Boolean(state.pairCredentialStatus.lock_saved);
+      $("credentialState").textContent = state.pairCredentialStatus.lock_saved
+        ? "已保存这台设备的锁屏密码；留空表示继续使用原密码。"
+        : "锁屏密码只会以 Windows DPAPI 加密形式保存在本机。";
+      const saved = await cachedAccessCredential(device.id);
+      state.pairCredentialSource = saved.source;
+      $("codeInput").value = saved.token;
       $("pairModal").classList.add("show");
-      if (saved) {
+      if (saved.token && !forcePrompt) {
         setTimeout(() => $("pairForm").requestSubmit(), 20);
       } else {
         setTimeout(() => $("codeInput").focus(), 30);
@@ -1068,18 +1215,44 @@
           headers: {"X-Remote-Token": token},
           cache: "no-store"
         });
-        if (response.status === 401) throw new Error("访问码不正确");
+        if (response.status === 401) {
+          if (state.pairCredentialSource === "permanent" && window.pywebview?.api?.clear_access_password) {
+            await window.pywebview.api.clear_access_password(device.id).catch(() => {});
+            state.pairCredentialSource = "";
+            $("codeInput").value = "";
+            throw new Error("目标端永久访问密码已修改，请重新输入");
+          }
+          throw new Error("访问码或永久访问密码不正确");
+        }
         if (!response.ok) throw new Error(`连接失败（${response.status}）`);
-        if (state.settings.remember_codes) {
+        const result = await response.json();
+        if (result.auth_method === "temporary" && state.settings.remember_codes) {
           sessionStorage.setItem(`lan-remote-token:${device.id}`, JSON.stringify({
             token,
-            expiresAt: Date.now() + 30 * 60 * 1000
+            expiresAt: Number(result.credential_expires_at || Date.now())
           }));
         } else {
           sessionStorage.removeItem(`lan-remote-token:${device.id}`);
         }
+
+        if (result.auth_method === "permanent" && window.pywebview?.api?.save_access_password) {
+          if ($("rememberPermanentAccess").checked) {
+            await window.pywebview.api.save_access_password(device.id, token, device.name);
+          } else {
+            await window.pywebview.api.clear_access_password(device.id);
+          }
+        }
+
+        if (window.pywebview?.api?.save_lock_password) {
+          const lockPassword = $("lockPasswordInput").value;
+          if ($("rememberLockPassword").checked) {
+            if (lockPassword) await window.pywebview.api.save_lock_password(device.id, lockPassword, device.name);
+          } else if (state.pairCredentialStatus.lock_saved) {
+            await window.pywebview.api.clear_lock_password(device.id);
+          }
+        }
         closePair();
-        startSession(device, token, state.pairMode === "view");
+        startSession(device, result.session_token || token, state.pairMode === "view", result.auth_method, result.credential_expires_at);
       } catch (error) {
         $("pairError").textContent = error.message || "无法连接到设备";
       } finally {
@@ -1088,10 +1261,11 @@
       }
     }
 
-    function startSession(device, token, viewOnly) {
-      state.session = {device, token, viewOnly, connected: true};
+    function startSession(device, token, viewOnly, authMethod = "temporary", credentialExpiresAt = null) {
+      state.session = {device, token, viewOnly, authMethod, credentialExpiresAt, connected: true};
       state.loadingFrame = false;
       state.keyboardEnabled = false;
+      state.autoUnlockLastCheck = 0;
       $("remoteName").textContent = `${device.name} · ${viewOnly ? "观看" : "控制"}`;
       $("keyboardButton").style.display = viewOnly ? "none" : "inline-flex";
       $("keyboardButton").classList.remove("active");
@@ -1104,6 +1278,7 @@
 
     function stopSession() {
       if (state.session) state.session.connected = false;
+      clearTimeout(state.refreshTimer);
       state.session = null;
       state.loadingFrame = false;
       state.keyboardEnabled = false;
@@ -1127,6 +1302,15 @@
     function refreshScreen() {
       const session = state.session;
       if (!session?.connected || state.loadingFrame) return;
+      if (session.authMethod === "temporary" && Number(session.credentialExpiresAt || 0) <= Date.now()) {
+        const deviceId = session.device.id;
+        const mode = session.viewOnly ? "view" : "control";
+        sessionStorage.removeItem(`lan-remote-token:${deviceId}`);
+        stopSession();
+        showToast("目标端临时访问码已刷新，请重新连接");
+        openPair(mode);
+        return;
+      }
       state.loadingFrame = true;
       const frame = new Image();
       frame.onload = () => {
@@ -1135,6 +1319,7 @@
         $("remoteHint").classList.add("hidden");
         state.loadingFrame = false;
         setRemoteStatus(`已连接 · ${frame.naturalWidth} × ${frame.naturalHeight}`);
+        maybeAutoUnlock();
         state.refreshTimer = setTimeout(refreshScreen, Number(state.settings.frame_delay_ms) || 120);
       };
       frame.onerror = () => {
@@ -1143,6 +1328,24 @@
         if (state.session?.connected) state.refreshTimer = setTimeout(refreshScreen, 850);
       };
       frame.src = endpoint(`/screen?t=${Date.now()}`);
+    }
+
+    async function maybeAutoUnlock() {
+      const session = state.session;
+      if (!session?.connected || session.viewOnly || !window.pywebview?.api?.try_auto_unlock) return;
+      const now = Date.now();
+      if (state.autoUnlockChecking || now - state.autoUnlockLastCheck < 1400) return;
+      state.autoUnlockLastCheck = now;
+      state.autoUnlockChecking = true;
+      try {
+        const result = await window.pywebview.api.try_auto_unlock(JSON.stringify(session.device), session.token);
+        if (result?.status === "submitted") {
+          setRemoteStatus("已向锁屏界面自动输入保存的密码");
+        } else if (result?.status === "access_denied") {
+          setRemoteStatus("访问凭据已失效，请重新连接", true);
+        }
+      } catch {}
+      finally { state.autoUnlockChecking = false; }
     }
 
     function remotePoint(event) {
@@ -1203,17 +1406,42 @@
     });
     $("copyCode").addEventListener("click", copyLocalAccessCode);
     $("saveSettings").addEventListener("click", () => saveSettings());
+    $("setPermanentPassword").addEventListener("click", setPermanentPassword);
+    $("clearPermanentPassword").addEventListener("click", clearPermanentPassword);
     $("regenerateCode").addEventListener("click", () => {
-      if (window.confirm("重置后，其他电脑保存的旧访问码会立即失效。确定继续吗？")) saveSettings({regenerate_access_code: true});
+      if (window.confirm("立即刷新后，正在使用旧临时访问码的连接会失效。确定继续吗？")) saveSettings({regenerate_access_code: true});
     });
     $("checkUpdate").addEventListener("click", () => checkForUpdates(false));
     $("installUpdate").addEventListener("click", installUpdate);
     $("controlButton").addEventListener("click", () => openPair("control"));
     $("viewButton").addEventListener("click", () => openPair("view"));
+    $("credentialButton").addEventListener("click", () => openPair(selectedDevice()?.view_only ? "view" : "control", true));
     $("pairForm").addEventListener("submit", verifyAndConnect);
     $("pairCancel").addEventListener("click", closePair);
     $("pairModal").addEventListener("mousedown", (event) => { if (event.target === $("pairModal")) closePair(); });
+    $("lockPasswordInput").addEventListener("input", () => {
+      if ($("lockPasswordInput").value) $("rememberLockPassword").checked = true;
+    });
     $("closeSession").addEventListener("click", stopSession);
+
+    async function toggleWindowMaximize() {
+      if (!window.pywebview?.api?.toggle_maximize_window) return;
+      const maximized = await window.pywebview.api.toggle_maximize_window();
+      document.body.classList.toggle("window-maximized", Boolean(maximized));
+      $("windowMaximize").title = maximized ? "还原" : "最大化";
+    }
+
+    $("windowMinimize").addEventListener("click", () => window.pywebview?.api?.minimize_window?.());
+    $("windowMaximize").addEventListener("click", toggleWindowMaximize);
+    $("windowClose").addEventListener("click", () => window.pywebview?.api?.close_window?.());
+    $("windowDragRegion").addEventListener("dblclick", toggleWindowMaximize);
+    window.addEventListener("pywebviewready", async () => {
+      try {
+        const nativeState = await window.pywebview.api.window_state();
+        document.body.classList.toggle("window-maximized", Boolean(nativeState.maximized));
+        $("windowMaximize").title = nativeState.maximized ? "还原" : "最大化";
+      } catch {}
+    });
 
     $("keyboardButton").addEventListener("click", () => {
       state.keyboardEnabled = !state.keyboardEnabled;
@@ -1293,6 +1521,7 @@
       if (state.settings.auto_check_updates) checkForUpdates(true);
     })();
     setInterval(() => refreshDevices(false), 2500);
+    setInterval(updateAccessCodeExpiry, 1000);
   </script>
 </body>
 </html>
