@@ -969,7 +969,8 @@
         <section class="settings-section">
           <h4 class="settings-section-title"><svg><use href="#i-refresh"/></svg>软件更新</h4>
           <div class="settings-card">
-            <div class="setting-row"><div class="setting-copy"><strong>自动检查 GitHub 最新版本</strong><small>启动后检查远端 Release，不会在后台静默安装。</small></div><label class="switch"><input id="settingAutoUpdate" type="checkbox"><span></span></label></div>
+            <div class="setting-row"><div class="setting-copy"><strong>自动检查 GitHub 最新版本</strong><small>启动后检查远端 Release，发现新版时显示更新状态。</small></div><label class="switch"><input id="settingAutoUpdate" type="checkbox"><span></span></label></div>
+            <div class="setting-row"><div class="setting-copy"><strong>自动下载并安装更新</strong><small>发现新版后自动下载并校验；确认一次 Windows UAC 后自动覆盖安装并重新打开。</small></div><label class="switch"><input id="settingAutoInstallUpdate" type="checkbox"><span></span></label></div>
             <div class="setting-row"><div class="setting-copy"><strong id="versionLabel">当前版本</strong><small id="updateDescription">尚未检查更新</small></div><div class="setting-actions"><span class="update-state" id="updateState"></span><button class="button compact" id="checkUpdate" type="button">立即检查</button><button class="button compact primary update-action" id="installUpdate" type="button">下载并安装</button></div></div>
           </div>
         </section>
@@ -1078,8 +1079,9 @@
       pairCredentialSource: "",
       pairCredentialStatus: {access_saved: false, lock_saved: false},
       refreshingAccessCode: false,
-      settings: {frame_delay_ms: 120, remember_codes: true, auto_check_updates: true},
-      latestUpdate: null
+      settings: {frame_delay_ms: 120, remember_codes: true, auto_check_updates: true, auto_install_updates: true},
+      latestUpdate: null,
+      autoUpdateStartedForVersion: ""
     };
 
     function escapeHtml(value) {
@@ -1119,6 +1121,7 @@
       $("settingLaunchAtLogin").checked = Boolean(state.settings.launch_at_login);
       $("settingStartMaximized").checked = Boolean(state.settings.start_maximized);
       $("settingAutoUpdate").checked = Boolean(state.settings.auto_check_updates);
+      $("settingAutoInstallUpdate").checked = Boolean(state.settings.auto_install_updates);
       $("localAccessCode").textContent = state.settings.access_code || "";
       $("permanentPasswordStatus").textContent = state.settings.permanent_password_set
         ? "已设置。除非在这里修改或清除，已记住密码的设备可持续免输连接。"
@@ -1158,7 +1161,8 @@
         reduce_motion: $("settingReduceMotion").checked,
         launch_at_login: $("settingLaunchAtLogin").checked,
         start_maximized: $("settingStartMaximized").checked,
-        auto_check_updates: $("settingAutoUpdate").checked
+        auto_check_updates: $("settingAutoUpdate").checked,
+        auto_install_updates: $("settingAutoInstallUpdate").checked
       };
     }
 
@@ -1279,6 +1283,16 @@
         $("updateDescription").textContent = payload.update_available ? "新安装包已发布，可下载并覆盖安装。" : `GitHub 最新版本：${payload.latest_version}`;
         $("installUpdate").classList.toggle("show", Boolean(payload.update_available && payload.installer_url));
         if (!silent) showToast(payload.message || "更新检查完成");
+        if (
+          payload.update_available &&
+          payload.installer_url &&
+          state.settings.auto_install_updates &&
+          state.autoUpdateStartedForVersion !== payload.latest_version
+        ) {
+          state.autoUpdateStartedForVersion = payload.latest_version;
+          $("updateDescription").textContent = "正在自动准备更新；下载校验完成后请确认一次 Windows UAC。";
+          setTimeout(() => installUpdate(true), 600);
+        }
       } catch (error) {
         $("updateState").textContent = "检查失败";
         $("updateDescription").textContent = error.message || "暂时无法连接 GitHub";
@@ -1289,16 +1303,18 @@
       }
     }
 
-    async function installUpdate() {
+    async function installUpdate(autoTriggered = false) {
       const button = $("installUpdate");
       button.disabled = true;
-        button.textContent = "正在下载并校验…";
+      button.textContent = "正在下载并校验…";
+      $("updateState").textContent = "正在准备安装";
       try {
         const response = await fetch("/api/update/install", {method: "POST", cache: "no-store"});
         const payload = await response.json();
         if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
         showToast(payload.message || "安装程序已启动，请在 UAC 窗口选择“是”");
         button.textContent = "请确认 UAC";
+        $("updateDescription").textContent = "请在 Windows UAC 窗口选择“是”；完成后新版会自动重新打开。";
         setTimeout(() => {
           if (!button.isConnected) return;
           button.disabled = false;
@@ -1306,6 +1322,10 @@
         }, 22000);
       } catch (error) {
         showToast(error.message || "更新安装失败");
+        $("updateState").textContent = "安装失败";
+        $("updateDescription").textContent = autoTriggered
+          ? "自动更新失败，可点击“下载并安装”重试。"
+          : (error.message || "更新安装失败，可稍后重试。");
         button.disabled = false;
         button.textContent = "下载并安装";
       }
@@ -1961,7 +1981,7 @@
       if (window.confirm("立即刷新后，正在使用旧临时访问码的连接会失效。确定继续吗？")) saveSettings({regenerate_access_code: true});
     });
     $("checkUpdate").addEventListener("click", () => checkForUpdates(false));
-    $("installUpdate").addEventListener("click", installUpdate);
+    $("installUpdate").addEventListener("click", () => installUpdate(false));
     $("controlButton").addEventListener("click", () => openPair("control"));
     $("viewButton").addEventListener("click", () => openPair("view"));
     $("credentialButton").addEventListener("click", () => openPair(selectedDevice()?.view_only ? "view" : "control", true));

@@ -23,10 +23,31 @@ namespace WindowsLANRemoteSetup
                 return 0;
             }
 
+            int restartProbeIndex = ArgumentIndex(args, "--restart-path-probe");
+            if (restartProbeIndex >= 0)
+            {
+                string probeDirectory = restartProbeIndex + 1 < args.Length ? args[restartProbeIndex + 1] : "";
+                string ignored;
+                return TryResolveInstalledApplication(probeDirectory, out ignored) ? 0 : 1;
+            }
+
             bool quiet = IsQuiet(args);
+            bool fromUpdate = HasArgument(args, "--from-update");
             if (!IsAdministrator())
             {
-                return RelaunchAsAdministrator(args, quiet);
+                int result = RelaunchAsAdministrator(args, quiet);
+                if (result == 0 && fromUpdate)
+                {
+                    if (!LaunchInstalledApplication() && !quiet)
+                    {
+                        MessageBox.Show(
+                            "The update was installed, but Windows LAN Remote could not be reopened. You can open it from the Start menu.",
+                            "Windows LAN Remote Setup",
+                            MessageBoxButtons.OK,
+                            MessageBoxIcon.Warning);
+                    }
+                }
+                return result;
             }
 
             // Give an in-app updater enough time to return its HTTP response
@@ -82,7 +103,7 @@ namespace WindowsLANRemoteSetup
                     }
                 }
 
-                if (!quiet)
+                if (!quiet && !fromUpdate)
                 {
                     MessageBox.Show(
                         "Windows LAN Remote has been installed. Open it from the Start menu.",
@@ -208,6 +229,110 @@ namespace WindowsLANRemoteSetup
                 }
             }
             return false;
+        }
+
+        private static int ArgumentIndex(string[] args, string value)
+        {
+            if (args == null)
+            {
+                return -1;
+            }
+            for (int index = 0; index < args.Length; index++)
+            {
+                if (String.Equals(args[index], value, StringComparison.OrdinalIgnoreCase))
+                {
+                    return index;
+                }
+            }
+            return -1;
+        }
+
+        private static bool LaunchInstalledApplication()
+        {
+            try
+            {
+                string programFiles = Environment.GetEnvironmentVariable("ProgramW6432");
+                if (String.IsNullOrWhiteSpace(programFiles))
+                {
+                    programFiles = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
+                }
+                string installDirectory = Path.Combine(programFiles, "Windows LAN Remote");
+                string executablePath;
+                if (!TryResolveInstalledApplication(installDirectory, out executablePath))
+                {
+                    return false;
+                }
+
+                ProcessStartInfo startInfo = new ProcessStartInfo();
+                startInfo.FileName = executablePath;
+                startInfo.WorkingDirectory = installDirectory;
+                startInfo.UseShellExecute = true;
+                return Process.Start(startInfo) != null;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static bool TryResolveInstalledApplication(string installDirectory, out string executablePath)
+        {
+            executablePath = "";
+            try
+            {
+                if (String.IsNullOrWhiteSpace(installDirectory))
+                {
+                    return false;
+                }
+                string versionPath = Path.Combine(installDirectory, "VERSION.txt");
+                if (!File.Exists(versionPath))
+                {
+                    return false;
+                }
+                string version = File.ReadAllText(versionPath).Trim();
+                if (!IsSafeVersion(version))
+                {
+                    return false;
+                }
+                string candidate = Path.Combine(installDirectory, "WindowsLANRemote-" + version + ".exe");
+                if (!File.Exists(candidate))
+                {
+                    return false;
+                }
+                executablePath = Path.GetFullPath(candidate);
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static bool IsSafeVersion(string value)
+        {
+            if (String.IsNullOrWhiteSpace(value) || value.Length > 32 || value[0] == '.' || value[value.Length - 1] == '.')
+            {
+                return false;
+            }
+            bool previousDot = false;
+            foreach (char character in value)
+            {
+                if (character == '.')
+                {
+                    if (previousDot)
+                    {
+                        return false;
+                    }
+                    previousDot = true;
+                    continue;
+                }
+                if (character < '0' || character > '9')
+                {
+                    return false;
+                }
+                previousDot = false;
+            }
+            return true;
         }
 
         private static void ExtractPayload(string destination)

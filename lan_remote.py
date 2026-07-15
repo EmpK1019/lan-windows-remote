@@ -22,6 +22,7 @@ import mimetypes
 import os
 import platform
 import queue
+import re
 import secrets
 import socket
 import struct
@@ -52,7 +53,7 @@ if platform.system() == "Windows":
 
 
 APP_NAME = "Windows LAN Remote"
-APP_VERSION = "0.6.6"
+APP_VERSION = "0.6.7"
 GITHUB_REPOSITORY = "EmpK1019/lan-windows-remote"
 GITHUB_LATEST_RELEASE_API = f"https://api.github.com/repos/{GITHUB_REPOSITORY}/releases/latest"
 DEFAULT_PORT = 8765
@@ -630,6 +631,7 @@ class SettingsStore:
         "start_maximized": False,
         "reduce_motion": False,
         "auto_check_updates": True,
+        "auto_install_updates": True,
         "secure_desktop_enabled": True,
         "permanent_password_salt": "",
         "permanent_password_hash": "",
@@ -658,6 +660,7 @@ class SettingsStore:
             "start_maximized",
             "reduce_motion",
             "auto_check_updates",
+            "auto_install_updates",
             "secure_desktop_enabled",
         }
         for key in boolean_keys:
@@ -753,6 +756,7 @@ class SettingsStore:
             "start_maximized": bool(self.values["start_maximized"]),
             "reduce_motion": bool(self.values["reduce_motion"]),
             "auto_check_updates": bool(self.values["auto_check_updates"]),
+            "auto_install_updates": bool(self.values["auto_install_updates"]),
             "secure_desktop_enabled": bool(self.values["secure_desktop_enabled"]),
             "secure_desktop_available": secure_helper_available(),
             "app_version": APP_VERSION,
@@ -1105,11 +1109,29 @@ def trusted_github_download_url(value: str) -> bool:
     )
 
 
+def update_file_matches(path: Path, expected_digest: str, expected_size: int = 0) -> bool:
+    try:
+        if not path.is_file():
+            return False
+        actual_size = path.stat().st_size
+        if actual_size < 64 * 1024 or (expected_size and actual_size != expected_size):
+            return False
+        digest = hashlib.sha256()
+        with path.open("rb") as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return hmac.compare_digest(f"sha256:{digest.hexdigest()}", expected_digest)
+    except OSError:
+        return False
+
+
 def download_and_launch_update(release: dict[str, Any]) -> Path:
     installer_url = str(release.get("installer_url", ""))
     latest_version = str(release.get("latest_version", "update"))
     if not installer_url or not trusted_github_download_url(installer_url):
         raise RuntimeError("此版本没有可用的 Windows 安装包")
+    if re.fullmatch(r"\d+(?:\.\d+){1,3}", latest_version) is None:
+        raise RuntimeError("GitHub 发布版本号无效")
 
     destination = Path(tempfile.gettempdir()) / f"WindowsLANRemoteSetup-{latest_version}.exe"
     expected_digest = str(release.get("installer_digest", "")).strip().lower()
@@ -1126,51 +1148,57 @@ def download_and_launch_update(release: dict[str, Any]) -> Path:
         asset_size = 0
     if asset_size > 250 * 1024 * 1024:
         raise RuntimeError("安装包大小异常")
-    request = Request(
-        installer_url,
-        headers={"User-Agent": f"Windows-LAN-Remote/{APP_VERSION}", "Accept": "application/octet-stream"},
-    )
-    try:
-        with urlopen(request, timeout=30) as response:
-            final_url = response.geturl()
-            if not trusted_github_download_url(final_url):
-                raise RuntimeError("GitHub 下载跳转到了不受信任的地址")
-            expected = int(response.headers.get("Content-Length", "0") or "0")
-            if expected > 250 * 1024 * 1024:
-                raise RuntimeError("安装包大小异常")
-            total = 0
-            digest = hashlib.sha256()
-            with destination.open("wb") as stream:
-                while True:
-                    chunk = response.read(1024 * 1024)
-                    if not chunk:
-                        break
-                    total += len(chunk)
-                    if total > 250 * 1024 * 1024:
+    if not update_file_matches(destination, expected_digest, asset_size):
+        partial = destination.with_suffix(destination.suffix + ".part")
+        request = Request(
+            installer_url,
+            headers={"User-Agent": f"Windows-LAN-Remote/{APP_VERSION}", "Accept": "application/octet-stream"},
+        )
+        for attempt in range(1, 4):
+            try:
+                partial.unlink(missing_ok=True)
+                with urlopen(request, timeout=30) as response:
+                    final_url = response.geturl()
+                    if not trusted_github_download_url(final_url):
+                        raise RuntimeError("GitHub 下载跳转到了不受信任的地址")
+                    expected = int(response.headers.get("Content-Length", "0") or "0")
+                    if expected > 250 * 1024 * 1024:
                         raise RuntimeError("安装包大小异常")
-                    digest.update(chunk)
-                    stream.write(chunk)
-            if total < 64 * 1024 or (expected and total != expected):
-                raise RuntimeError("安装包下载不完整")
-            if asset_size and total != asset_size:
-                raise RuntimeError("安装包大小与 GitHub 发布信息不一致")
-            if not hmac.compare_digest(
-                f"sha256:{digest.hexdigest()}",
-                expected_digest,
-            ):
-                raise RuntimeError("安装包 SHA-256 校验失败")
-    except RuntimeError:
-        try:
-            destination.unlink(missing_ok=True)
-        except OSError:
-            pass
-        raise
-    except (HTTPError, URLError, TimeoutError, OSError) as exc:
-        try:
-            destination.unlink(missing_ok=True)
-        except OSError:
-            pass
-        raise RuntimeError("安装包下载失败，请稍后重试") from exc
+                    total = 0
+                    digest = hashlib.sha256()
+                    with partial.open("wb") as stream:
+                        while True:
+                            chunk = response.read(1024 * 1024)
+                            if not chunk:
+                                break
+                            total += len(chunk)
+                            if total > 250 * 1024 * 1024:
+                                raise RuntimeError("安装包大小异常")
+                            digest.update(chunk)
+                            stream.write(chunk)
+                    if total < 64 * 1024 or (expected and total != expected):
+                        raise RuntimeError("安装包下载不完整")
+                    if asset_size and total != asset_size:
+                        raise RuntimeError("安装包大小与 GitHub 发布信息不一致")
+                    if not hmac.compare_digest(f"sha256:{digest.hexdigest()}", expected_digest):
+                        raise RuntimeError("安装包 SHA-256 校验失败")
+                partial.replace(destination)
+                break
+            except RuntimeError:
+                try:
+                    partial.unlink(missing_ok=True)
+                    destination.unlink(missing_ok=True)
+                except OSError:
+                    pass
+                raise
+            except (HTTPError, URLError, TimeoutError, OSError) as exc:
+                try:
+                    partial.unlink(missing_ok=True)
+                except OSError:
+                    pass
+                if attempt == 3:
+                    raise RuntimeError("安装包下载失败，已自动重试 3 次") from exc
+                time.sleep(0.4 * attempt)
 
     try:
         # The bootstrapper starts as a normal process and requests UAC itself.
@@ -3552,6 +3580,7 @@ class RemoteHandler(BaseHTTPRequestHandler):
             "start_maximized",
             "reduce_motion",
             "auto_check_updates",
+            "auto_install_updates",
             "secure_desktop_enabled",
         }
         for key in boolean_keys:

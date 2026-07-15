@@ -157,6 +157,7 @@ class SettingsAndAuthenticationTests(unittest.TestCase):
                         "view_only": "yes",
                         "frame_delay_ms": 999,
                         "auto_check_updates": 1,
+                        "auto_install_updates": "yes",
                         "permanent_password_salt": [],
                         "permanent_password_hash": "partial",
                     }
@@ -168,6 +169,7 @@ class SettingsAndAuthenticationTests(unittest.TestCase):
             self.assertIs(settings.values["view_only"], False)
             self.assertEqual(settings.values["frame_delay_ms"], 120)
             self.assertIs(settings.values["auto_check_updates"], True)
+            self.assertIs(settings.values["auto_install_updates"], True)
             self.assertFalse(settings.permanent_password_is_set())
 
     def test_device_id_survives_device_rename_and_restart(self) -> None:
@@ -284,6 +286,38 @@ class UpdateTests(unittest.TestCase):
             self.assertEqual(destination.read_bytes(), content)
             popen.assert_called_once_with([str(destination), "--from-update"], close_fds=True)
 
+    def test_update_download_retries_network_failure_and_reuses_verified_cache(self) -> None:
+        content = (b"LAN-REMOTE-RETRY" * 5000)[:70000]
+        digest = "sha256:" + hashlib.sha256(content).hexdigest()
+        url = "https://github.com/EmpK1019/lan-windows-remote/releases/download/v9.8.7/setup.exe"
+        release = {
+            "installer_url": url,
+            "latest_version": "9.8.7",
+            "installer_digest": digest,
+            "installer_size": len(content),
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            with (
+                patch.object(lan_remote, "urlopen", side_effect=[OSError("temporary"), FakeResponse(content, url)]) as open_url,
+                patch.object(lan_remote.tempfile, "gettempdir", return_value=directory),
+                patch.object(lan_remote.time, "sleep"),
+                patch.object(lan_remote.subprocess, "Popen") as popen,
+            ):
+                destination = lan_remote.download_and_launch_update(release)
+            self.assertEqual(open_url.call_count, 2)
+            self.assertEqual(destination.read_bytes(), content)
+            popen.assert_called_once()
+
+            with (
+                patch.object(lan_remote, "urlopen") as cached_open,
+                patch.object(lan_remote.tempfile, "gettempdir", return_value=directory),
+                patch.object(lan_remote.subprocess, "Popen") as cached_popen,
+            ):
+                cached_destination = lan_remote.download_and_launch_update(release)
+            self.assertEqual(cached_destination, destination)
+            cached_open.assert_not_called()
+            cached_popen.assert_called_once()
+
     def test_update_download_removes_hash_mismatch(self) -> None:
         content = b"X" * 70000
         url = "https://github.com/EmpK1019/lan-windows-remote/releases/download/v9.8.7/setup.exe"
@@ -314,6 +348,20 @@ class UpdateTests(unittest.TestCase):
                         "installer_url": url,
                         "latest_version": "9.8.7",
                         "installer_digest": "",
+                        "installer_size": 70000,
+                    }
+                )
+        urlopen_mock.assert_not_called()
+
+    def test_update_download_rejects_unsafe_release_version(self) -> None:
+        url = "https://github.com/EmpK1019/lan-windows-remote/releases/download/v9/setup.exe"
+        with patch.object(lan_remote, "urlopen") as urlopen_mock:
+            with self.assertRaisesRegex(RuntimeError, "版本号"):
+                lan_remote.download_and_launch_update(
+                    {
+                        "installer_url": url,
+                        "latest_version": "../outside",
+                        "installer_digest": "sha256:" + ("0" * 64),
                         "installer_size": 70000,
                     }
                 )
@@ -511,7 +559,9 @@ class HttpIntegrationTests(unittest.TestCase):
 
     def test_settings_endpoint_is_same_origin_and_validated(self) -> None:
         same_origin = f"http://127.0.0.1:{self.state.port}"
-        payload = json.dumps({"device_name": "Renamed", "frame_delay_ms": 80}).encode("utf-8")
+        payload = json.dumps(
+            {"device_name": "Renamed", "frame_delay_ms": 80, "auto_install_updates": False}
+        ).encode("utf-8")
         with (
             patch.object(lan_remote, "startup_enabled", return_value=False),
             patch.object(lan_remote, "set_startup_enabled") as set_startup,
@@ -524,6 +574,7 @@ class HttpIntegrationTests(unittest.TestCase):
             )
         self.assertEqual(status, 200, data)
         self.assertEqual(self.state.device_name, "Renamed")
+        self.assertIs(self.settings.values["auto_install_updates"], False)
         set_startup.assert_called_once_with(False)
 
         bad_payload = json.dumps({"device_name": "Rejected"}).encode("utf-8")

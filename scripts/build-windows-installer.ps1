@@ -1,5 +1,5 @@
 param(
-    [string]$Version = "0.6.6",
+    [string]$Version = "0.6.7",
     [switch]$SkipDependencyInstall
 )
 
@@ -241,6 +241,23 @@ if (-not (Test-Path -LiteralPath $InstallerPath)) {
 $LaunchProbe = Start-Process -FilePath $InstallerPath -ArgumentList "--launch-probe" -WindowStyle Hidden -Wait -PassThru
 if ($LaunchProbe.ExitCode -ne 0) {
     throw "Installer launch probe failed with exit code $($LaunchProbe.ExitCode)."
+}
+
+$RestartProbeDir = Join-Path $BuildDir "installer-restart-probe"
+if (Test-Path -LiteralPath $RestartProbeDir) {
+    Remove-Item -LiteralPath $RestartProbeDir -Recurse -Force
+}
+New-Item -ItemType Directory -Force -Path $RestartProbeDir | Out-Null
+Set-Content -LiteralPath (Join-Path $RestartProbeDir "VERSION.txt") -Value $Version -NoNewline -Encoding ASCII
+New-Item -ItemType File -Force -Path (Join-Path $RestartProbeDir "WindowsLANRemote-$Version.exe") | Out-Null
+try {
+    $RestartPathProbe = Start-Process -FilePath $InstallerPath -ArgumentList "--restart-path-probe `"$RestartProbeDir`"" -WindowStyle Hidden -Wait -PassThru
+    if ($RestartPathProbe.ExitCode -ne 0) {
+        throw "Installer restart path probe failed with exit code $($RestartPathProbe.ExitCode)."
+    }
+}
+finally {
+    Remove-Item -LiteralPath $RestartProbeDir -Recurse -Force -ErrorAction SilentlyContinue
 }
 
 $RequiredPortableFiles = @(
