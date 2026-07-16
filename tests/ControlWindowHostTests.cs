@@ -22,6 +22,7 @@ internal static class ControlWindowHostTests
             TestFullscreenRestore(assembly, false);
             TestFullscreenRestore(assembly, true);
             TestCloseToTray(assembly);
+            TestKeyboardCaptureSurface(assembly);
             Console.WriteLine("CONTROL_HOST_STATE_TESTS_OK");
             return 0;
         }
@@ -126,7 +127,7 @@ internal static class ControlWindowHostTests
             throw new InvalidOperationException("Tray window members were not found.");
 
         using (Form mainWindow = (Form)constructor.Invoke(new object[] {
-            new Uri("http://127.0.0.1:8765/?v=0.6.11")
+            new Uri("http://127.0.0.1:8765/?v=0.6.12")
         }))
         {
             SuppressShownHandler(mainWindow);
@@ -165,6 +166,32 @@ internal static class ControlWindowHostTests
             Application.DoEvents();
             if (!remoteWindow.IsDisposed)
                 throw new InvalidOperationException("A remote control window was incorrectly hidden to the tray.");
+        }
+    }
+
+    private static void TestKeyboardCaptureSurface(Assembly assembly)
+    {
+        Type windowType = RequiredType(assembly, "WindowsLANRemoteControlHost.ControlWindow");
+        ConstructorInfo constructor = windowType.GetConstructor(
+            BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic,
+            null,
+            new[] { typeof(Uri) },
+            null);
+        MethodInfo initializeHook = windowType.GetMethod("InitializeKeyboardHook", BindingFlags.Instance | BindingFlags.NonPublic);
+        MethodInfo setCapture = windowType.GetMethod("SetKeyboardCapture", BindingFlags.Instance | BindingFlags.NonPublic);
+        MethodInfo hookCallback = windowType.GetMethod("KeyboardHookCallback", BindingFlags.Instance | BindingFlags.NonPublic);
+        MethodInfo forwardKey = windowType.GetMethod("ForwardNativeKey", BindingFlags.Instance | BindingFlags.NonPublic);
+        if (constructor == null || initializeHook == null || setCapture == null || hookCallback == null || forwardKey == null)
+            throw new InvalidOperationException("Native keyboard capture members were not found.");
+
+        using (Form remoteWindow = (Form)constructor.Invoke(new object[] {
+            new Uri("http://127.0.0.1:8765/?remote=1&handoff=abcdefghijklmnop")
+        }))
+        {
+            SuppressShownHandler(remoteWindow);
+            bool enabledWithoutHook = (bool)setCapture.Invoke(remoteWindow, new object[] { true });
+            if (enabledWithoutHook)
+                throw new InvalidOperationException("Keyboard capture enabled without an installed hook.");
         }
     }
 

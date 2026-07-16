@@ -52,6 +52,19 @@ def make_state(settings: lan_remote.SettingsStore) -> lan_remote.ServerState:
 
 
 class CoreFunctionTests(unittest.TestCase):
+    def test_remote_window_chrome_is_separate_from_control_toolbar(self) -> None:
+        html = (Path(__file__).resolve().parents[1] / "web" / "index.html").read_text(encoding="utf-8")
+        titlebar = html.split('<header class="remote-titlebar"', 1)[1].split("</header>", 1)[0]
+        toolbar = html.split('<div class="remote-toolbar">', 1)[1].split("</div>", 1)[0]
+        for control_id in ("remoteWindowMinimize", "remoteWindowMaximize", "closeSession"):
+            self.assertIn(f'id="{control_id}"', titlebar)
+            self.assertNotIn(f'id="{control_id}"', toolbar)
+        self.assertIn('id="keyboardButton"', toolbar)
+        self.assertIn('id="fullscreenButton"', toolbar)
+        self.assertIn("event.clientY <= 6", html)
+        self.assertIn("event.clientY > 40", html)
+        self.assertIn("remote-titlebar-visible", html)
+
     def test_access_code_has_expected_entropy_friendly_format(self) -> None:
         values = {lan_remote.generate_access_code() for _ in range(64)}
         self.assertEqual(len(values), 64)
@@ -110,9 +123,13 @@ class CoreFunctionTests(unittest.TestCase):
         valid = [
             {"type": "mouse_move", "x": 12, "y": 18, "monitor": "all"},
             {"type": "mouse_down", "x": 12, "y": 18, "button": 0},
+            {"type": "mouse_down", "x": 12, "y": 18, "button": 3},
+            {"type": "mouse_up", "x": 12, "y": 18, "button": 4},
             {"type": "mouse_wheel", "x": 12, "y": 18, "delta": -120},
             {"type": "key_down", "key": "a", "code": "KeyA"},
             {"type": "key_up", "key": "Shift", "code": "ShiftLeft"},
+            {"type": "native_key_down", "scan_code": 30, "extended": False},
+            {"type": "native_key_up", "scan_code": 29, "extended": True},
             {"type": "text", "text": "Hello 中文"},
             {"type": "text_sequence", "text": "Lock 密码"},
         ]
@@ -124,6 +141,9 @@ class CoreFunctionTests(unittest.TestCase):
             {"type": "mouse_down", "x": 0, "y": 0, "button": 9},
             {"type": "mouse_move", "x": "left", "y": 0},
             {"type": "key_down", "key": "", "code": ""},
+            {"type": "native_key_down", "scan_code": 0, "extended": False},
+            {"type": "native_key_up", "scan_code": 256, "extended": False},
+            {"type": "native_key_down", "scan_code": 30, "extended": "yes"},
             {"type": "text", "text": ""},
             {"type": "text", "text": "x" * 257},
             {"type": "text_sequence", "text": "x" * 129},
@@ -131,6 +151,31 @@ class CoreFunctionTests(unittest.TestCase):
         for payload in invalid:
             with self.subTest(payload=payload), self.assertRaises(ValueError):
                 lan_remote.validate_remote_input_payload(payload)
+
+    def test_physical_key_codes_use_the_remote_keyboard_layout(self) -> None:
+        self.assertEqual(lan_remote.key_to_vk("a", "KeyQ"), ord("Q"))
+        self.assertEqual(lan_remote.key_to_vk("!", "Digit1"), ord("1"))
+        self.assertEqual(lan_remote.key_to_vk("Control", "ControlRight"), 0xA3)
+        self.assertEqual(lan_remote.key_to_vk("AltGraph", "AltRight"), 0xA5)
+        self.assertIn("ControlRight", lan_remote.EXTENDED_KEY_CODES)
+        self.assertIn("NumpadEnter", lan_remote.EXTENDED_KEY_CODES)
+
+    def test_remote_frontend_serializes_input_and_suppresses_local_shortcuts(self) -> None:
+        html = (Path(__file__).resolve().parents[1] / "web" / "index.html").read_text(encoding="utf-8")
+        self.assertIn("state.inputQueue = state.inputQueue.catch", html)
+        self.assertIn("state.pendingMouseMove = entry", html)
+        self.assertIn("state.mouseMoveQueued", html)
+        self.assertIn("event.stopImmediatePropagation()", html)
+        self.assertIn('{capture: true}', html)
+        self.assertNotIn('event.key === "Escape"', html)
+        self.assertIn("window.__lanForwardNativeKey", html)
+        self.assertIn("setNativeKeyboardCapture(false)", html)
+        self.assertIn("shouldCaptureNativeKeyboard()", html)
+        host = (Path(__file__).resolve().parents[1] / "packaging" / "ControlWindowHost.cs").read_text(encoding="utf-8")
+        self.assertIn("AreBrowserAcceleratorKeysEnabled = false", host)
+        self.assertIn("SetWindowsHookEx(WhKeyboardLl", host)
+        self.assertIn("GetForegroundWindow() == Handle", host)
+        self.assertIn('case "set_keyboard_capture"', host)
 
     def test_lock_password_text_is_typed_sequentially(self) -> None:
         with (

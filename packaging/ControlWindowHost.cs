@@ -80,6 +80,12 @@ namespace WindowsLANRemoteControlHost
     {
         private const int WmNcLButtonDown = 0x00A1;
         private const int HtCaption = 0x0002;
+        private const int WhKeyboardLl = 13;
+        private const int WmKeyDown = 0x0100;
+        private const int WmKeyUp = 0x0101;
+        private const int WmSysKeyDown = 0x0104;
+        private const int WmSysKeyUp = 0x0105;
+        private const uint LlkhfExtended = 0x00000001;
 
         private readonly Uri sessionUrl;
         private readonly WebView2 browser;
@@ -94,12 +100,42 @@ namespace WindowsLANRemoteControlHost
         private Rectangle restoredBounds;
         private bool restoredMaximized;
         private bool restoredTopMost;
+        private IntPtr keyboardHook = IntPtr.Zero;
+        private LowLevelKeyboardProc keyboardHookProc;
+        private volatile bool keyboardCaptureEnabled;
 
         [DllImport("user32.dll")]
         private static extern bool ReleaseCapture();
 
         [DllImport("user32.dll")]
         private static extern IntPtr SendMessage(IntPtr window, int message, IntPtr wParam, IntPtr lParam);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        private static extern IntPtr SetWindowsHookEx(int hookId, LowLevelKeyboardProc callback, IntPtr module, uint threadId);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        private static extern bool UnhookWindowsHookEx(IntPtr hook);
+
+        [DllImport("user32.dll")]
+        private static extern IntPtr CallNextHookEx(IntPtr hook, int code, IntPtr wParam, IntPtr lParam);
+
+        [DllImport("user32.dll")]
+        private static extern IntPtr GetForegroundWindow();
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
+        private static extern IntPtr GetModuleHandle(string moduleName);
+
+        private delegate IntPtr LowLevelKeyboardProc(int code, IntPtr wParam, IntPtr lParam);
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct LowLevelKeyboardInput
+        {
+            public uint VirtualKey;
+            public uint ScanCode;
+            public uint Flags;
+            public uint Time;
+            public UIntPtr ExtraInfo;
+        }
 
         public ControlWindow(Uri url)
         {
@@ -142,6 +178,10 @@ namespace WindowsLANRemoteControlHost
             {
                 try
                 {
+                    if (remoteWindow)
+                    {
+                        InitializeKeyboardHook();
+                    }
                     await InitializeBrowser();
                 }
                 catch (Exception ex)
@@ -155,6 +195,71 @@ namespace WindowsLANRemoteControlHost
                     Close();
                 }
             };
+        }
+
+        private void InitializeKeyboardHook()
+        {
+            if (!remoteWindow || keyboardHook != IntPtr.Zero)
+            {
+                return;
+            }
+            keyboardHookProc = KeyboardHookCallback;
+            keyboardHook = SetWindowsHookEx(WhKeyboardLl, keyboardHookProc, GetModuleHandle(null), 0);
+        }
+
+        private bool SetKeyboardCapture(bool enabled)
+        {
+            keyboardCaptureEnabled = remoteWindow && enabled && keyboardHook != IntPtr.Zero;
+            return keyboardCaptureEnabled;
+        }
+
+        private IntPtr KeyboardHookCallback(int code, IntPtr wParam, IntPtr lParam)
+        {
+            int message = wParam.ToInt32();
+            bool keyDown = message == WmKeyDown || message == WmSysKeyDown;
+            bool keyUp = message == WmKeyUp || message == WmSysKeyUp;
+            if (
+                code >= 0 &&
+                (keyDown || keyUp) &&
+                keyboardCaptureEnabled &&
+                IsHandleCreated &&
+                !IsDisposed &&
+                GetForegroundWindow() == Handle)
+            {
+                LowLevelKeyboardInput input = (LowLevelKeyboardInput)Marshal.PtrToStructure(
+                    lParam,
+                    typeof(LowLevelKeyboardInput));
+                ForwardNativeKey(input.ScanCode, (input.Flags & LlkhfExtended) != 0, keyDown);
+                return new IntPtr(1);
+            }
+            return CallNextHookEx(keyboardHook, code, wParam, lParam);
+        }
+
+        private void ForwardNativeKey(uint scanCode, bool extended, bool keyDown)
+        {
+            if (!IsHandleCreated || IsDisposed)
+            {
+                return;
+            }
+            try
+            {
+                BeginInvoke(new Action(delegate
+                {
+                    if (browser.CoreWebView2 == null)
+                    {
+                        return;
+                    }
+                    string script = "window.__lanForwardNativeKey&&window.__lanForwardNativeKey(" +
+                        scanCode.ToString() + "," +
+                        (extended ? "true" : "false") + "," +
+                        (keyDown ? "true" : "false") + ");";
+                    browser.CoreWebView2.ExecuteScriptAsync(script);
+                }));
+            }
+            catch (InvalidOperationException)
+            {
+                // The window is closing; no further input should be forwarded.
+            }
         }
 
         private void InitializeTray()
@@ -236,6 +341,10 @@ namespace WindowsLANRemoteControlHost
             browser.CoreWebView2.Settings.AreDefaultContextMenusEnabled = false;
             browser.CoreWebView2.Settings.AreDevToolsEnabled = false;
             browser.CoreWebView2.Settings.IsStatusBarEnabled = false;
+            if (remoteWindow)
+            {
+                browser.CoreWebView2.Settings.AreBrowserAcceleratorKeysEnabled = false;
+            }
             browser.CoreWebView2.WebMessageReceived += OnWebMessageReceived;
             await browser.CoreWebView2.AddScriptToExecuteOnDocumentCreatedAsync(BridgeScript);
             browser.Source = sessionUrl;
@@ -303,6 +412,9 @@ namespace WindowsLANRemoteControlHost
                 case "set_close_to_tray":
                     SetCloseToTray(payload is bool && (bool)payload);
                     result = closeToTray;
+                    break;
+                case "set_keyboard_capture":
+                    result = SetKeyboardCapture(payload is bool && (bool)payload);
                     break;
                 case "drag":
                     ReleaseCapture();
@@ -376,6 +488,13 @@ namespace WindowsLANRemoteControlHost
 
         protected override void OnFormClosed(FormClosedEventArgs e)
         {
+            keyboardCaptureEnabled = false;
+            if (keyboardHook != IntPtr.Zero)
+            {
+                UnhookWindowsHookEx(keyboardHook);
+                keyboardHook = IntPtr.Zero;
+            }
+            keyboardHookProc = null;
             if (trayIcon != null)
             {
                 trayIcon.Dispose();
@@ -420,6 +539,7 @@ namespace WindowsLANRemoteControlHost
     toggle_maximize_window: () => call('toggle_maximize'),
     toggle_fullscreen: () => call('toggle_fullscreen'),
     set_close_to_tray: (enabled) => call('set_close_to_tray', Boolean(enabled)),
+    set_keyboard_capture: (enabled) => call('set_keyboard_capture', Boolean(enabled)),
     close_window: () => call('close'),
     window_state: () => call('window_state'),
     credential_status: (deviceId) => credentialCall('status', {device_id: String(deviceId || '')}),

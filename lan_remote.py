@@ -53,7 +53,7 @@ if platform.system() == "Windows":
 
 
 APP_NAME = "Windows LAN Remote"
-APP_VERSION = "0.6.11"
+APP_VERSION = "0.6.12"
 GITHUB_REPOSITORY = "EmpK1019/lan-windows-remote"
 GITHUB_LATEST_RELEASE_API = f"https://api.github.com/repos/{GITHUB_REPOSITORY}/releases/latest"
 DEFAULT_PORT = 8765
@@ -2243,13 +2243,17 @@ def send_secure_input(payload: dict[str, Any]) -> None:
     secure_helper_request("/secure/input", payload=payload, timeout=timeout)
 
 
-MOUSE_FLAGS = {
-    ("down", 0): 0x0002,
-    ("up", 0): 0x0004,
-    ("down", 1): 0x0020,
-    ("up", 1): 0x0040,
-    ("down", 2): 0x0008,
-    ("up", 2): 0x0010,
+MOUSE_EVENTS = {
+    ("down", 0): (0x0002, 0),
+    ("up", 0): (0x0004, 0),
+    ("down", 1): (0x0020, 0),
+    ("up", 1): (0x0040, 0),
+    ("down", 2): (0x0008, 0),
+    ("up", 2): (0x0010, 0),
+    ("down", 3): (0x0080, 0x0001),
+    ("up", 3): (0x0100, 0x0001),
+    ("down", 4): (0x0080, 0x0002),
+    ("up", 4): (0x0100, 0x0002),
 }
 
 KEY_MAP = {
@@ -2289,6 +2293,14 @@ for index in range(1, 25):
     KEY_MAP[f"F{index}"] = 0x6F + index
 
 CODE_MAP = {
+    "ShiftLeft": 0xA0,
+    "ShiftRight": 0xA1,
+    "ControlLeft": 0xA2,
+    "ControlRight": 0xA3,
+    "AltLeft": 0xA4,
+    "AltRight": 0xA5,
+    "MetaLeft": 0x5B,
+    "MetaRight": 0x5C,
     "Numpad0": 0x60,
     "Numpad1": 0x61,
     "Numpad2": 0x62,
@@ -2304,6 +2316,7 @@ CODE_MAP = {
     "NumpadSubtract": 0x6D,
     "NumpadDecimal": 0x6E,
     "NumpadDivide": 0x6F,
+    "NumpadEnter": 0x0D,
     "Semicolon": 0xBA,
     "Equal": 0xBB,
     "Comma": 0xBC,
@@ -2315,6 +2328,34 @@ CODE_MAP = {
     "Backslash": 0xDC,
     "BracketRight": 0xDD,
     "Quote": 0xDE,
+    "IntlBackslash": 0xE2,
+}
+
+for number in range(10):
+    CODE_MAP[f"Digit{number}"] = ord(str(number))
+for codepoint in range(ord("A"), ord("Z") + 1):
+    CODE_MAP[f"Key{chr(codepoint)}"] = codepoint
+
+EXTENDED_KEY_CODES = {
+    "ControlRight",
+    "AltRight",
+    "MetaLeft",
+    "MetaRight",
+    "NumpadDivide",
+    "NumpadEnter",
+    "Insert",
+    "Delete",
+    "Home",
+    "End",
+    "PageUp",
+    "PageDown",
+    "ArrowLeft",
+    "ArrowUp",
+    "ArrowRight",
+    "ArrowDown",
+    "NumLock",
+    "PrintScreen",
+    "ContextMenu",
 }
 
 
@@ -2352,9 +2393,23 @@ def send_mouse_event(payload: dict[str, Any]) -> None:
 
     direction = "down" if event_type == "mouse_down" else "up"
     button = int(payload.get("button", 0))
-    flag = MOUSE_FLAGS.get((direction, button))
-    if flag:
-        user32.mouse_event(flag, 0, 0, 0, 0)
+    event = MOUSE_EVENTS.get((direction, button))
+    if event:
+        flag, data = event
+        user32.mouse_event(flag, 0, 0, data, 0)
+
+
+def send_native_keyboard_event(payload: dict[str, Any]) -> None:
+    scan_code = int(payload.get("scan_code", 0))
+    flags = 0x0008
+    if payload.get("extended") is True:
+        flags |= 0x0001
+    if payload.get("type") == "native_key_up":
+        flags |= 0x0002
+    keyboard_input = INPUT(type=1, ki=KEYBDINPUT(0, scan_code, flags, 0, 0))
+    sent = ctypes.windll.user32.SendInput(1, ctypes.byref(keyboard_input), ctypes.sizeof(INPUT))
+    if sent != 1:
+        raise ctypes.WinError()
 
 
 def send_keyboard_event(payload: dict[str, Any]) -> None:
@@ -2366,7 +2421,9 @@ def send_keyboard_event(payload: dict[str, Any]) -> None:
     if vk is None:
         return
     scan = user32.MapVirtualKeyW(vk, 0)
-    flags = 0x0002 if event_type == "key_up" else 0
+    flags = 0x0001 if code in EXTENDED_KEY_CODES else 0
+    if event_type == "key_up":
+        flags |= 0x0002
     user32.keybd_event(vk, scan, flags, 0)
 
 
@@ -2407,7 +2464,7 @@ def send_unicode_text_sequence(text: str) -> None:
 
 def validate_remote_input_payload(payload: dict[str, Any]) -> None:
     input_type = payload.get("type")
-    if input_type not in {"mouse_move", "mouse_down", "mouse_up", "mouse_wheel", "key_down", "key_up", "key_press", "text", "text_sequence"}:
+    if input_type not in {"mouse_move", "mouse_down", "mouse_up", "mouse_wheel", "key_down", "key_up", "key_press", "native_key_down", "native_key_up", "text", "text_sequence"}:
         raise ValueError("unsupported input type")
     if input_type.startswith("mouse_"):
         for key in ("x", "y"):
@@ -2419,7 +2476,7 @@ def validate_remote_input_payload(payload: dict[str, Any]) -> None:
             raise ValueError("invalid monitor id")
         if input_type in {"mouse_down", "mouse_up"}:
             button = payload.get("button", 0)
-            if isinstance(button, bool) or not isinstance(button, int) or button not in {0, 1, 2}:
+            if isinstance(button, bool) or not isinstance(button, int) or button not in {0, 1, 2, 3, 4}:
                 raise ValueError("invalid mouse button")
         if input_type == "mouse_wheel":
             delta = payload.get("delta", 0)
@@ -2432,6 +2489,13 @@ def validate_remote_input_payload(payload: dict[str, Any]) -> None:
             raise ValueError("invalid keyboard input")
         if not key and not code:
             raise ValueError("keyboard key is required")
+    elif input_type in {"native_key_down", "native_key_up"}:
+        scan_code = payload.get("scan_code")
+        extended = payload.get("extended", False)
+        if isinstance(scan_code, bool) or not isinstance(scan_code, int) or not 1 <= scan_code <= 255:
+            raise ValueError("invalid native scan code")
+        if not isinstance(extended, bool):
+            raise ValueError("invalid extended key state")
     else:
         text = payload.get("text")
         maximum_length = 128 if input_type == "text_sequence" else 256
@@ -2446,6 +2510,8 @@ def handle_remote_input(payload: dict[str, Any]) -> None:
         send_mouse_event(payload)
     elif input_type in {"key_down", "key_up"}:
         send_keyboard_event(payload)
+    elif input_type in {"native_key_down", "native_key_up"}:
+        send_native_keyboard_event(payload)
     elif input_type == "key_press":
         send_key_press(payload)
     elif input_type == "text":
