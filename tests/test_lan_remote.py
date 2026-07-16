@@ -132,6 +132,22 @@ class CoreFunctionTests(unittest.TestCase):
 
 
 class SettingsAndAuthenticationTests(unittest.TestCase):
+    def test_saved_settings_and_permanent_password_survive_reload(self) -> None:
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {"APPDATA": directory}):
+            settings = lan_remote.SettingsStore()
+            settings.values["device_name"] = "Persistent device"
+            settings.values["view_only"] = True
+            settings.values["auto_install_updates"] = False
+            settings.set_permanent_password("persistent password value")
+            settings.save()
+
+            reloaded = lan_remote.SettingsStore()
+            self.assertEqual(reloaded.values["device_name"], "Persistent device")
+            self.assertIs(reloaded.values["view_only"], True)
+            self.assertIs(reloaded.values["auto_install_updates"], False)
+            self.assertTrue(reloaded.permanent_password_is_set())
+            self.assertTrue(reloaded.verify_permanent_password("persistent password value"))
+
     def test_dpapi_credential_vault_round_trip_and_removal(self) -> None:
         with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {"APPDATA": directory}):
             vault = lan_remote.CredentialVault()

@@ -9,7 +9,7 @@ $AppId = "WindowsLANRemote"
 $Publisher = "EmpK1019"
 $ServiceName = "WindowsLANRemoteSecureDesktop"
 $VersionFile = Join-Path $PSScriptRoot "VERSION.txt"
-$Version = if (Test-Path -LiteralPath $VersionFile) { (Get-Content -Raw -LiteralPath $VersionFile).Trim() } else { "0.6.8" }
+$Version = if (Test-Path -LiteralPath $VersionFile) { (Get-Content -Raw -LiteralPath $VersionFile).Trim() } else { "0.6.9" }
 
 $InstallDir = Join-Path $env:ProgramFiles $AppName
 $LegacyInstallDir = Join-Path $env:LOCALAPPDATA "Programs\$AppName"
@@ -263,6 +263,7 @@ try {
     $Shell = New-Object -ComObject WScript.Shell
     $AppShortcut = $Shell.CreateShortcut((Join-Path $StartMenuDir "$AppName.lnk"))
     $AppShortcut.TargetPath = $InstalledExecutable
+    $AppShortcut.IconLocation = "$InstalledExecutable,0"
     $AppShortcut.WorkingDirectory = $InstallDir
     $AppShortcut.Description = "Start Windows LAN Remote"
     $AppShortcut.Save()

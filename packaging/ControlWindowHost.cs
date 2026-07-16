@@ -14,6 +14,9 @@ namespace WindowsLANRemoteControlHost
 {
     internal static class Program
     {
+        [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
+        private static extern int SetCurrentProcessExplicitAppUserModelID(string appId);
+
         [STAThread]
         private static int Main(string[] args)
         {
@@ -28,6 +31,7 @@ namespace WindowsLANRemoteControlHost
                 return 2;
             }
 
+            SetCurrentProcessExplicitAppUserModelID("EmpK1019.WindowsLANRemote");
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
             Application.Run(new ControlWindow(url));
@@ -100,6 +104,14 @@ namespace WindowsLANRemoteControlHost
             remoteWindow = String.Equals(query.Get("remote"), "1", StringComparison.Ordinal);
             bool startMaximized = String.Equals(query.Get("maximized"), "1", StringComparison.Ordinal);
             Text = remoteWindow ? "LAN Remote · 远程控制" : "LAN Remote";
+            try
+            {
+                Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath);
+            }
+            catch
+            {
+                // The embedded executable icon remains the Windows fallback.
+            }
             StartPosition = FormStartPosition.CenterScreen;
             FormBorderStyle = FormBorderStyle.None;
             BackColor = Color.FromArgb(15, 16, 20);
