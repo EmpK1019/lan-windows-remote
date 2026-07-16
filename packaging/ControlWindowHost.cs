@@ -85,6 +85,10 @@ namespace WindowsLANRemoteControlHost
         private readonly WebView2 browser;
         private readonly JavaScriptSerializer serializer = new JavaScriptSerializer();
         private readonly bool remoteWindow;
+        private NotifyIcon trayIcon;
+        private ContextMenuStrip trayMenu;
+        private bool closeToTray;
+        private bool forceExit;
         private bool fullscreen;
         private bool maximized;
         private Rectangle restoredBounds;
@@ -102,6 +106,7 @@ namespace WindowsLANRemoteControlHost
             sessionUrl = url;
             System.Collections.Specialized.NameValueCollection query = HttpUtility.ParseQueryString(url.Query);
             remoteWindow = String.Equals(query.Get("remote"), "1", StringComparison.Ordinal);
+            closeToTray = !remoteWindow;
             bool startMaximized = String.Equals(query.Get("maximized"), "1", StringComparison.Ordinal);
             Text = remoteWindow ? "LAN Remote · 远程控制" : "LAN Remote";
             try
@@ -128,6 +133,10 @@ namespace WindowsLANRemoteControlHost
             browser.Dock = DockStyle.Fill;
             browser.DefaultBackgroundColor = BackColor;
             Controls.Add(browser);
+            if (!remoteWindow)
+            {
+                InitializeTray();
+            }
 
             Shown += async delegate
             {
@@ -142,9 +151,76 @@ namespace WindowsLANRemoteControlHost
                         "LAN Remote",
                         MessageBoxButtons.OK,
                         MessageBoxIcon.Error);
+                    forceExit = true;
                     Close();
                 }
             };
+        }
+
+        private void InitializeTray()
+        {
+            trayMenu = new ContextMenuStrip();
+            ToolStripMenuItem openItem = new ToolStripMenuItem("打开 LAN Remote");
+            openItem.Click += delegate { RestoreFromTray(); };
+            ToolStripMenuItem exitItem = new ToolStripMenuItem("退出 LAN Remote");
+            exitItem.Click += delegate { ExitFromTray(); };
+            trayMenu.Items.Add(openItem);
+            trayMenu.Items.Add(new ToolStripSeparator());
+            trayMenu.Items.Add(exitItem);
+
+            trayIcon = new NotifyIcon();
+            trayIcon.Text = "LAN Remote";
+            trayIcon.Icon = Icon ?? SystemIcons.Application;
+            trayIcon.ContextMenuStrip = trayMenu;
+            trayIcon.Visible = false;
+            trayIcon.DoubleClick += delegate { RestoreFromTray(); };
+        }
+
+        private void SetCloseToTray(bool enabled)
+        {
+            closeToTray = !remoteWindow && enabled;
+        }
+
+        private void HideToTray()
+        {
+            if (remoteWindow || trayIcon == null)
+            {
+                return;
+            }
+            if (fullscreen)
+            {
+                ToggleFullscreen();
+            }
+            trayIcon.Visible = true;
+            ShowInTaskbar = false;
+            Hide();
+        }
+
+        private void RestoreFromTray()
+        {
+            if (remoteWindow || trayIcon == null)
+            {
+                return;
+            }
+            trayIcon.Visible = false;
+            ShowInTaskbar = true;
+            if (WindowState == FormWindowState.Minimized)
+            {
+                WindowState = FormWindowState.Normal;
+            }
+            Show();
+            Activate();
+            BringToFront();
+        }
+
+        private void ExitFromTray()
+        {
+            forceExit = true;
+            if (trayIcon != null)
+            {
+                trayIcon.Visible = false;
+            }
+            Close();
         }
 
         private async Task InitializeBrowser()
@@ -220,8 +296,13 @@ namespace WindowsLANRemoteControlHost
                     {
                         { "maximized", maximized },
                         { "fullscreen", fullscreen },
-                        { "remote_window", remoteWindow }
+                        { "remote_window", remoteWindow },
+                        { "close_to_tray", closeToTray }
                     };
+                    break;
+                case "set_close_to_tray":
+                    SetCloseToTray(payload is bool && (bool)payload);
+                    result = closeToTray;
                     break;
                 case "drag":
                     ReleaseCapture();
@@ -278,6 +359,36 @@ namespace WindowsLANRemoteControlHost
             }
         }
 
+        protected override void OnFormClosing(FormClosingEventArgs e)
+        {
+            if (!remoteWindow && closeToTray && !forceExit && e.CloseReason == CloseReason.UserClosing)
+            {
+                e.Cancel = true;
+                HideToTray();
+                return;
+            }
+            if (trayIcon != null)
+            {
+                trayIcon.Visible = false;
+            }
+            base.OnFormClosing(e);
+        }
+
+        protected override void OnFormClosed(FormClosedEventArgs e)
+        {
+            if (trayIcon != null)
+            {
+                trayIcon.Dispose();
+                trayIcon = null;
+            }
+            if (trayMenu != null)
+            {
+                trayMenu.Dispose();
+                trayMenu = null;
+            }
+            base.OnFormClosed(e);
+        }
+
         private const string BridgeScript = @"
 (() => {
   const pending = new Map();
@@ -308,6 +419,7 @@ namespace WindowsLANRemoteControlHost
     minimize_window: () => call('minimize'),
     toggle_maximize_window: () => call('toggle_maximize'),
     toggle_fullscreen: () => call('toggle_fullscreen'),
+    set_close_to_tray: (enabled) => call('set_close_to_tray', Boolean(enabled)),
     close_window: () => call('close'),
     window_state: () => call('window_state'),
     credential_status: (deviceId) => credentialCall('status', {device_id: String(deviceId || '')}),

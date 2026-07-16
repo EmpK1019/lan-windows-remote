@@ -811,11 +811,12 @@
     .settings-section-title { display: flex; align-items: center; gap: 8px; min-height: 20px; margin: 0 0 9px; font-size: 14px; font-weight: 600; line-height: 20px; }
     .settings-section-title svg { width: 17px; height: 17px; color: #72c5a4; }
     .settings-card { overflow: hidden; border: 1px solid #2b2e36; border-radius: 10px; background: #1b1d22; }
-    .setting-row { display: flex; align-items: center; gap: 20px; min-height: 62px; padding: 12px 16px; border-bottom: 1px solid #282a31; }
+    .setting-row { display: flex; align-items: center; gap: 20px; min-height: 54px; padding: 10px 16px; border-bottom: 1px solid #282a31; }
     .setting-row:last-child { border-bottom: 0; }
     .setting-copy { min-width: 0; flex: 1; }
-    .setting-copy strong { display: block; font-size: 13px; font-weight: 600; }
-    .setting-copy small { display: block; margin-top: 3px; color: #7f838e; font-size: 11px; }
+    .setting-copy strong { display: flex; align-items: center; font-size: 13px; font-weight: 600; }
+    .setting-inline-status { display: inline-flex; align-items: center; min-height: 20px; margin-left: 9px; padding: 1px 7px; border-radius: 10px; background: rgba(41,145,105,.14); color: #78caaa; font-size: 10px; font-weight: 500; white-space: nowrap; }
+    .setting-inline-status.warning { background: rgba(217,153,64,.12); color: #d9aa63; }
     .setting-input, .setting-select {
       width: 260px;
       height: 36px;
@@ -967,15 +968,15 @@
           <h4 class="settings-section-title"><svg><use href="#i-monitor"/></svg>本机信息</h4>
           <div class="settings-card">
             <div class="setting-row">
-              <div class="setting-copy"><strong>设备名称</strong><small>其他局域网电脑会看到这个名称。</small></div>
+              <div class="setting-copy"><strong>设备名称</strong></div>
               <input class="setting-input" id="settingDeviceName" maxlength="64" autocomplete="off">
             </div>
             <div class="setting-row">
-              <div class="setting-copy"><strong>临时访问码</strong><small>每 30 分钟自动刷新；到期后旧访问码立即失效。</small></div>
+              <div class="setting-copy"><strong>临时访问码</strong></div>
               <div class="setting-actions"><code class="settings-code" id="localAccessCode"></code><span class="expiry-note" id="accessCodeExpiry"></span><button class="button compact" id="copyCode" type="button">复制</button><button class="button compact danger" id="regenerateCode" type="button">立即刷新</button></div>
             </div>
             <div class="setting-row">
-              <div class="setting-copy"><strong>永久访问密码</strong><small id="permanentPasswordStatus">尚未设置。修改前，已记住此密码的设备可一直免输连接。</small></div>
+              <div class="setting-copy"><strong>永久访问密码 <span class="setting-inline-status warning" id="permanentPasswordStatus">未设置</span></strong></div>
               <div class="password-setting"><input class="setting-input" id="settingPermanentPassword" type="password" minlength="8" maxlength="128" autocomplete="new-password" placeholder="输入 8–128 位新密码"><button class="button compact primary" id="setPermanentPassword" type="button">设置</button><button class="button compact danger" id="clearPermanentPassword" type="button">清除</button></div>
             </div>
           </div>
@@ -984,35 +985,36 @@
         <section class="settings-section">
           <h4 class="settings-section-title"><svg><use href="#i-shield"/></svg>连接与权限</h4>
           <div class="settings-card">
-            <div class="setting-row"><div class="setting-copy"><strong>允许局域网发现</strong><small>关闭后本机不会广播，也不会接收设备发现信息。</small></div><label class="switch"><input id="settingDiscovery" type="checkbox"><span></span></label></div>
-            <div class="setting-row"><div class="setting-copy"><strong>仅允许桌面观看</strong><small>拒绝远程鼠标和键盘输入。</small></div><label class="switch"><input id="settingViewOnly" type="checkbox"><span></span></label></div>
-            <div class="setting-row"><div class="setting-copy"><strong>允许锁屏与安全桌面控制</strong><small id="secureDesktopStatus">需要管理员安装的安全桌面服务。</small></div><label class="switch"><input id="settingSecureDesktop" type="checkbox"><span></span></label></div>
-            <div class="setting-row"><div class="setting-copy"><strong>记住临时访问码直到失效</strong><small>临时访问码只保存在当前软件会话中，并按目标端到期时间清除。</small></div><label class="switch"><input id="settingRememberCodes" type="checkbox"><span></span></label></div>
+            <div class="setting-row"><div class="setting-copy"><strong>允许局域网发现</strong></div><label class="switch"><input id="settingDiscovery" type="checkbox"><span></span></label></div>
+            <div class="setting-row"><div class="setting-copy"><strong>仅允许桌面观看</strong></div><label class="switch"><input id="settingViewOnly" type="checkbox"><span></span></label></div>
+            <div class="setting-row"><div class="setting-copy"><strong>允许锁屏与安全桌面控制 <span class="setting-inline-status warning" id="secureDesktopStatus">服务未安装</span></strong></div><label class="switch"><input id="settingSecureDesktop" type="checkbox"><span></span></label></div>
+            <div class="setting-row"><div class="setting-copy"><strong>记住临时访问码直到失效</strong></div><label class="switch"><input id="settingRememberCodes" type="checkbox"><span></span></label></div>
           </div>
         </section>
 
         <section class="settings-section">
           <h4 class="settings-section-title"><svg><use href="#i-eye"/></svg>远程体验</h4>
           <div class="settings-card">
-            <div class="setting-row"><div class="setting-copy"><strong>画面刷新速度</strong><small>网络较慢时选择“流畅优先”可减少带宽占用。</small></div><select class="setting-select" id="settingFrameDelay"><option value="80">响应优先</option><option value="120">平衡</option><option value="220">流畅优先</option></select></div>
-            <div class="setting-row"><div class="setting-copy"><strong>减少界面动效</strong><small>关闭大部分过渡动画。</small></div><label class="switch"><input id="settingReduceMotion" type="checkbox"><span></span></label></div>
+            <div class="setting-row"><div class="setting-copy"><strong>画面刷新速度</strong></div><select class="setting-select" id="settingFrameDelay"><option value="80">响应优先</option><option value="120">平衡</option><option value="220">流畅优先</option></select></div>
+            <div class="setting-row"><div class="setting-copy"><strong>减少界面动效</strong></div><label class="switch"><input id="settingReduceMotion" type="checkbox"><span></span></label></div>
           </div>
         </section>
 
         <section class="settings-section">
           <h4 class="settings-section-title"><svg><use href="#i-settings"/></svg>系统</h4>
           <div class="settings-card">
-            <div class="setting-row"><div class="setting-copy"><strong>登录 Windows 后启动</strong><small>在当前用户登录后自动运行 LAN Remote。</small></div><label class="switch"><input id="settingLaunchAtLogin" type="checkbox"><span></span></label></div>
-            <div class="setting-row"><div class="setting-copy"><strong>启动时最大化</strong><small>下次启动软件时生效。</small></div><label class="switch"><input id="settingStartMaximized" type="checkbox"><span></span></label></div>
+            <div class="setting-row"><div class="setting-copy"><strong>登录 Windows 后启动</strong></div><label class="switch"><input id="settingLaunchAtLogin" type="checkbox"><span></span></label></div>
+            <div class="setting-row"><div class="setting-copy"><strong>启动时最大化</strong></div><label class="switch"><input id="settingStartMaximized" type="checkbox"><span></span></label></div>
+            <div class="setting-row"><div class="setting-copy"><strong>关闭主窗口时隐藏到系统托盘</strong></div><label class="switch"><input id="settingCloseToTray" type="checkbox"><span></span></label></div>
           </div>
         </section>
 
         <section class="settings-section">
           <h4 class="settings-section-title"><svg><use href="#i-refresh"/></svg>软件更新</h4>
           <div class="settings-card">
-            <div class="setting-row"><div class="setting-copy"><strong>自动检查 GitHub 最新版本</strong><small>启动后检查远端 Release，发现新版时显示更新状态。</small></div><label class="switch"><input id="settingAutoUpdate" type="checkbox"><span></span></label></div>
-            <div class="setting-row"><div class="setting-copy"><strong>自动下载并安装更新</strong><small>发现新版后自动下载并校验；确认一次 Windows UAC 后自动覆盖安装并重新打开。</small></div><label class="switch"><input id="settingAutoInstallUpdate" type="checkbox"><span></span></label></div>
-            <div class="setting-row"><div class="setting-copy"><strong id="versionLabel">当前版本</strong><small id="updateDescription">尚未检查更新</small></div><div class="setting-actions"><span class="update-state" id="updateState"></span><button class="button compact" id="checkUpdate" type="button">立即检查</button><button class="button compact primary update-action" id="installUpdate" type="button">下载并安装</button></div></div>
+            <div class="setting-row"><div class="setting-copy"><strong>自动检查 GitHub 最新版本</strong></div><label class="switch"><input id="settingAutoUpdate" type="checkbox"><span></span></label></div>
+            <div class="setting-row"><div class="setting-copy"><strong>自动下载并安装更新</strong></div><label class="switch"><input id="settingAutoInstallUpdate" type="checkbox"><span></span></label></div>
+            <div class="setting-row"><div class="setting-copy"><strong id="versionLabel">当前版本</strong></div><div class="setting-actions"><span class="update-state" id="updateState"></span><button class="button compact" id="checkUpdate" type="button">立即检查</button><button class="button compact primary update-action" id="installUpdate" type="button">下载并安装</button></div></div>
           </div>
         </section>
       </main>
@@ -1125,7 +1127,7 @@
       settingsSaveQueue: Promise.resolve(true),
       settingsSaveRevision: 0,
       settingsSaveTimer: 0,
-      settings: {frame_delay_ms: 120, remember_codes: true, auto_check_updates: true, auto_install_updates: true},
+      settings: {frame_delay_ms: 120, remember_codes: true, close_to_tray: true, auto_check_updates: true, auto_install_updates: true},
       latestUpdate: null,
       autoUpdateStartedForVersion: ""
     };
@@ -1159,21 +1161,26 @@
       $("settingViewOnly").checked = Boolean(state.settings.view_only);
       $("settingSecureDesktop").checked = Boolean(state.settings.secure_desktop_enabled);
       $("secureDesktopStatus").textContent = state.settings.secure_desktop_available
-        ? "系统服务已就绪，锁屏和 UAC 安全桌面可继续连接。"
-        : "系统服务未运行，请使用管理员安装包修复安装。";
+        ? "服务可用"
+        : "服务未安装";
+      $("secureDesktopStatus").classList.toggle("warning", !state.settings.secure_desktop_available);
       $("settingRememberCodes").checked = Boolean(state.settings.remember_codes);
       $("settingFrameDelay").value = String(state.settings.frame_delay_ms || 120);
       $("settingReduceMotion").checked = Boolean(state.settings.reduce_motion);
       $("settingLaunchAtLogin").checked = Boolean(state.settings.launch_at_login);
       $("settingStartMaximized").checked = Boolean(state.settings.start_maximized);
+      $("settingCloseToTray").checked = Boolean(state.settings.close_to_tray);
       $("settingAutoUpdate").checked = Boolean(state.settings.auto_check_updates);
       $("settingAutoInstallUpdate").checked = Boolean(state.settings.auto_install_updates);
       $("localAccessCode").textContent = state.settings.access_code || "";
-      $("permanentPasswordStatus").textContent = state.settings.permanent_password_set
-        ? "已设置。除非在这里修改或清除，已记住密码的设备可持续免输连接。"
-        : "尚未设置。设置后可在受信任设备上加密记住并长期免输连接。";
+      $("permanentPasswordStatus").textContent = state.settings.permanent_password_set ? "已设置" : "未设置";
+      $("permanentPasswordStatus").classList.toggle("warning", !state.settings.permanent_password_set);
       $("clearPermanentPassword").disabled = !state.settings.permanent_password_set;
       $("versionLabel").textContent = `当前版本 ${state.settings.app_version || ""}`;
+      $("windowClose").title = state.settings.close_to_tray ? "隐藏到系统托盘" : "关闭";
+      if (!remoteWindowMode && window.pywebview?.api?.set_close_to_tray) {
+        window.pywebview.api.set_close_to_tray(Boolean(state.settings.close_to_tray)).catch(() => {});
+      }
       document.body.classList.toggle("reduce-motion", Boolean(state.settings.reduce_motion));
       updateAccessCodeExpiry();
     }
@@ -1207,6 +1214,7 @@
         reduce_motion: $("settingReduceMotion").checked,
         launch_at_login: $("settingLaunchAtLogin").checked,
         start_maximized: $("settingStartMaximized").checked,
+        close_to_tray: $("settingCloseToTray").checked,
         auto_check_updates: $("settingAutoUpdate").checked,
         auto_install_updates: $("settingAutoInstallUpdate").checked
       };
@@ -1344,7 +1352,6 @@
         state.latestUpdate = payload;
         $("updateState").textContent = payload.update_available ? `发现 ${payload.latest_version}` : payload.message;
         $("updateState").classList.toggle("available", Boolean(payload.update_available));
-        $("updateDescription").textContent = payload.update_available ? "新安装包已发布，可下载并覆盖安装。" : `GitHub 最新版本：${payload.latest_version}`;
         $("installUpdate").classList.toggle("show", Boolean(payload.update_available && payload.installer_url));
         if (!silent) showToast(payload.message || "更新检查完成");
         if (
@@ -1354,12 +1361,11 @@
           state.autoUpdateStartedForVersion !== payload.latest_version
         ) {
           state.autoUpdateStartedForVersion = payload.latest_version;
-          $("updateDescription").textContent = "正在自动准备更新；下载校验完成后请确认一次 Windows UAC。";
+          $("updateState").textContent = "正在自动准备更新";
           setTimeout(() => installUpdate(true), 600);
         }
       } catch (error) {
-        $("updateState").textContent = "检查失败";
-        $("updateDescription").textContent = error.message || "暂时无法连接 GitHub";
+        $("updateState").textContent = `检查失败：${error.message || "暂时无法连接 GitHub"}`;
         $("installUpdate").classList.remove("show");
         if (!silent) showToast(error.message || "更新检查失败");
       } finally {
@@ -1378,7 +1384,7 @@
         if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
         showToast(payload.message || "安装程序已启动，请在 UAC 窗口选择“是”");
         button.textContent = "请确认 UAC";
-        $("updateDescription").textContent = "请在 Windows UAC 窗口选择“是”；完成后新版会自动重新打开。";
+        $("updateState").textContent = "请确认 UAC";
         setTimeout(() => {
           if (!button.isConnected) return;
           button.disabled = false;
@@ -1386,8 +1392,7 @@
         }, 22000);
       } catch (error) {
         showToast(error.message || "更新安装失败");
-        $("updateState").textContent = "安装失败";
-        $("updateDescription").textContent = autoTriggered
+        $("updateState").textContent = autoTriggered
           ? "自动更新失败，可点击“下载并安装”重试。"
           : (error.message || "更新安装失败，可稍后重试。");
         button.disabled = false;
@@ -2069,6 +2074,7 @@
       "settingReduceMotion",
       "settingLaunchAtLogin",
       "settingStartMaximized",
+      "settingCloseToTray",
       "settingAutoUpdate",
       "settingAutoInstallUpdate"
     ].forEach((id) => $(id).addEventListener("change", () => saveSettings()));

@@ -53,7 +53,7 @@ if platform.system() == "Windows":
 
 
 APP_NAME = "Windows LAN Remote"
-APP_VERSION = "0.6.9"
+APP_VERSION = "0.6.10"
 GITHUB_REPOSITORY = "EmpK1019/lan-windows-remote"
 GITHUB_LATEST_RELEASE_API = f"https://api.github.com/repos/{GITHUB_REPOSITORY}/releases/latest"
 DEFAULT_PORT = 8765
@@ -629,6 +629,7 @@ class SettingsStore:
         "remember_codes": True,
         "launch_at_login": False,
         "start_maximized": False,
+        "close_to_tray": True,
         "reduce_motion": False,
         "auto_check_updates": True,
         "auto_install_updates": True,
@@ -658,6 +659,7 @@ class SettingsStore:
             "remember_codes",
             "launch_at_login",
             "start_maximized",
+            "close_to_tray",
             "reduce_motion",
             "auto_check_updates",
             "auto_install_updates",
@@ -754,6 +756,7 @@ class SettingsStore:
             "remember_codes": bool(self.values["remember_codes"]),
             "launch_at_login": startup_enabled(),
             "start_maximized": bool(self.values["start_maximized"]),
+            "close_to_tray": bool(self.values["close_to_tray"]),
             "reduce_motion": bool(self.values["reduce_motion"]),
             "auto_check_updates": bool(self.values["auto_check_updates"]),
             "auto_install_updates": bool(self.values["auto_install_updates"]),
@@ -3578,6 +3581,7 @@ class RemoteHandler(BaseHTTPRequestHandler):
             "remember_codes",
             "launch_at_login",
             "start_maximized",
+            "close_to_tray",
             "reduce_motion",
             "auto_check_updates",
             "auto_install_updates",

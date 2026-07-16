@@ -21,6 +21,7 @@ internal static class ControlWindowHostTests
             TestUrlValidation(assembly);
             TestFullscreenRestore(assembly, false);
             TestFullscreenRestore(assembly, true);
+            TestCloseToTray(assembly);
             Console.WriteLine("CONTROL_HOST_STATE_TESTS_OK");
             return 0;
         }
@@ -107,6 +108,63 @@ internal static class ControlWindowHostTests
             if (!startMaximized && window.Bounds != expectedBounds)
                 throw new InvalidOperationException("Normal bounds were not restored.");
             window.Hide();
+        }
+    }
+
+    private static void TestCloseToTray(Assembly assembly)
+    {
+        Type windowType = RequiredType(assembly, "WindowsLANRemoteControlHost.ControlWindow");
+        ConstructorInfo constructor = windowType.GetConstructor(
+            BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic,
+            null,
+            new[] { typeof(Uri) },
+            null);
+        MethodInfo setCloseToTray = windowType.GetMethod("SetCloseToTray", BindingFlags.Instance | BindingFlags.NonPublic);
+        MethodInfo restoreFromTray = windowType.GetMethod("RestoreFromTray", BindingFlags.Instance | BindingFlags.NonPublic);
+        MethodInfo exitFromTray = windowType.GetMethod("ExitFromTray", BindingFlags.Instance | BindingFlags.NonPublic);
+        if (constructor == null || setCloseToTray == null || restoreFromTray == null || exitFromTray == null)
+            throw new InvalidOperationException("Tray window members were not found.");
+
+        using (Form mainWindow = (Form)constructor.Invoke(new object[] {
+            new Uri("http://127.0.0.1:8765/?v=0.6.10")
+        }))
+        {
+            SuppressShownHandler(mainWindow);
+            mainWindow.ShowInTaskbar = false;
+            mainWindow.Opacity = 0;
+            mainWindow.Show();
+            Application.DoEvents();
+            setCloseToTray.Invoke(mainWindow, new object[] { true });
+            mainWindow.Close();
+            Application.DoEvents();
+            if (mainWindow.IsDisposed || mainWindow.Visible)
+                throw new InvalidOperationException("Closing the main window did not hide it to the tray.");
+
+            restoreFromTray.Invoke(mainWindow, null);
+            Application.DoEvents();
+            if (!mainWindow.Visible || mainWindow.IsDisposed)
+                throw new InvalidOperationException("The main window could not be restored from the tray.");
+
+            exitFromTray.Invoke(mainWindow, null);
+            Application.DoEvents();
+            if (!mainWindow.IsDisposed)
+                throw new InvalidOperationException("Tray Exit did not close the main window.");
+        }
+
+        using (Form remoteWindow = (Form)constructor.Invoke(new object[] {
+            new Uri("http://127.0.0.1:8765/?remote=1&handoff=abcdefghijklmnop")
+        }))
+        {
+            SuppressShownHandler(remoteWindow);
+            remoteWindow.ShowInTaskbar = false;
+            remoteWindow.Opacity = 0;
+            remoteWindow.Show();
+            Application.DoEvents();
+            setCloseToTray.Invoke(remoteWindow, new object[] { true });
+            remoteWindow.Close();
+            Application.DoEvents();
+            if (!remoteWindow.IsDisposed)
+                throw new InvalidOperationException("A remote control window was incorrectly hidden to the tray.");
         }
     }
 

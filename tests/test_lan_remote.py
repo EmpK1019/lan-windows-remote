@@ -138,6 +138,7 @@ class SettingsAndAuthenticationTests(unittest.TestCase):
             settings.values["device_name"] = "Persistent device"
             settings.values["view_only"] = True
             settings.values["auto_install_updates"] = False
+            settings.values["close_to_tray"] = False
             settings.set_permanent_password("persistent password value")
             settings.save()
 
@@ -145,6 +146,7 @@ class SettingsAndAuthenticationTests(unittest.TestCase):
             self.assertEqual(reloaded.values["device_name"], "Persistent device")
             self.assertIs(reloaded.values["view_only"], True)
             self.assertIs(reloaded.values["auto_install_updates"], False)
+            self.assertIs(reloaded.values["close_to_tray"], False)
             self.assertTrue(reloaded.permanent_password_is_set())
             self.assertTrue(reloaded.verify_permanent_password("persistent password value"))
 
@@ -174,6 +176,7 @@ class SettingsAndAuthenticationTests(unittest.TestCase):
                         "frame_delay_ms": 999,
                         "auto_check_updates": 1,
                         "auto_install_updates": "yes",
+                        "close_to_tray": "yes",
                         "permanent_password_salt": [],
                         "permanent_password_hash": "partial",
                     }
@@ -186,6 +189,7 @@ class SettingsAndAuthenticationTests(unittest.TestCase):
             self.assertEqual(settings.values["frame_delay_ms"], 120)
             self.assertIs(settings.values["auto_check_updates"], True)
             self.assertIs(settings.values["auto_install_updates"], True)
+            self.assertIs(settings.values["close_to_tray"], True)
             self.assertFalse(settings.permanent_password_is_set())
 
     def test_device_id_survives_device_rename_and_restart(self) -> None:
@@ -576,7 +580,12 @@ class HttpIntegrationTests(unittest.TestCase):
     def test_settings_endpoint_is_same_origin_and_validated(self) -> None:
         same_origin = f"http://127.0.0.1:{self.state.port}"
         payload = json.dumps(
-            {"device_name": "Renamed", "frame_delay_ms": 80, "auto_install_updates": False}
+            {
+                "device_name": "Renamed",
+                "frame_delay_ms": 80,
+                "auto_install_updates": False,
+                "close_to_tray": False,
+            }
         ).encode("utf-8")
         with (
             patch.object(lan_remote, "startup_enabled", return_value=False),
@@ -591,6 +600,7 @@ class HttpIntegrationTests(unittest.TestCase):
         self.assertEqual(status, 200, data)
         self.assertEqual(self.state.device_name, "Renamed")
         self.assertIs(self.settings.values["auto_install_updates"], False)
+        self.assertIs(self.settings.values["close_to_tray"], False)
         set_startup.assert_called_once_with(False)
 
         bad_payload = json.dumps({"device_name": "Rejected"}).encode("utf-8")

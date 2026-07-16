@@ -7,7 +7,7 @@ LAN Remote 是一个 Windows 桌面软件，只在局域网内工作。启动后
 ## 已实现功能
 
 - Windows 独立软件窗口（内嵌 WebView2）
-- 无边框自绘标题栏，支持最小化、最大化、还原和关闭
+- 无边框自绘标题栏，支持最小化、最大化、还原和关闭；主窗口可设置关闭后隐藏到系统托盘
 - 局域网设备自动发现与在线状态
 - 搜索和刷新设备
 - 双击设备直接开始桌面控制
@@ -25,7 +25,7 @@ LAN Remote 是一个 Windows 桌面软件，只在局域网内工作。启动后
 - 远程文件浏览、上传和下载，支持本机磁盘与用户目录
 - 桌面观看模式
 - 原生桌面窗口全屏
-- 远控工具栏可收起，并在较小窗口中自动切换为紧凑图标模式
+- 远控工具栏为顶部透明小条，离开后自动收起为顶部箭头
 - Windows 锁屏和 UAC 安全桌面控制（管理员安装版）
 - 设备名、发现、只读、画面速度、开机启动等持久化设置
 - 自动检查 GitHub Release，并可在软件内下载更新安装包
@@ -43,7 +43,7 @@ LAN Remote 是一个 Windows 桌面软件，只在局域网内工作。启动后
 6. 临时访问码可记住到本轮 30 分钟到期；永久密码可使用 Windows 加密后长期记住。
 7. 如需锁屏自动输入，在目标设备的“连接凭据与锁屏自动输入”中保存对方 Windows 密码。
 
-被控电脑需要保持设备主窗口运行。控制端关闭某个远程控制窗口只会断开该窗口，不会关闭设备管理主窗口。
+被控电脑需要保持 LAN Remote 进程运行。启用“关闭主窗口时隐藏到系统托盘”后，点击主窗口关闭按钮只隐藏窗口；双击托盘图标可恢复，右键托盘图标可真正退出。控制端关闭某个远程控制窗口只会断开该窗口，不会关闭设备管理主窗口。
 
 ## 网络端口
 
@@ -62,9 +62,9 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-windows-
 
 构建产物：
 
-- `dist\WindowsLANRemote-0.6.9-portable.zip`：免安装桌面程序（解压后运行其中的 EXE）
-- `dist\WindowsLANRemoteSetup-0.6.9.exe`：管理员安装包
-- `dist\WindowsLANRemoteService-0.6.9.exe`：构建产生的安全桌面服务组件
+- `dist\WindowsLANRemote-0.6.10-portable.zip`：免安装桌面程序（解压后运行其中的 EXE）
+- `dist\WindowsLANRemoteSetup-0.6.10.exe`：管理员安装包
+- `dist\WindowsLANRemoteService-0.6.10.exe`：构建产生的安全桌面服务组件
 
 安装包需要 UAC 管理员确认，安装位置为 `%ProgramFiles%\Windows LAN Remote`。它会创建开始菜单快捷方式、卸载项、专用网络防火墙规则，并注册自动启动的 `WindowsLANRemoteSecureDesktop` LocalSystem 服务。服务只在 `127.0.0.1:8767` 上提供经过本机密钥验证的安全桌面通道，不直接对局域网开放。
 
