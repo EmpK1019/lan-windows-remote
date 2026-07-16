@@ -1957,7 +1957,7 @@
       try {
         const result = await window.pywebview.api.try_auto_unlock(JSON.stringify(session.device), session.token);
         if (result?.status === "submitted") {
-          setRemoteStatus("已向锁屏界面自动输入保存的密码");
+          setRemoteStatus("已唤醒锁屏界面，逐字输入密码并提交");
         } else if (result?.status === "access_denied") {
           setRemoteStatus("访问凭据已失效，请重新连接", true);
         }

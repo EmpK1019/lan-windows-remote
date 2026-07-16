@@ -53,7 +53,7 @@ if platform.system() == "Windows":
 
 
 APP_NAME = "Windows LAN Remote"
-APP_VERSION = "0.6.10"
+APP_VERSION = "0.6.11"
 GITHUB_REPOSITORY = "EmpK1019/lan-windows-remote"
 GITHUB_LATEST_RELEASE_API = f"https://api.github.com/repos/{GITHUB_REPOSITORY}/releases/latest"
 DEFAULT_PORT = 8765
@@ -78,6 +78,10 @@ AUTH_FAILURE_LIMIT = 6
 AUTH_FAILURE_WINDOW_SECONDS = 60
 AUTH_FAILURE_BLOCK_SECONDS = 30
 UPDATE_INSTALL_RETRY_SECONDS = 20
+UNLOCK_WAKE_DELAY_SECONDS = 1.2
+UNLOCK_CHARACTER_DELAY_SECONDS = 0.055
+UNLOCK_SUBMIT_DELAY_SECONDS = 0.18
+UNLOCK_SEQUENCE_TIMEOUT_SECONDS = 12.0
 LOCAL_DESKTOP_PATHS = frozenset(
     {
         "/api/devices",
@@ -2235,7 +2239,8 @@ def capture_secure_desktop(monitor_id: str = "all") -> tuple[bytes, str]:
 
 
 def send_secure_input(payload: dict[str, Any]) -> None:
-    secure_helper_request("/secure/input", payload=payload, timeout=2.0)
+    timeout = UNLOCK_SEQUENCE_TIMEOUT_SECONDS if payload.get("type") == "text_sequence" else 2.0
+    secure_helper_request("/secure/input", payload=payload, timeout=timeout)
 
 
 MOUSE_FLAGS = {
@@ -2390,9 +2395,19 @@ def send_unicode_text(text: str) -> None:
         raise ctypes.WinError()
 
 
+def send_unicode_text_sequence(text: str) -> None:
+    """Type credential text gradually so Winlogon cannot drop a burst of input."""
+    if not text or len(text) > 128:
+        raise ValueError("credential text length is invalid")
+    for index, character in enumerate(text):
+        send_unicode_text(character)
+        if index + 1 < len(text):
+            time.sleep(UNLOCK_CHARACTER_DELAY_SECONDS)
+
+
 def validate_remote_input_payload(payload: dict[str, Any]) -> None:
     input_type = payload.get("type")
-    if input_type not in {"mouse_move", "mouse_down", "mouse_up", "mouse_wheel", "key_down", "key_up", "key_press", "text"}:
+    if input_type not in {"mouse_move", "mouse_down", "mouse_up", "mouse_wheel", "key_down", "key_up", "key_press", "text", "text_sequence"}:
         raise ValueError("unsupported input type")
     if input_type.startswith("mouse_"):
         for key in ("x", "y"):
@@ -2419,7 +2434,8 @@ def validate_remote_input_payload(payload: dict[str, Any]) -> None:
             raise ValueError("keyboard key is required")
     else:
         text = payload.get("text")
-        if not isinstance(text, str) or not 1 <= len(text) <= 256:
+        maximum_length = 128 if input_type == "text_sequence" else 256
+        if not isinstance(text, str) or not 1 <= len(text) <= maximum_length:
             raise ValueError("text input length is invalid")
 
 
@@ -2434,6 +2450,8 @@ def handle_remote_input(payload: dict[str, Any]) -> None:
         send_key_press(payload)
     elif input_type == "text":
         send_unicode_text(str(payload.get("text", "")))
+    elif input_type == "text_sequence":
+        send_unicode_text_sequence(str(payload.get("text", "")))
 
 
 @dataclass(frozen=True)
@@ -2690,6 +2708,8 @@ class DesktopApi:
         path: str,
         access_password: str,
         payload: dict[str, Any] | None = None,
+        *,
+        timeout: float = 4.0,
     ) -> dict[str, Any]:
         data = None
         method = "GET"
@@ -2699,7 +2719,7 @@ class DesktopApi:
             headers["Content-Type"] = "application/json"
             method = "POST"
         request = Request(target_url(device, path), data=data, method=method, headers=headers)
-        with urlopen(request, timeout=4) as response:
+        with urlopen(request, timeout=timeout) as response:
             result = json.loads(response.read(256 * 1024).decode("utf-8"))
         if not isinstance(result, dict):
             raise ValueError("远端响应无效")
@@ -2721,10 +2741,24 @@ class DesktopApi:
                 if device_id in self._unlock_attempts:
                     return {"ok": True, "status": "already_attempted"}
                 self._unlock_attempts.add(device_id)
+            # First dismiss the Windows lock screen. Winlogon's transition to
+            # the credential provider is animated, so typing immediately after
+            # Enter can silently discard the complete password.
             self._remote_json(device, "/input", access_password, {"type": "key_press", "key": "Enter", "code": "Enter"})
-            time.sleep(0.65)
-            self._remote_json(device, "/input", access_password, {"type": "text", "text": lock_password})
-            time.sleep(0.08)
+            time.sleep(UNLOCK_WAKE_DELAY_SECONDS)
+            status = self._remote_json(device, "/api/session-status", access_password)
+            if not status.get("session_locked"):
+                with self._unlock_lock:
+                    self._unlock_attempts.discard(device_id)
+                return {"ok": True, "status": "not_locked"}
+            self._remote_json(
+                device,
+                "/input",
+                access_password,
+                {"type": "text_sequence", "text": lock_password},
+                timeout=UNLOCK_SEQUENCE_TIMEOUT_SECONDS,
+            )
+            time.sleep(UNLOCK_SUBMIT_DELAY_SECONDS)
             self._remote_json(device, "/input", access_password, {"type": "key_press", "key": "Enter", "code": "Enter"})
             return {"ok": True, "status": "submitted"}
         except HTTPError as exc:

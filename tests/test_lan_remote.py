@@ -12,7 +12,7 @@ import threading
 import time
 import unittest
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, call, patch
 
 import lan_remote
 
@@ -114,6 +114,7 @@ class CoreFunctionTests(unittest.TestCase):
             {"type": "key_down", "key": "a", "code": "KeyA"},
             {"type": "key_up", "key": "Shift", "code": "ShiftLeft"},
             {"type": "text", "text": "Hello 中文"},
+            {"type": "text_sequence", "text": "Lock 密码"},
         ]
         for payload in valid:
             lan_remote.validate_remote_input_payload(payload)
@@ -125,13 +126,69 @@ class CoreFunctionTests(unittest.TestCase):
             {"type": "key_down", "key": "", "code": ""},
             {"type": "text", "text": ""},
             {"type": "text", "text": "x" * 257},
+            {"type": "text_sequence", "text": "x" * 129},
         ]
         for payload in invalid:
             with self.subTest(payload=payload), self.assertRaises(ValueError):
                 lan_remote.validate_remote_input_payload(payload)
 
+    def test_lock_password_text_is_typed_sequentially(self) -> None:
+        with (
+            patch.object(lan_remote, "send_unicode_text") as send_character,
+            patch.object(lan_remote.time, "sleep") as pause,
+        ):
+            lan_remote.handle_remote_input({"type": "text_sequence", "text": "P@密"})
+        self.assertEqual(send_character.call_args_list, [call("P"), call("@"), call("密")])
+        self.assertEqual(
+            pause.call_args_list,
+            [call(lan_remote.UNLOCK_CHARACTER_DELAY_SECONDS), call(lan_remote.UNLOCK_CHARACTER_DELAY_SECONDS)],
+        )
+
 
 class SettingsAndAuthenticationTests(unittest.TestCase):
+    def test_auto_unlock_wakes_types_sequentially_and_submits(self) -> None:
+        api = lan_remote.DesktopApi()
+        api.vault = Mock()
+        api.vault.get_secret.return_value = "Lock 密码"
+        device = {"id": "remote-device", "ip": "192.168.1.25", "port": 8765}
+        remote = Mock(
+            side_effect=[
+                {"session_locked": True},
+                {"ok": True},
+                {"session_locked": True},
+                {"ok": True},
+                {"ok": True},
+            ]
+        )
+        with (
+            patch.object(api, "_validated_device", return_value=device),
+            patch.object(api, "_remote_json", remote),
+            patch.object(lan_remote.time, "sleep") as pause,
+        ):
+            result = api.try_auto_unlock("{}", "access-token")
+
+        self.assertEqual(result, {"ok": True, "status": "submitted"})
+        self.assertEqual(
+            remote.call_args_list,
+            [
+                call(device, "/api/session-status", "access-token"),
+                call(device, "/input", "access-token", {"type": "key_press", "key": "Enter", "code": "Enter"}),
+                call(device, "/api/session-status", "access-token"),
+                call(
+                    device,
+                    "/input",
+                    "access-token",
+                    {"type": "text_sequence", "text": "Lock 密码"},
+                    timeout=lan_remote.UNLOCK_SEQUENCE_TIMEOUT_SECONDS,
+                ),
+                call(device, "/input", "access-token", {"type": "key_press", "key": "Enter", "code": "Enter"}),
+            ],
+        )
+        self.assertEqual(
+            pause.call_args_list,
+            [call(lan_remote.UNLOCK_WAKE_DELAY_SECONDS), call(lan_remote.UNLOCK_SUBMIT_DELAY_SECONDS)],
+        )
+
     def test_saved_settings_and_permanent_password_survive_reload(self) -> None:
         with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {"APPDATA": directory}):
             settings = lan_remote.SettingsStore()

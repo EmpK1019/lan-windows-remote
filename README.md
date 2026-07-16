@@ -15,7 +15,7 @@ LAN Remote 是一个 Windows 桌面软件，只在局域网内工作。启动后
 - 设置页显示、复制或立即刷新临时访问码
 - 临时访问码每 30 分钟自动轮换，到期后旧码立即失效
 - 可设置永久访问密码，并在受信任控制端长期免输连接
-- 对方锁屏密码使用 Windows DPAPI 加密保存在控制端，可在确认锁屏后自动输入一次
+- 对方锁屏密码使用 Windows DPAPI 加密保存在控制端；确认锁屏后会先唤醒登录界面，再逐字输入并提交一次
 - 远程桌面实时画面
 - 鼠标移动、单击、右键和滚轮
 - 控制画面使用标准箭头光标，不使用十字光标
@@ -62,9 +62,9 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-windows-
 
 构建产物：
 
-- `dist\WindowsLANRemote-0.6.10-portable.zip`：免安装桌面程序（解压后运行其中的 EXE）
-- `dist\WindowsLANRemoteSetup-0.6.10.exe`：管理员安装包
-- `dist\WindowsLANRemoteService-0.6.10.exe`：构建产生的安全桌面服务组件
+- `dist\WindowsLANRemote-0.6.11-portable.zip`：免安装桌面程序（解压后运行其中的 EXE）
+- `dist\WindowsLANRemoteSetup-0.6.11.exe`：管理员安装包
+- `dist\WindowsLANRemoteService-0.6.11.exe`：构建产生的安全桌面服务组件
 
 安装包需要 UAC 管理员确认，安装位置为 `%ProgramFiles%\Windows LAN Remote`。它会创建开始菜单快捷方式、卸载项、专用网络防火墙规则，并注册自动启动的 `WindowsLANRemoteSecureDesktop` LocalSystem 服务。服务只在 `127.0.0.1:8767` 上提供经过本机密钥验证的安全桌面通道，不直接对局域网开放。
 
@@ -75,7 +75,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-windows-
 - 只能控制 Windows 电脑。
 - 软件界面依赖 Microsoft Edge WebView2 Runtime；Windows 10/11 安装 Edge 后通常已自带。
 - 锁屏支持面向已登录后锁定的当前控制台会话；尚未登录、切换用户或远程桌面会话不在当前版本保证范围内。
-- 锁屏自动输入适用于已显示 Windows 密码输入框的场景；Windows Hello、PIN、智能卡以及要求 Ctrl+Alt+Delete 的策略可能仍需手动操作。
+- 锁屏自动输入会先按 Enter 唤醒登录界面，等待输入框稳定后逐字输入 Windows 密码并按 Enter 提交；Windows Hello、PIN、智能卡以及要求 Ctrl+Alt+Delete 的策略可能仍需手动操作。
 - 剪贴板同步当前只传输纯文字；图片、HTML 和文件剪贴板不会同步。
 - 单个远程上传或下载文件限制为 2 GB，暂不支持断点续传。
 - 当前画面传输适合办公操作和临时维护，不适合游戏或高帧率视频。
