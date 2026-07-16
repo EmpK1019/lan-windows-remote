@@ -1,5 +1,5 @@
 param(
-    [string]$Version = "0.6.7",
+    [string]$Version = "0.6.8",
     [switch]$SkipDependencyInstall
 )
 
@@ -64,6 +64,16 @@ if ($LASTEXITCODE -ne 0) {
 & $VenvPython -m unittest discover -s (Join-Path $Root "tests") -v
 if ($LASTEXITCODE -ne 0) {
     throw "Automated tests failed with exit code $LASTEXITCODE."
+}
+
+& powershell.exe `
+    -NoProfile `
+    -NonInteractive `
+    -ExecutionPolicy Bypass `
+    -File (Join-Path $Root "tests\InstallProcessSelectionTests.ps1") `
+    -InstallScript (Join-Path $PackagingDir "install.ps1")
+if ($LASTEXITCODE -ne 0) {
+    throw "Installer process-selection tests failed with exit code $LASTEXITCODE."
 }
 
 if (Test-Path -LiteralPath $StageDir) {

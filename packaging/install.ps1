@@ -1,3 +1,7 @@
+param(
+    [switch]$FunctionsOnly
+)
+
 $ErrorActionPreference = "Stop"
 
 $AppName = "Windows LAN Remote"
@@ -5,7 +9,7 @@ $AppId = "WindowsLANRemote"
 $Publisher = "EmpK1019"
 $ServiceName = "WindowsLANRemoteSecureDesktop"
 $VersionFile = Join-Path $PSScriptRoot "VERSION.txt"
-$Version = if (Test-Path -LiteralPath $VersionFile) { (Get-Content -Raw -LiteralPath $VersionFile).Trim() } else { "0.6.7" }
+$Version = if (Test-Path -LiteralPath $VersionFile) { (Get-Content -Raw -LiteralPath $VersionFile).Trim() } else { "0.6.8" }
 
 $InstallDir = Join-Path $env:ProgramFiles $AppName
 $LegacyInstallDir = Join-Path $env:LOCALAPPDATA "Programs\$AppName"
@@ -93,33 +97,80 @@ function Reset-InstallDirectory {
     }
 }
 
-function Stop-InstalledProcesses {
-    $Roots = @($InstallDir, $LegacyInstallDir)
-    $RootProcessIds = New-Object 'System.Collections.Generic.HashSet[int]'
-    Get-Process -ErrorAction SilentlyContinue | ForEach-Object {
-        try {
-            $ProcessPath = $_.Path
-            if ($ProcessPath -and ($Roots | Where-Object { $ProcessPath.StartsWith($_, [StringComparison]::OrdinalIgnoreCase) })) {
-                $RootProcessIds.Add([int]$_.Id) | Out-Null
+function Test-ProcessPathInRoots {
+    param([string]$ProcessPath, [string[]]$Roots)
+    if ([string]::IsNullOrWhiteSpace($ProcessPath)) { return $false }
+    try {
+        $Candidate = [IO.Path]::GetFullPath($ProcessPath)
+        foreach ($Root in $Roots) {
+            $Prefix = [IO.Path]::GetFullPath($Root).TrimEnd('\') + '\'
+            if ($Candidate.StartsWith($Prefix, [StringComparison]::OrdinalIgnoreCase)) {
+                return $true
             }
         }
-        catch { }
     }
+    catch { }
+    return $false
+}
+
+function Get-InstalledProcessSelection {
+    param(
+        [object[]]$Processes,
+        [string[]]$Roots,
+        [int]$CurrentProcessId
+    )
+
+    $ProtectedProcessIds = New-Object 'System.Collections.Generic.HashSet[int]'
+    $ProtectedProcessIds.Add($CurrentProcessId) | Out-Null
+    foreach ($Process in $Processes) {
+        $ProcessPath = [string]$Process.ExecutablePath
+        $ProcessName = [string]$Process.Name
+        if (
+            -not (Test-ProcessPathInRoots -ProcessPath $ProcessPath -Roots $Roots) -and
+            $ProcessName -like 'WindowsLANRemoteSetup*.exe'
+        ) {
+            $ProtectedProcessIds.Add([int]$Process.ProcessId) | Out-Null
+        }
+    }
+
+    $RootProcessIds = New-Object 'System.Collections.Generic.HashSet[int]'
+    foreach ($Process in $Processes) {
+        if (Test-ProcessPathInRoots -ProcessPath ([string]$Process.ExecutablePath) -Roots $Roots) {
+            $RootProcessIds.Add([int]$Process.ProcessId) | Out-Null
+        }
+    }
+
     $AllProcessIds = New-Object 'System.Collections.Generic.HashSet[int]'
     foreach ($ProcessId in $RootProcessIds) { $AllProcessIds.Add($ProcessId) | Out-Null }
-    $Processes = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue)
     do {
         $Added = $false
         foreach ($Process in $Processes) {
-            if ($AllProcessIds.Contains([int]$Process.ParentProcessId) -and $AllProcessIds.Add([int]$Process.ProcessId)) {
+            $ProcessId = [int]$Process.ProcessId
+            if (
+                -not $ProtectedProcessIds.Contains($ProcessId) -and
+                $AllProcessIds.Contains([int]$Process.ParentProcessId) -and
+                $AllProcessIds.Add($ProcessId)
+            ) {
                 $Added = $true
             }
         }
     } while ($Added)
-    foreach ($ProcessId in $AllProcessIds) {
+
+    return [pscustomobject]@{
+        ProcessIds = @($AllProcessIds | Sort-Object)
+        ProtectedProcessIds = @($ProtectedProcessIds | Sort-Object)
+    }
+}
+
+function Stop-InstalledProcesses {
+    $Roots = @($InstallDir, $LegacyInstallDir)
+    $Processes = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue)
+    $Selection = Get-InstalledProcessSelection -Processes $Processes -Roots $Roots -CurrentProcessId $PID
+    Write-InstallLog "Stopping installed process IDs: $($Selection.ProcessIds -join ','); protected updater IDs: $($Selection.ProtectedProcessIds -join ',')."
+    foreach ($ProcessId in $Selection.ProcessIds) {
         Stop-Process -Id $ProcessId -Force -ErrorAction SilentlyContinue
     }
-    foreach ($ProcessId in $AllProcessIds) {
+    foreach ($ProcessId in $Selection.ProcessIds) {
         Wait-Process -Id $ProcessId -Timeout 8 -ErrorAction SilentlyContinue
     }
 }
@@ -178,6 +229,8 @@ function Install-FirewallRules {
     New-NetFirewallRule -Name "WindowsLANRemote-TCP" -DisplayName "Windows LAN Remote (TCP)" -Direction Inbound -Action Allow -Profile Private -Program $InstalledExecutable -Protocol TCP -LocalPort 8765 | Out-Null
     New-NetFirewallRule -Name "WindowsLANRemote-UDP" -DisplayName "Windows LAN Remote Discovery (UDP)" -Direction Inbound -Action Allow -Profile Private -Program $InstalledExecutable -Protocol UDP -LocalPort 8766 | Out-Null
 }
+
+if ($FunctionsOnly) { return }
 
 try {
     Assert-Administrator
