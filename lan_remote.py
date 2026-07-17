@@ -53,7 +53,7 @@ if platform.system() == "Windows":
 
 
 APP_NAME = "Windows LAN Remote"
-APP_VERSION = "0.6.14"
+APP_VERSION = "0.6.15"
 GITHUB_REPOSITORY = "EmpK1019/lan-windows-remote"
 GITHUB_LATEST_RELEASE_API = f"https://api.github.com/repos/{GITHUB_REPOSITORY}/releases/latest"
 DEFAULT_PORT = 8765
@@ -67,6 +67,7 @@ PERMANENT_PASSWORD_ITERATIONS = 240_000
 PERMANENT_PASSWORD_MIN_LENGTH = 8
 ACCESS_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 MAX_POST_BYTES = 16 * 1024
+MAX_NATIVE_INPUT_FRAME_BYTES = 4 * 1024
 MAX_CLIPBOARD_CHARS = 1_000_000
 MAX_CLIPBOARD_PAYLOAD_BYTES = MAX_CLIPBOARD_CHARS * 4 + 1024
 MAX_FILE_TRANSFER_BYTES = 2 * 1024 * 1024 * 1024
@@ -2579,6 +2580,21 @@ def handle_remote_input(payload: dict[str, Any]) -> None:
             send_unicode_text_sequence(str(payload.get("text", "")))
 
 
+class SecureDesktopControlDisabled(RuntimeError):
+    pass
+
+
+def dispatch_remote_input(state: Any, payload: dict[str, Any]) -> None:
+    validate_remote_input_payload(payload)
+    with REMOTE_INPUT_DISPATCH_LOCK:
+        if secure_desktop_active():
+            if not state.settings.values["secure_desktop_enabled"]:
+                raise SecureDesktopControlDisabled("secure desktop control disabled")
+            send_secure_input(payload)
+        elif not try_send_elevated_input(payload):
+            handle_remote_input(payload)
+
+
 def lock_remote_workstation() -> None:
     if platform.system() != "Windows":
         raise OSError("remote workstation locking is only available on Windows")
@@ -3054,6 +3070,7 @@ class RemoteHandler(BaseHTTPRequestHandler):
             "/health",
             "/screen",
             "/input",
+            "/input-stream",
             "/lock",
             "/clipboard",
             "/files",
@@ -3078,6 +3095,77 @@ class RemoteHandler(BaseHTTPRequestHandler):
         send_common_headers(self, allow_cross_origin=path not in LOCAL_DESKTOP_PATHS)
         self.send_header("Content-Length", "0")
         self.end_headers()
+
+    def do_CONNECT(self) -> None:
+        if not self.check_client_allowed():
+            return
+        parsed = urlparse(self.path)
+        if parsed.path != "/input-stream":
+            json_response(self, HTTPStatus.NOT_FOUND, {"ok": False, "error": "not found"})
+            return
+        token = self.headers.get("X-Remote-Token", "")
+        if self.server.state.authenticate(token, self.client_address[0]) is None:
+            json_response(self, HTTPStatus.UNAUTHORIZED, {"ok": False, "error": "bad token"})
+            return
+        if self.server.state.view_only:
+            json_response(self, HTTPStatus.FORBIDDEN, {"ok": False, "error": "server is view-only"})
+            return
+
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Connection", "keep-alive")
+        self.send_header("X-LAN-Input-Protocol", "1")
+        self.end_headers()
+        self.wfile.flush()
+
+        while True:
+            try:
+                frame_header = self._read_stream_bytes(4)
+            except (ConnectionError, OSError, TimeoutError):
+                return
+            if frame_header is None:
+                return
+            frame_length = int.from_bytes(frame_header, "big")
+            if frame_length < 2 or frame_length > MAX_NATIVE_INPUT_FRAME_BYTES:
+                self._write_input_ack(2)
+                return
+            try:
+                frame = self._read_stream_bytes(frame_length)
+            except (ConnectionError, OSError, TimeoutError):
+                return
+            if frame is None:
+                return
+
+            if self.server.state.authenticate(token, self.client_address[0]) is None:
+                self._write_input_ack(1)
+                return
+            if self.server.state.view_only:
+                self._write_input_ack(1)
+                return
+            try:
+                payload = json.loads(frame.decode("utf-8"))
+                if not isinstance(payload, dict):
+                    raise ValueError("input payload must be an object")
+                dispatch_remote_input(self.server.state, payload)
+            except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
+                self._write_input_ack(2)
+                continue
+            except Exception:
+                self._write_input_ack(3)
+                continue
+            self._write_input_ack(0)
+
+    def _read_stream_bytes(self, length: int) -> bytes | None:
+        chunks = bytearray()
+        while len(chunks) < length:
+            chunk = self.rfile.read(length - len(chunks))
+            if not chunk:
+                return None
+            chunks.extend(chunk)
+        return bytes(chunks)
+
+    def _write_input_ack(self, status: int) -> None:
+        self.wfile.write(bytes((status,)))
+        self.wfile.flush()
 
     def do_GET(self) -> None:
         if not self.check_client_allowed():
@@ -3620,15 +3708,10 @@ class RemoteHandler(BaseHTTPRequestHandler):
             return
 
         try:
-            validate_remote_input_payload(payload)
-            with REMOTE_INPUT_DISPATCH_LOCK:
-                if secure_desktop_active():
-                    if not self.server.state.settings.values["secure_desktop_enabled"]:
-                        json_response(self, HTTPStatus.LOCKED, {"ok": False, "error": "secure desktop control disabled"})
-                        return
-                    send_secure_input(payload)
-                elif not try_send_elevated_input(payload):
-                    handle_remote_input(payload)
+            dispatch_remote_input(self.server.state, payload)
+        except SecureDesktopControlDisabled as exc:
+            json_response(self, HTTPStatus.LOCKED, {"ok": False, "error": str(exc)})
+            return
         except ValueError as exc:
             json_response(self, HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(exc)})
             return

@@ -212,9 +212,15 @@ class CoreFunctionTests(unittest.TestCase):
         self.assertIn("window.__lanForwardNativeKey", html)
         self.assertIn("setNativeKeyboardCapture(false)", html)
         self.assertIn("shouldCaptureNativeKeyboard()", html)
+        self.assertIn("configure_native_input", html)
+        self.assertIn("release_native_input", html)
+        self.assertIn("state.nativeInputActive", html)
         host = (Path(__file__).resolve().parents[1] / "packaging" / "ControlWindowHost.cs").read_text(encoding="utf-8")
         self.assertIn("AreBrowserAcceleratorKeysEnabled = false", host)
         self.assertIn("SetWindowsHookEx(WhKeyboardLl", host)
+        self.assertIn("SetWindowsMouseHookEx(WhMouseLl", host)
+        self.assertIn("CONNECT /input-stream HTTP/1.1", host)
+        self.assertIn('case "configure_native_input"', host)
         self.assertIn("GetForegroundWindow() == Handle", host)
         self.assertIn('case "set_keyboard_capture"', host)
         service = (Path(__file__).resolve().parents[1] / "packaging" / "SecureDesktopService.cs").read_text(
@@ -660,6 +666,54 @@ class HttpIntegrationTests(unittest.TestCase):
         self.assertEqual(status, 200, data)
         self.assertEqual(json.loads(data)["status"], "locked")
         lock_workstation.assert_called_once_with()
+
+    def test_native_input_stream_is_authenticated_and_ordered(self) -> None:
+        received: list[dict[str, object]] = []
+        connection = socket.create_connection(("127.0.0.1", self.state.port), timeout=3)
+        connection.settimeout(3)
+        try:
+            connection.sendall(
+                b"CONNECT /input-stream HTTP/1.1\r\n"
+                b"Host: 127.0.0.1\r\n"
+                b"X-Remote-Token: TEST-TEMP-CODE\r\n"
+                b"Connection: keep-alive\r\n\r\n"
+            )
+            response = b""
+            while b"\r\n\r\n" not in response:
+                response += connection.recv(1024)
+            self.assertIn(b" 200 ", response.split(b"\r\n", 1)[0])
+
+            payloads = [
+                {"type": "native_key_down", "scan_code": 59, "extended": False},
+                {"type": "native_key_up", "scan_code": 59, "extended": False},
+                {"type": "mouse_down", "x": 25, "y": 35, "button": 0, "monitor": "all"},
+                {"type": "mouse_up", "x": 25, "y": 35, "button": 0, "monitor": "all"},
+            ]
+            with (
+                patch.object(lan_remote, "secure_desktop_active", return_value=False),
+                patch.object(lan_remote, "try_send_elevated_input", return_value=False),
+                patch.object(lan_remote, "handle_remote_input", side_effect=received.append),
+            ):
+                for payload in payloads:
+                    raw = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+                    connection.sendall(len(raw).to_bytes(4, "big") + raw)
+                    self.assertEqual(connection.recv(1), b"\x00")
+            self.assertEqual(received, payloads)
+        finally:
+            connection.close()
+
+        rejected = socket.create_connection(("127.0.0.1", self.state.port), timeout=3)
+        rejected.settimeout(3)
+        try:
+            rejected.sendall(
+                b"CONNECT /input-stream HTTP/1.1\r\n"
+                b"Host: 127.0.0.1\r\n"
+                b"X-Remote-Token: wrong-token\r\n\r\n"
+            )
+            response = rejected.recv(4096)
+            self.assertIn(b" 401 ", response.split(b"\r\n", 1)[0])
+        finally:
+            rejected.close()
 
     def test_invalid_input_monitor_and_view_only_are_rejected(self) -> None:
         headers = {"X-Remote-Token": "TEST-TEMP-CODE", "Content-Type": "application/json"}

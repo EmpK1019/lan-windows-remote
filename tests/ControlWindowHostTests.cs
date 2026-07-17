@@ -1,7 +1,12 @@
 using System;
 using System.ComponentModel;
 using System.Drawing;
+using System.IO;
+using System.Net;
+using System.Net.Sockets;
 using System.Reflection;
+using System.Text;
+using System.Threading;
 using System.Windows.Forms;
 
 internal static class ControlWindowHostTests
@@ -23,6 +28,7 @@ internal static class ControlWindowHostTests
             TestFullscreenRestore(assembly, true);
             TestCloseToTray(assembly);
             TestKeyboardCaptureSurface(assembly);
+            TestNativeInputTransport(assembly);
             Console.WriteLine("CONTROL_HOST_STATE_TESTS_OK");
             return 0;
         }
@@ -127,7 +133,7 @@ internal static class ControlWindowHostTests
             throw new InvalidOperationException("Tray window members were not found.");
 
         using (Form mainWindow = (Form)constructor.Invoke(new object[] {
-            new Uri("http://127.0.0.1:8765/?v=0.6.14")
+            new Uri("http://127.0.0.1:8765/?v=0.6.15")
         }))
         {
             SuppressShownHandler(mainWindow);
@@ -181,10 +187,12 @@ internal static class ControlWindowHostTests
         MethodInfo setCapture = windowType.GetMethod("SetKeyboardCapture", BindingFlags.Instance | BindingFlags.NonPublic);
         MethodInfo hookCallback = windowType.GetMethod("KeyboardHookCallback", BindingFlags.Instance | BindingFlags.NonPublic);
         MethodInfo forwardKey = windowType.GetMethod("ForwardNativeKey", BindingFlags.Instance | BindingFlags.NonPublic);
-        MethodInfo drainKeyQueue = windowType.GetMethod("DrainNativeKeyQueue", BindingFlags.Instance | BindingFlags.NonPublic);
+        MethodInfo initializeMouseHook = windowType.GetMethod("InitializeMouseHook", BindingFlags.Instance | BindingFlags.NonPublic);
+        MethodInfo configureNativeInput = windowType.GetMethod("ConfigureNativeInput", BindingFlags.Instance | BindingFlags.NonPublic);
+        MethodInfo nativeInputLoop = windowType.GetMethod("NativeInputLoop", BindingFlags.Instance | BindingFlags.NonPublic);
         if (constructor == null || initializeHook == null || setCapture == null || hookCallback == null ||
-            forwardKey == null || drainKeyQueue == null)
-            throw new InvalidOperationException("Native keyboard capture members were not found.");
+            forwardKey == null || initializeMouseHook == null || configureNativeInput == null || nativeInputLoop == null)
+            throw new InvalidOperationException("Native input capture members were not found.");
 
         using (Form remoteWindow = (Form)constructor.Invoke(new object[] {
             new Uri("http://127.0.0.1:8765/?remote=1&handoff=abcdefghijklmnop")
@@ -195,6 +203,110 @@ internal static class ControlWindowHostTests
             if (enabledWithoutHook)
                 throw new InvalidOperationException("Keyboard capture enabled without an installed hook.");
         }
+    }
+
+    private static void TestNativeInputTransport(Assembly assembly)
+    {
+        Type windowType = RequiredType(assembly, "WindowsLANRemoteControlHost.ControlWindow");
+        Type sessionType = windowType.GetNestedType("NativeInputSession", BindingFlags.NonPublic);
+        Type transportType = windowType.GetNestedType("NativeInputTransport", BindingFlags.NonPublic);
+        if (sessionType == null || transportType == null)
+            throw new InvalidOperationException("Native input transport types were not found.");
+
+        TcpListener listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        int port = ((IPEndPoint)listener.LocalEndpoint).Port;
+        string received = null;
+        Exception serverFailure = null;
+        Thread server = new Thread(new ThreadStart(delegate
+        {
+            try
+            {
+                using (TcpClient client = listener.AcceptTcpClient())
+                using (NetworkStream stream = client.GetStream())
+                {
+                    stream.ReadTimeout = 3000;
+                    string header = ReadHeader(stream);
+                    if (!header.StartsWith("CONNECT /input-stream HTTP/1.1", StringComparison.Ordinal))
+                        throw new InvalidOperationException("Native input CONNECT handshake was not received.");
+                    byte[] response = Encoding.ASCII.GetBytes(
+                        "HTTP/1.1 200 Connection Established\r\nX-LAN-Input-Protocol: 1\r\n\r\n");
+                    stream.Write(response, 0, response.Length);
+                    byte[] lengthBytes = ReadExact(stream, 4);
+                    int length =
+                        (lengthBytes[0] << 24) |
+                        (lengthBytes[1] << 16) |
+                        (lengthBytes[2] << 8) |
+                        lengthBytes[3];
+                    received = Encoding.UTF8.GetString(ReadExact(stream, length));
+                    stream.WriteByte(0);
+                    stream.Flush();
+                }
+            }
+            catch (Exception ex)
+            {
+                serverFailure = ex;
+            }
+        }));
+        server.IsBackground = true;
+        server.Start();
+
+        object session = Activator.CreateInstance(sessionType, true);
+        sessionType.GetField("Endpoint").SetValue(session, new Uri("http://127.0.0.1:" + port + "/input"));
+        sessionType.GetField("Token").SetValue(session, "abcdefghijklmnop");
+        object transport = Activator.CreateInstance(transportType, true);
+        try
+        {
+            MethodInfo send = transportType.GetMethod("Send");
+            if (send == null) throw new InvalidOperationException("Native input Send method was not found.");
+            bool sent = (bool)send.Invoke(
+                transport,
+                new object[] { session, "{\"type\":\"native_key_down\",\"scan_code\":59,\"extended\":false}" });
+            if (!sent) throw new InvalidOperationException("Native input transport rejected a valid frame.");
+        }
+        finally
+        {
+            IDisposable disposable = transport as IDisposable;
+            if (disposable != null) disposable.Dispose();
+            listener.Stop();
+        }
+        if (!server.Join(4000)) throw new InvalidOperationException("Native input test server did not stop.");
+        if (serverFailure != null) throw new InvalidOperationException("Native input test server failed.", serverFailure);
+        if (received == null || received.IndexOf("\"scan_code\":59", StringComparison.Ordinal) < 0)
+            throw new InvalidOperationException("Native input frame payload was not received.");
+    }
+
+    private static string ReadHeader(NetworkStream stream)
+    {
+        MemoryStream buffer = new MemoryStream();
+        int matched = 0;
+        while (buffer.Length < 8192)
+        {
+            int value = stream.ReadByte();
+            if (value < 0) throw new EndOfStreamException();
+            buffer.WriteByte((byte)value);
+            if ((matched == 0 || matched == 2) && value == '\r') matched++;
+            else if ((matched == 1 || matched == 3) && value == '\n')
+            {
+                matched++;
+                if (matched == 4) return Encoding.ASCII.GetString(buffer.ToArray());
+            }
+            else matched = value == '\r' ? 1 : 0;
+        }
+        throw new InvalidOperationException("Native input request header was too large.");
+    }
+
+    private static byte[] ReadExact(NetworkStream stream, int length)
+    {
+        byte[] result = new byte[length];
+        int offset = 0;
+        while (offset < length)
+        {
+            int read = stream.Read(result, offset, length - offset);
+            if (read <= 0) throw new EndOfStreamException();
+            offset += read;
+        }
+        return result;
     }
 
     private static void SuppressShownHandler(Form window)

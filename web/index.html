@@ -1172,6 +1172,9 @@
       inputAbortController: null,
       inputAbortReason: "",
       inputInFlightType: "",
+      nativeInputActive: false,
+      nativeInputSyncRevision: 0,
+      nativeInputSyncTimer: 0,
       lastMoveAt: 0,
       refreshTimer: 0,
       toastTimer: 0,
@@ -1698,6 +1701,7 @@
       setToolbarCollapsed(false);
       scheduleToolbarCollapse(1800);
       setKeyboardEnabled(!viewOnly, false);
+      scheduleNativeInputSync();
       if (remoteWindowMode && window.pywebview?.api?.set_window_title) {
         window.pywebview.api.set_window_title(`${device.name} · LAN Remote`).catch(() => {});
       }
@@ -1721,6 +1725,7 @@
         releaseAllRemoteInput(),
         new Promise((resolve) => setTimeout(resolve, 2400))
       ]);
+      await disableNativeInput();
       resetInputTransport();
       if (state.session) state.session.connected = false;
       clearTimeout(state.refreshTimer);
@@ -1749,6 +1754,7 @@
       $("remoteSession").classList.toggle("toolbar-collapsed", collapsed);
       $("toolbarToggle").title = collapsed ? "展开工具栏" : "收起工具栏";
       $("toolbarToggle").setAttribute("aria-label", collapsed ? "展开工具栏" : "收起工具栏");
+      scheduleNativeInputSync(260);
     }
 
     function scheduleToolbarCollapse(delay = 700) {
@@ -1774,6 +1780,7 @@
       clearTimeout(state.remoteTitlebarHideTimer);
       state.remoteTitlebarHideTimer = 0;
       $("remoteSession").classList.toggle("remote-titlebar-visible", Boolean(visible));
+      scheduleNativeInputSync(260);
     }
 
     function revealRemoteTitlebar() {
@@ -1969,6 +1976,7 @@
       setNativeKeyboardCapture(false);
       $("fileDeviceName").textContent = `· ${state.session.device.name}`;
       $("fileModal").classList.add("show");
+      scheduleNativeInputSync();
       loadRemoteDirectory(state.filePath || "");
     }
 
@@ -1978,6 +1986,7 @@
         setNativeKeyboardCapture(true);
         $("remoteStage").focus();
       }
+      scheduleNativeInputSync();
     }
 
     function downloadRemoteFile(path, name) {
@@ -2055,6 +2064,7 @@
         state.loadingFrame = false;
         const monitor = state.monitors.find((item) => item.id === state.session?.monitorId);
         setRemoteStatus(`已连接 · ${monitor?.label || "远端屏幕"} · ${frame.naturalWidth} × ${frame.naturalHeight}`);
+        scheduleNativeInputSync();
         maybeAutoUnlock();
         state.refreshTimer = setTimeout(refreshScreen, Number(state.settings.frame_delay_ms) || 120);
       };
@@ -2096,6 +2106,107 @@
       if (x < 0 || y < 0 || x > image.naturalWidth || y > image.naturalHeight) return null;
       return {x: Math.round(x), y: Math.round(y)};
     }
+
+    function visibleElementRect(element) {
+      if (!(element instanceof Element)) return null;
+      const style = getComputedStyle(element);
+      if (style.display === "none" || style.visibility === "hidden" || style.pointerEvents === "none") return null;
+      const rect = element.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0 || rect.bottom <= 0 || rect.right <= 0 ||
+          rect.top >= innerHeight || rect.left >= innerWidth) return null;
+      return {left: rect.left, top: rect.top, width: rect.width, height: rect.height};
+    }
+
+    function nativeInputLayout() {
+      const image = $("remoteScreen");
+      const rect = image.getBoundingClientRect();
+      let contentLeft = rect.left;
+      let contentTop = rect.top;
+      let contentWidth = 0;
+      let contentHeight = 0;
+      if (image.naturalWidth > 0 && image.naturalHeight > 0 && rect.width > 0 && rect.height > 0) {
+        const scale = Math.min(rect.width / image.naturalWidth, rect.height / image.naturalHeight);
+        contentWidth = image.naturalWidth * scale;
+        contentHeight = image.naturalHeight * scale;
+        contentLeft += (rect.width - contentWidth) / 2;
+        contentTop += (rect.height - contentHeight) / 2;
+      }
+      const exclusions = [
+        visibleElementRect(document.querySelector(".remote-toolbar")),
+        visibleElementRect($("remoteTitlebar")),
+        $("clipboardPopover").classList.contains("show") ? visibleElementRect($("clipboardPopover")) : null
+      ].filter(Boolean);
+      return {
+        content_left: contentLeft,
+        content_top: contentTop,
+        content_width: contentWidth,
+        content_height: contentHeight,
+        remote_width: image.naturalWidth || 0,
+        remote_height: image.naturalHeight || 0,
+        exclusions
+      };
+    }
+
+    async function syncNativeInput() {
+      if (!remoteWindowMode || !window.pywebview?.api?.configure_native_input) {
+        state.nativeInputActive = false;
+        return false;
+      }
+      const revision = ++state.nativeInputSyncRevision;
+      const session = state.session;
+      if (!session?.connected || session.viewOnly) {
+        try { await window.pywebview.api.configure_native_input({enabled: false}); } catch {}
+        if (revision === state.nativeInputSyncRevision) state.nativeInputActive = false;
+        return false;
+      }
+      const suspended = $("fileModal").classList.contains("show") || isLocalKeyboardTarget();
+      let active = false;
+      try {
+        active = Boolean(await window.pywebview.api.configure_native_input({
+          enabled: true,
+          endpoint: `${deviceOrigin(session.device)}/input`,
+          token: session.token,
+          monitor: session.monitorId || "all",
+          keyboard_enabled: Boolean(state.keyboardEnabled && !suspended),
+          suspended,
+          ...nativeInputLayout()
+        }));
+      } catch {}
+      if (revision === state.nativeInputSyncRevision) state.nativeInputActive = active;
+      return active;
+    }
+
+    function scheduleNativeInputSync(delay = 0) {
+      if (!remoteWindowMode) return;
+      clearTimeout(state.nativeInputSyncTimer);
+      state.nativeInputSyncTimer = setTimeout(() => syncNativeInput(), delay);
+    }
+
+    async function releaseNativeInput() {
+      if (!remoteWindowMode || !state.nativeInputActive || !window.pywebview?.api?.release_native_input) return false;
+      try {
+        await window.pywebview.api.release_native_input();
+        return true;
+      } catch {
+        return false;
+      }
+    }
+
+    async function disableNativeInput() {
+      if (!remoteWindowMode || !window.pywebview?.api?.configure_native_input) {
+        state.nativeInputActive = false;
+        return;
+      }
+      state.nativeInputSyncRevision += 1;
+      clearTimeout(state.nativeInputSyncTimer);
+      try { await window.pywebview.api.configure_native_input({enabled: false}); } catch {}
+      state.nativeInputActive = false;
+    }
+
+    window.__lanNativeInputStatus = (healthy) => {
+      if (healthy) return;
+      setRemoteStatus("原生输入通道中断，正在自动重连", true);
+    };
 
     const INPUT_REQUEST_TIMEOUT_MS = 1800;
     const LONG_INPUT_REQUEST_TIMEOUT_MS = 14000;
@@ -2234,10 +2345,15 @@
     }
 
     function releaseRemoteKeys() {
+      if (remoteWindowMode && state.nativeInputActive) {
+        state.remotePressedKeys.clear();
+        state.remotePressedNativeKeys.clear();
+        return releaseNativeInput();
+      }
       if (!state.session?.connected || state.session.viewOnly) {
         state.remotePressedKeys.clear();
         state.remotePressedNativeKeys.clear();
-        return;
+        return Promise.resolve(false);
       }
       const pressed = Array.from(state.remotePressedKeys.values());
       state.remotePressedKeys.clear();
@@ -2245,19 +2361,31 @@
       const nativePressed = Array.from(state.remotePressedNativeKeys.values());
       state.remotePressedNativeKeys.clear();
       nativePressed.forEach(({scanCode, extended}) => sendInput({type: "native_key_up", scan_code: scanCode, extended}));
+      return state.inputQueue;
     }
 
     function releaseRemoteButtons() {
+      if (remoteWindowMode && state.nativeInputActive) {
+        state.remotePressedButtons.clear();
+        return releaseNativeInput();
+      }
       if (!state.session?.connected || state.session.viewOnly) {
         state.remotePressedButtons.clear();
-        return;
+        return Promise.resolve(false);
       }
       const pressed = Array.from(state.remotePressedButtons.values());
       state.remotePressedButtons.clear();
       pressed.forEach((payload) => sendInput({...payload, type: "mouse_up"}));
+      return state.inputQueue;
     }
 
     function releaseAllRemoteInput() {
+      if (remoteWindowMode && state.nativeInputActive) {
+        state.remotePressedKeys.clear();
+        state.remotePressedNativeKeys.clear();
+        state.remotePressedButtons.clear();
+        return releaseNativeInput();
+      }
       releaseRemoteKeys();
       releaseRemoteButtons();
       return state.inputQueue;
@@ -2269,6 +2397,7 @@
       state.keyboardEnabled = next;
       $("keyboardButton").classList.toggle("active", next);
       setNativeKeyboardCapture(next);
+      scheduleNativeInputSync();
       if (statusText) setRemoteStatus(next ? "键盘控制已开启，本地按键只发送到远端" : "键盘控制已关闭");
       if (next) $("remoteStage").focus();
     }
@@ -2293,6 +2422,7 @@
     }
 
     window.__lanForwardNativeKey = (scanCode, extended, keyDown) => {
+      if (state.nativeInputActive) return true;
       if (!state.session?.connected || state.session.viewOnly || !state.keyboardEnabled) return false;
       const normalizedScanCode = Number(scanCode);
       if (!Number.isInteger(normalizedScanCode) || normalizedScanCode < 1 || normalizedScanCode > 255) return false;
@@ -2387,12 +2517,14 @@
       $("remoteScreen").removeAttribute("src");
       $("remoteHint").classList.remove("hidden");
       $("remoteHint").textContent = "正在切换远端显示器…";
+      scheduleNativeInputSync();
       refreshScreen();
     });
     $("clipboardButton").addEventListener("click", (event) => {
       const popover = $("clipboardPopover");
       const show = !popover.classList.contains("show");
       popover.classList.toggle("show", show);
+      scheduleNativeInputSync(20);
       if (show) {
         const rect = event.currentTarget.getBoundingClientRect();
         const left = Math.max(10, Math.min(window.innerWidth - 310, rect.left));
@@ -2405,6 +2537,7 @@
     document.addEventListener("mousedown", (event) => {
       if (!event.target.closest("#clipboardPopover") && !event.target.closest("#clipboardButton")) {
         $("clipboardPopover").classList.remove("show");
+        scheduleNativeInputSync(20);
       }
     });
     $("remoteFileButton").addEventListener("click", openRemoteFiles);
@@ -2468,6 +2601,7 @@
         Math.abs(event.clientX - window.innerWidth / 2) <= 90
       ) revealToolbar(1500);
     }, {capture: true, passive: true});
+    window.addEventListener("resize", () => scheduleNativeInputSync(40));
 
     async function toggleWindowMaximize() {
       if (!window.pywebview?.api?.toggle_maximize_window) return;
@@ -2530,6 +2664,7 @@
       event.stopPropagation();
     });
     $("remoteStage").addEventListener("pointermove", (event) => {
+      if (state.nativeInputActive) return;
       const now = performance.now();
       if (now - state.lastMoveAt < 28) return;
       state.lastMoveAt = now;
@@ -2542,6 +2677,11 @@
       }
     });
     $("remoteStage").addEventListener("pointerdown", (event) => {
+      if (state.nativeInputActive) {
+        event.preventDefault();
+        event.stopPropagation();
+        return;
+      }
       $("remoteStage").focus();
       if (shouldCaptureNativeKeyboard()) setNativeKeyboardCapture(true);
       $("remoteStage").setPointerCapture(event.pointerId);
@@ -2554,6 +2694,11 @@
       event.stopPropagation();
     });
     $("remoteStage").addEventListener("pointerup", (event) => {
+      if (state.nativeInputActive) {
+        event.preventDefault();
+        event.stopPropagation();
+        return;
+      }
       const payload = pointerPayload(event, "mouse_up") || state.remotePressedButtons.get(event.button);
       state.remotePressedButtons.delete(event.button);
       if (payload) sendInput({...payload, type: "mouse_up"});
@@ -2565,6 +2710,11 @@
       if (state.remotePressedButtons.size) releaseRemoteButtons();
     });
     $("remoteStage").addEventListener("wheel", (event) => {
+      if (state.nativeInputActive) {
+        event.preventDefault();
+        event.stopPropagation();
+        return;
+      }
       const payload = pointerPayload(event, "mouse_wheel");
       if (payload) sendInput(payload);
       event.preventDefault();
@@ -2576,6 +2726,7 @@
       if ($("fileModal").classList.contains("show") || event.target.closest("input, select, textarea, [contenteditable='true']")) return;
       event.preventDefault();
       event.stopImmediatePropagation();
+      if (state.nativeInputActive) return;
       state.remotePressedKeys.set(remoteKeyId(event.key, event.code), {key: event.key, code: event.code});
       sendInput({type: "key_down", key: event.key, code: event.code});
     }, {capture: true});
@@ -2587,22 +2738,26 @@
         event.preventDefault();
         event.stopImmediatePropagation();
         state.remotePressedKeys.delete(id);
+        if (state.nativeInputActive) return;
         sendInput({type: "key_up", key: pressed.key, code: pressed.code});
         return;
       }
       if (!state.keyboardEnabled || $("fileModal").classList.contains("show") || event.target.closest("input, select, textarea, [contenteditable='true']")) return;
       event.preventDefault();
       event.stopImmediatePropagation();
+      if (state.nativeInputActive) return;
       sendInput({type: "key_up", key: event.key, code: event.code});
     }, {capture: true});
     document.addEventListener("focusin", (event) => {
       if (!isLocalKeyboardTarget(event.target)) return;
       releaseRemoteKeys();
       setNativeKeyboardCapture(false);
+      scheduleNativeInputSync();
     }, {capture: true});
     document.addEventListener("focusout", () => {
       setTimeout(() => {
         if (shouldCaptureNativeKeyboard()) setNativeKeyboardCapture(true);
+        scheduleNativeInputSync();
       }, 0);
     }, {capture: true});
     window.addEventListener("blur", releaseAllRemoteInput);
@@ -2678,7 +2833,10 @@
           initialSession.credentialExpiresAt
         );
         waitForNativeBridge().then((ready) => {
-          if (ready) window.pywebview.api.set_window_title(`${initialSession.device.name} · LAN Remote`).catch(() => {});
+          if (ready) {
+            window.pywebview.api.set_window_title(`${initialSession.device.name} · LAN Remote`).catch(() => {});
+            scheduleNativeInputSync();
+          }
         });
         return;
       }

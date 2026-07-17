@@ -20,8 +20,8 @@ LAN Remote 是一个 Windows 桌面软件，只在局域网内工作。启动后
 - 鼠标移动、单击、右键、滚轮以及前进/后退侧键
 - 控制画面使用标准箭头光标，不使用十字光标
 - 常用键盘按键与组合键严格按顺序发送；物理键位交给远端当前键盘布局解释，进入控制会话后默认开启键盘操控
-- 独立远控窗口获得焦点时启用窗口级原生键盘捕获，Alt+Tab、Windows 键等组合键只发送到远端；远控文件或本地输入框获得焦点时会临时释放捕获
-- 输入请求超时后会自动解除阻塞；关键点击和按键可跳过过时的鼠标移动请求，重新连接也会建立全新的输入队列
+- 独立远控窗口使用 C# 低级键盘与鼠标钩子捕获输入，Alt+Tab、Windows 键、F1、Esc 和鼠标操作不再经过 WebView/JavaScript 输入队列，也不会在本机窗口产生相应操作
+- C# 控制窗口通过 TCP `8765` 上经过访问令牌验证的持久原生输入流顺序发送扫描码与鼠标报告；连接中断会自动重连，连接旧版被控端时自动回退到 `/input`
 - 枚举远端显示器，可在全部显示器、主屏和各副屏之间即时切换
 - 纯文字剪贴板双向同步，发送与接收可分别开启且仅在当前会话生效
 - 远程文件浏览、上传和下载，支持本机磁盘与用户目录
@@ -51,7 +51,7 @@ LAN Remote 是一个 Windows 桌面软件，只在局域网内工作。启动后
 
 ## 网络端口
 
-- TCP `8765`：设备验证、屏幕画面和控制输入
+- TCP `8765`：设备验证、屏幕画面、文件传输、兼容 HTTP 输入和 C# 持久原生输入流
 - UDP `8766`：局域网设备发现
 
 如能看到设备但连接失败，请检查两台电脑是否处于同一局域网，以及 Windows 防火墙是否允许 LAN Remote 在专用网络中通信。
@@ -66,9 +66,9 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-windows-
 
 构建产物：
 
-- `dist\WindowsLANRemote-0.6.14-portable.zip`：免安装桌面程序（解压后运行其中的 EXE）
-- `dist\WindowsLANRemoteSetup-0.6.14.exe`：管理员安装包
-- `dist\WindowsLANRemoteService-0.6.14.exe`：构建产生的安全桌面服务组件
+- `dist\WindowsLANRemote-0.6.15-portable.zip`：免安装桌面程序（解压后运行其中的 EXE）
+- `dist\WindowsLANRemoteSetup-0.6.15.exe`：管理员安装包
+- `dist\WindowsLANRemoteService-0.6.15.exe`：构建产生的安全桌面服务组件
 
 安装包需要 UAC 管理员确认，安装位置为 `%ProgramFiles%\Windows LAN Remote`。它会创建开始菜单快捷方式、卸载项、专用网络防火墙规则，并注册自动启动的 `WindowsLANRemoteSecureDesktop` LocalSystem 服务。服务只在 `127.0.0.1:8767` 和 `127.0.0.1:8768` 上提供经过本机密钥验证的安全桌面与高权限输入通道，不直接对局域网开放。
 
