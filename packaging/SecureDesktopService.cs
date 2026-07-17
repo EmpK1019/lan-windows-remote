@@ -20,11 +20,15 @@ namespace WindowsLANRemoteSecureDesktop
     internal sealed class SecureDesktopService : ServiceBase
     {
         private const int SecureHelperPort = 8767;
+        private const int InteractiveHelperPort = 8768;
         private readonly ManualResetEvent stopEvent = new ManualResetEvent(false);
+        private readonly object helperLock = new object();
         private Thread worker;
-        private Process helper;
+        private Process secureHelper;
+        private Process interactiveHelper;
         private int helperSession = -1;
-        private IntPtr helperJob = IntPtr.Zero;
+        private IntPtr secureHelperJob = IntPtr.Zero;
+        private IntPtr interactiveHelperJob = IntPtr.Zero;
         private string lastError = String.Empty;
 
         public SecureDesktopService()
@@ -53,7 +57,7 @@ namespace WindowsLANRemoteSecureDesktop
             {
                 worker.Join(8000);
             }
-            StopHelper();
+            StopHelpers();
             WriteLog("Service stopped.");
         }
 
@@ -65,7 +69,7 @@ namespace WindowsLANRemoteSecureDesktop
 
         protected override void OnSessionChange(SessionChangeDescription changeDescription)
         {
-            StopHelper();
+            StopHelpers();
             base.OnSessionChange(changeDescription);
         }
 
@@ -75,7 +79,7 @@ namespace WindowsLANRemoteSecureDesktop
             {
                 try
                 {
-                    EnsureHelper();
+                    EnsureHelpers();
                 }
                 catch (Exception ex)
                 {
@@ -85,35 +89,64 @@ namespace WindowsLANRemoteSecureDesktop
                         WriteLog("Helper launch failed: " + message);
                         lastError = message;
                     }
-                    StopHelper();
+                    StopHelpers();
                 }
                 stopEvent.WaitOne(2000);
             }
         }
 
-        private void EnsureHelper()
+        private void EnsureHelpers()
         {
-            int sessionId = unchecked((int)WTSGetActiveConsoleSessionId());
-            if (sessionId == -1)
+            lock (helperLock)
             {
-                StopHelper();
-                return;
-            }
+                int sessionId = unchecked((int)WTSGetActiveConsoleSessionId());
+                if (sessionId == -1)
+                {
+                    StopHelpersUnsafe();
+                    return;
+                }
 
-            if (helper != null && !helper.HasExited && helperSession == sessionId)
-            {
-                return;
-            }
+                if (
+                    secureHelper != null &&
+                    !secureHelper.HasExited &&
+                    interactiveHelper != null &&
+                    !interactiveHelper.HasExited &&
+                    helperSession == sessionId)
+                {
+                    return;
+                }
 
-            StopHelper();
-            helper = LaunchHelper(sessionId);
-            helperSession = sessionId;
-            lastError = String.Empty;
-            WriteLog("Secure helper started in session " + sessionId + ".");
+                StopHelpersUnsafe();
+                try
+                {
+                    secureHelper = LaunchHelper(
+                        sessionId,
+                        @"winsta0\Winlogon",
+                        SecureHelperPort,
+                        out secureHelperJob);
+                    interactiveHelper = LaunchHelper(
+                        sessionId,
+                        @"winsta0\Default",
+                        InteractiveHelperPort,
+                        out interactiveHelperJob);
+                    helperSession = sessionId;
+                    lastError = String.Empty;
+                    WriteLog(
+                        "Desktop helpers started in session " + sessionId +
+                        " (secure " + SecureHelperPort +
+                        ", interactive " + InteractiveHelperPort + ").");
+                }
+                catch
+                {
+                    StopHelpersUnsafe();
+                    throw;
+                }
+            }
         }
 
-        private Process LaunchHelper(int sessionId)
+        private Process LaunchHelper(int sessionId, string desktopName, int port, out IntPtr launchedJob)
         {
+            launchedJob = IntPtr.Zero;
             string servicePath = Assembly.GetExecutingAssembly().Location;
             string serviceName = Path.GetFileName(servicePath);
             string appName = serviceName.Replace("WindowsLANRemoteService-", "WindowsLANRemote-");
@@ -173,13 +206,13 @@ namespace WindowsLANRemoteSecureDesktop
 
                 STARTUPINFO startupInfo = new STARTUPINFO();
                 startupInfo.cb = Marshal.SizeOf(typeof(STARTUPINFO));
-                startupInfo.lpDesktop = @"winsta0\Winlogon";
+                startupInfo.lpDesktop = desktopName;
                 startupInfo.dwFlags = STARTF_USESHOWWINDOW;
                 startupInfo.wShowWindow = 0;
 
                 StringBuilder commandLine = new StringBuilder();
                 commandLine.Append('"').Append(appPath).Append('"');
-                commandLine.Append(" --secure-helper --secure-port ").Append(SecureHelperPort);
+                commandLine.Append(" --secure-helper --secure-port ").Append(port);
                 commandLine.Append(" --secure-secret-file \"").Append(tokenPath).Append("\"");
 
                 job = CreateKillOnCloseJob();
@@ -210,7 +243,7 @@ namespace WindowsLANRemoteSecureDesktop
                 }
 
                 Process launched = Process.GetProcessById(unchecked((int)processInfo.dwProcessId));
-                helperJob = job;
+                launchedJob = job;
                 job = IntPtr.Zero;
                 return launched;
             }
@@ -225,11 +258,25 @@ namespace WindowsLANRemoteSecureDesktop
             }
         }
 
-        private void StopHelper()
+        private void StopHelpers()
+        {
+            lock (helperLock)
+            {
+                StopHelpersUnsafe();
+            }
+        }
+
+        private void StopHelpersUnsafe()
+        {
+            helperSession = -1;
+            StopHelper(ref secureHelper, ref secureHelperJob);
+            StopHelper(ref interactiveHelper, ref interactiveHelperJob);
+        }
+
+        private static void StopHelper(ref Process helper, ref IntPtr helperJob)
         {
             Process current = helper;
             helper = null;
-            helperSession = -1;
             IntPtr job = helperJob;
             helperJob = IntPtr.Zero;
             if (job != IntPtr.Zero) CloseHandle(job);

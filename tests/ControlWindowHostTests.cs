@@ -127,7 +127,7 @@ internal static class ControlWindowHostTests
             throw new InvalidOperationException("Tray window members were not found.");
 
         using (Form mainWindow = (Form)constructor.Invoke(new object[] {
-            new Uri("http://127.0.0.1:8765/?v=0.6.13")
+            new Uri("http://127.0.0.1:8765/?v=0.6.14")
         }))
         {
             SuppressShownHandler(mainWindow);

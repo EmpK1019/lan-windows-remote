@@ -2098,6 +2098,7 @@
     }
 
     const INPUT_REQUEST_TIMEOUT_MS = 1800;
+    const LONG_INPUT_REQUEST_TIMEOUT_MS = 14000;
 
     function resetInputTransport() {
       state.inputGeneration += 1;
@@ -2119,11 +2120,14 @@
       state.inputAbortController = controller;
       state.inputAbortReason = "";
       state.inputInFlightType = entry.payload.type;
+      const requestTimeout = entry.payload.type === "text_sequence"
+        ? LONG_INPUT_REQUEST_TIMEOUT_MS
+        : INPUT_REQUEST_TIMEOUT_MS;
       const timeout = setTimeout(() => {
         if (state.inputAbortController !== controller) return;
         state.inputAbortReason = "timeout";
         controller.abort();
-      }, INPUT_REQUEST_TIMEOUT_MS);
+      }, requestTimeout);
       try {
         const response = await fetch(entry.url, {
           method: "POST",

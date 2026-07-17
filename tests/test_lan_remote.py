@@ -160,6 +160,39 @@ class CoreFunctionTests(unittest.TestCase):
         self.assertIn("ControlRight", lan_remote.EXTENDED_KEY_CODES)
         self.assertIn("NumpadEnter", lan_remote.EXTENDED_KEY_CODES)
 
+    def test_elevated_input_helper_is_preferred_and_temporarily_cached_when_unavailable(self) -> None:
+        previous_retry = lan_remote.ELEVATED_INPUT_HELPER_RETRY_AFTER
+        payload = {"type": "key_down", "key": "Escape", "code": "Escape"}
+        try:
+            lan_remote.ELEVATED_INPUT_HELPER_RETRY_AFTER = 0.0
+            with patch.object(lan_remote, "elevated_input_helper_request") as request:
+                self.assertTrue(lan_remote.try_send_elevated_input(payload))
+            request.assert_called_once_with(payload, timeout=1.0)
+
+            lan_remote.ELEVATED_INPUT_HELPER_RETRY_AFTER = time.monotonic() + 60
+            with patch.object(lan_remote, "elevated_input_helper_request") as request:
+                self.assertFalse(lan_remote.try_send_elevated_input(payload))
+            request.assert_not_called()
+        finally:
+            lan_remote.ELEVATED_INPUT_HELPER_RETRY_AFTER = previous_retry
+
+    def test_mouse_and_keyboard_buttons_use_checked_send_input(self) -> None:
+        user32 = Mock()
+        user32.SetCursorPos.return_value = True
+        user32.MapVirtualKeyW.return_value = 1
+        user32.SendInput.return_value = 1
+        with (
+            patch.object(lan_remote.ctypes.windll, "user32", user32),
+            patch.object(lan_remote, "screen_rect", return_value=(0, 0, 1920, 1080)),
+        ):
+            lan_remote.send_mouse_event(
+                {"type": "mouse_down", "x": 100, "y": 200, "button": 0, "monitor": "all"}
+            )
+            lan_remote.send_keyboard_event({"type": "key_down", "key": "Escape", "code": "Escape"})
+        self.assertEqual(user32.SendInput.call_count, 2)
+        user32.mouse_event.assert_not_called()
+        user32.keybd_event.assert_not_called()
+
     def test_remote_frontend_serializes_input_and_suppresses_local_shortcuts(self) -> None:
         html = (Path(__file__).resolve().parents[1] / "web" / "index.html").read_text(encoding="utf-8")
         self.assertIn("state.inputQueue = state.inputQueue.catch", html)
@@ -168,6 +201,7 @@ class CoreFunctionTests(unittest.TestCase):
         self.assertIn("INPUT_REQUEST_TIMEOUT_MS", html)
         self.assertIn("state.inputAbortController.abort()", html)
         self.assertIn("resetInputTransport()", html)
+        self.assertIn("LONG_INPUT_REQUEST_TIMEOUT_MS", html)
         self.assertIn('id="lockRemoteButton"', html)
         self.assertIn('id="settingLockRemoteOnDisconnect"', html)
         self.assertIn('navigator.sendBeacon(endpoint("/lock")', html)
@@ -183,6 +217,12 @@ class CoreFunctionTests(unittest.TestCase):
         self.assertIn("SetWindowsHookEx(WhKeyboardLl", host)
         self.assertIn("GetForegroundWindow() == Handle", host)
         self.assertIn('case "set_keyboard_capture"', host)
+        service = (Path(__file__).resolve().parents[1] / "packaging" / "SecureDesktopService.cs").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("InteractiveHelperPort = 8768", service)
+        self.assertIn(r'@"winsta0\Default"', service)
+        self.assertIn("interactiveHelper = LaunchHelper(", service)
 
     def test_lock_password_text_is_typed_sequentially(self) -> None:
         with (
@@ -579,6 +619,7 @@ class HttpIntegrationTests(unittest.TestCase):
         received: list[dict[str, object]] = []
         with (
             patch.object(lan_remote, "secure_desktop_active", return_value=False),
+            patch.object(lan_remote, "try_send_elevated_input", return_value=False),
             patch.object(lan_remote, "handle_remote_input", side_effect=received.append),
         ):
             payload = json.dumps({"type": "key_down", "key": "a", "code": "KeyA"}).encode("utf-8")
@@ -590,6 +631,21 @@ class HttpIntegrationTests(unittest.TestCase):
             )
         self.assertEqual(status, 200)
         self.assertEqual(received[0]["code"], "KeyA")
+
+        with (
+            patch.object(lan_remote, "secure_desktop_active", return_value=False),
+            patch.object(lan_remote, "try_send_elevated_input", return_value=True) as elevated_input,
+            patch.object(lan_remote, "handle_remote_input") as local_input,
+        ):
+            status, _, data = self.request(
+                "POST",
+                "/input",
+                body=json.dumps({"type": "key_up", "key": "a", "code": "KeyA"}).encode("utf-8"),
+                headers={"X-Remote-Token": session_token, "Content-Type": "application/json"},
+            )
+        self.assertEqual(status, 200, data)
+        elevated_input.assert_called_once()
+        local_input.assert_not_called()
 
         with (
             patch.object(lan_remote, "secure_desktop_active", return_value=False),

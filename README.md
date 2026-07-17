@@ -30,6 +30,7 @@ LAN Remote 是一个 Windows 桌面软件，只在局域网内工作。启动后
 - 远控功能工具栏为顶部透明小条；窗口状态栏独立自动隐藏，鼠标触及顶部时显示最小化、最大化和关闭按钮
 - 顶部工具栏可一键锁定远端电脑，也可在设置中选择断开远控时自动锁定
 - Windows 锁屏和 UAC 安全桌面控制（管理员安装版）
+- 管理员安装版通过本机系统服务转发普通桌面输入，可控制以管理员权限运行的截图工具和其他高完整性窗口
 - 设备名、发现、只读、画面速度、开机启动等持久化设置
 - 自动检查 GitHub Release，并可在软件内下载更新安装包
 - 每次启动自动生成新的分组访问码
@@ -65,11 +66,11 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-windows-
 
 构建产物：
 
-- `dist\WindowsLANRemote-0.6.13-portable.zip`：免安装桌面程序（解压后运行其中的 EXE）
-- `dist\WindowsLANRemoteSetup-0.6.13.exe`：管理员安装包
-- `dist\WindowsLANRemoteService-0.6.13.exe`：构建产生的安全桌面服务组件
+- `dist\WindowsLANRemote-0.6.14-portable.zip`：免安装桌面程序（解压后运行其中的 EXE）
+- `dist\WindowsLANRemoteSetup-0.6.14.exe`：管理员安装包
+- `dist\WindowsLANRemoteService-0.6.14.exe`：构建产生的安全桌面服务组件
 
-安装包需要 UAC 管理员确认，安装位置为 `%ProgramFiles%\Windows LAN Remote`。它会创建开始菜单快捷方式、卸载项、专用网络防火墙规则，并注册自动启动的 `WindowsLANRemoteSecureDesktop` LocalSystem 服务。服务只在 `127.0.0.1:8767` 上提供经过本机密钥验证的安全桌面通道，不直接对局域网开放。
+安装包需要 UAC 管理员确认，安装位置为 `%ProgramFiles%\Windows LAN Remote`。它会创建开始菜单快捷方式、卸载项、专用网络防火墙规则，并注册自动启动的 `WindowsLANRemoteSecureDesktop` LocalSystem 服务。服务只在 `127.0.0.1:8767` 和 `127.0.0.1:8768` 上提供经过本机密钥验证的安全桌面与高权限输入通道，不直接对局域网开放。
 
 免安装程序必须完整解压后运行，可以使用普通桌面控制，但没有系统服务，因此无法控制 Windows 锁屏和 UAC 安全桌面。需要完整功能时请使用安装包。桌面程序采用目录式打包，避免 Python.NET/WinForms 在单文件临时解包环境中出现窗口消息循环停止响应。
 

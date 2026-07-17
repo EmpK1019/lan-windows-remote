@@ -9,7 +9,7 @@ $AppId = "WindowsLANRemote"
 $Publisher = "EmpK1019"
 $ServiceName = "WindowsLANRemoteSecureDesktop"
 $VersionFile = Join-Path $PSScriptRoot "VERSION.txt"
-$Version = if (Test-Path -LiteralPath $VersionFile) { (Get-Content -Raw -LiteralPath $VersionFile).Trim() } else { "0.6.13" }
+$Version = if (Test-Path -LiteralPath $VersionFile) { (Get-Content -Raw -LiteralPath $VersionFile).Trim() } else { "0.6.14" }
 
 $InstallDir = Join-Path $env:ProgramFiles $AppName
 $LegacyInstallDir = Join-Path $env:LOCALAPPDATA "Programs\$AppName"
@@ -216,7 +216,7 @@ function Install-SecureDesktopService {
         & sc.exe create $ServiceName binPath= "`"$InstalledServiceExecutable`"" start= auto DisplayName= "Windows LAN Remote Secure Desktop" | Out-Null
     }
     if ($LASTEXITCODE -ne 0) { throw "Could not configure the secure desktop service." }
-    & sc.exe description $ServiceName "Provides local-only access to the Windows lock and UAC secure desktop for LAN Remote." | Out-Null
+    & sc.exe description $ServiceName "Provides elevated input plus local-only access to the Windows lock and UAC secure desktop for LAN Remote." | Out-Null
     & sc.exe failure $ServiceName reset= 86400 actions= restart/3000/restart/5000/restart/10000 | Out-Null
     Start-Service -Name $ServiceName
     (Get-Service -Name $ServiceName).WaitForStatus("Running", [TimeSpan]::FromSeconds(15))
@@ -241,9 +241,11 @@ try {
         Stop-Service -Name $ServiceName -Force
         $ExistingService.WaitForStatus("Stopped", [TimeSpan]::FromSeconds(15))
     }
-    Get-NetTCPConnection -LocalPort 8767 -State Listen -ErrorAction SilentlyContinue |
-        Select-Object -ExpandProperty OwningProcess -Unique |
-        ForEach-Object { Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue }
+    foreach ($HelperPort in @(8767, 8768)) {
+        Get-NetTCPConnection -LocalPort $HelperPort -State Listen -ErrorAction SilentlyContinue |
+            Select-Object -ExpandProperty OwningProcess -Unique |
+            ForEach-Object { Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue }
+    }
     Stop-InstalledProcesses
 
     Reset-InstallDirectory

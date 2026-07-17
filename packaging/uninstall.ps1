@@ -31,9 +31,11 @@ if ($Service) {
     }
     & sc.exe delete $ServiceName | Out-Null
 }
-Get-NetTCPConnection -LocalPort 8767 -State Listen -ErrorAction SilentlyContinue |
-    Select-Object -ExpandProperty OwningProcess -Unique |
-    ForEach-Object { Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue }
+foreach ($HelperPort in @(8767, 8768)) {
+    Get-NetTCPConnection -LocalPort $HelperPort -State Listen -ErrorAction SilentlyContinue |
+        Select-Object -ExpandProperty OwningProcess -Unique |
+        ForEach-Object { Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue }
+}
 
 Get-Process -ErrorAction SilentlyContinue | ForEach-Object {
     try {

@@ -53,12 +53,13 @@ if platform.system() == "Windows":
 
 
 APP_NAME = "Windows LAN Remote"
-APP_VERSION = "0.6.13"
+APP_VERSION = "0.6.14"
 GITHUB_REPOSITORY = "EmpK1019/lan-windows-remote"
 GITHUB_LATEST_RELEASE_API = f"https://api.github.com/repos/{GITHUB_REPOSITORY}/releases/latest"
 DEFAULT_PORT = 8765
 DEFAULT_DISCOVERY_PORT = 8766
 SECURE_HELPER_PORT = 8767
+ELEVATED_INPUT_HELPER_PORT = 8768
 DISCOVERY_MAGIC = "windows-lan-remote-v1"
 DISCOVERY_TTL_SECONDS = 9
 TEMPORARY_ACCESS_CODE_TTL_SECONDS = 30 * 60
@@ -98,12 +99,15 @@ LOCAL_DESKTOP_PATHS = frozenset(
 )
 SCREEN_LOCK = threading.Lock()
 INPUT_LOCK = threading.Lock()
+REMOTE_INPUT_DISPATCH_LOCK = threading.Lock()
+ELEVATED_INPUT_HELPER_STATE_LOCK = threading.Lock()
 CLIPBOARD_LOCK = threading.Lock()
 GDIPLUS_LOCK = threading.Lock()
 FILE_UPLOAD_LOCK = threading.Lock()
 ACTIVE_FILE_UPLOADS: set[Path] = set()
 GDIPLUS_TOKEN = ctypes.c_void_p()
 GDIPLUS_STARTED = False
+ELEVATED_INPUT_HELPER_RETRY_AFTER = 0.0
 
 
 INDEX_HTML = r"""<!doctype html>
@@ -2195,7 +2199,8 @@ def current_session_locked() -> bool:
         wtsapi32.WTSFreeMemory(buffer)
 
 
-def secure_helper_request(
+def desktop_helper_request(
+    port: int,
     path: str,
     *,
     payload: dict[str, Any] | None = None,
@@ -2212,7 +2217,7 @@ def secure_helper_request(
         headers["Content-Type"] = "application/json"
         method = "POST"
     request = Request(
-        f"http://127.0.0.1:{SECURE_HELPER_PORT}{path}",
+        f"http://127.0.0.1:{port}{path}",
         data=data,
         method=method,
         headers=headers,
@@ -2230,6 +2235,24 @@ def secure_helper_request(
         raise RuntimeError("安全桌面服务未就绪，请修复或重新安装软件") from exc
 
 
+def secure_helper_request(
+    path: str,
+    *,
+    payload: dict[str, Any] | None = None,
+    timeout: float = 4.0,
+) -> tuple[bytes, str]:
+    return desktop_helper_request(SECURE_HELPER_PORT, path, payload=payload, timeout=timeout)
+
+
+def elevated_input_helper_request(payload: dict[str, Any], timeout: float = 1.0) -> None:
+    desktop_helper_request(
+        ELEVATED_INPUT_HELPER_PORT,
+        "/secure/input",
+        payload=payload,
+        timeout=timeout,
+    )
+
+
 def secure_helper_available() -> bool:
     try:
         data, _ = secure_helper_request("/secure/health", timeout=0.8)
@@ -2245,6 +2268,24 @@ def capture_secure_desktop(monitor_id: str = "all") -> tuple[bytes, str]:
 def send_secure_input(payload: dict[str, Any]) -> None:
     timeout = UNLOCK_SEQUENCE_TIMEOUT_SECONDS if payload.get("type") == "text_sequence" else 2.0
     secure_helper_request("/secure/input", payload=payload, timeout=timeout)
+
+
+def try_send_elevated_input(payload: dict[str, Any]) -> bool:
+    global ELEVATED_INPUT_HELPER_RETRY_AFTER
+    now = time.monotonic()
+    with ELEVATED_INPUT_HELPER_STATE_LOCK:
+        if now < ELEVATED_INPUT_HELPER_RETRY_AFTER:
+            return False
+    timeout = UNLOCK_SEQUENCE_TIMEOUT_SECONDS if payload.get("type") == "text_sequence" else 1.0
+    try:
+        elevated_input_helper_request(payload, timeout=timeout)
+    except RuntimeError:
+        with ELEVATED_INPUT_HELPER_STATE_LOCK:
+            ELEVATED_INPUT_HELPER_RETRY_AFTER = time.monotonic() + 2.0
+        return False
+    with ELEVATED_INPUT_HELPER_STATE_LOCK:
+        ELEVATED_INPUT_HELPER_RETRY_AFTER = 0.0
+    return True
 
 
 MOUSE_EVENTS = {
@@ -2382,7 +2423,8 @@ def send_mouse_event(payload: dict[str, Any]) -> None:
     relative_y = max(0, min(int(payload.get("y", 0)), height - 1))
     x = relative_x + left
     y = relative_y + top
-    user32.SetCursorPos(x, y)
+    if not user32.SetCursorPos(x, y):
+        raise ctypes.WinError()
 
     event_type = str(payload.get("type", ""))
     if event_type == "mouse_move":
@@ -2392,7 +2434,13 @@ def send_mouse_event(payload: dict[str, Any]) -> None:
         if delta == 0:
             return
         wheel_delta = -120 if delta > 0 else 120
-        user32.mouse_event(0x0800, 0, 0, wheel_delta, 0)
+        mouse_input = INPUT(
+            type=0,
+            mi=MOUSEINPUT(0, 0, wheel_delta & 0xFFFFFFFF, 0x0800, 0, 0),
+        )
+        sent = user32.SendInput(1, ctypes.byref(mouse_input), ctypes.sizeof(INPUT))
+        if sent != 1:
+            raise ctypes.WinError()
         return
 
     direction = "down" if event_type == "mouse_down" else "up"
@@ -2400,7 +2448,10 @@ def send_mouse_event(payload: dict[str, Any]) -> None:
     event = MOUSE_EVENTS.get((direction, button))
     if event:
         flag, data = event
-        user32.mouse_event(flag, 0, 0, data, 0)
+        mouse_input = INPUT(type=0, mi=MOUSEINPUT(0, 0, data, flag, 0, 0))
+        sent = user32.SendInput(1, ctypes.byref(mouse_input), ctypes.sizeof(INPUT))
+        if sent != 1:
+            raise ctypes.WinError()
 
 
 def send_native_keyboard_event(payload: dict[str, Any]) -> None:
@@ -2428,7 +2479,10 @@ def send_keyboard_event(payload: dict[str, Any]) -> None:
     flags = 0x0001 if code in EXTENDED_KEY_CODES else 0
     if event_type == "key_up":
         flags |= 0x0002
-    user32.keybd_event(vk, scan, flags, 0)
+    keyboard_input = INPUT(type=1, ki=KEYBDINPUT(vk, scan, flags, 0, 0))
+    sent = user32.SendInput(1, ctypes.byref(keyboard_input), ctypes.sizeof(INPUT))
+    if sent != 1:
+        raise ctypes.WinError()
 
 
 def send_key_press(payload: dict[str, Any]) -> None:
@@ -3567,13 +3621,14 @@ class RemoteHandler(BaseHTTPRequestHandler):
 
         try:
             validate_remote_input_payload(payload)
-            if secure_desktop_active():
-                if not self.server.state.settings.values["secure_desktop_enabled"]:
-                    json_response(self, HTTPStatus.LOCKED, {"ok": False, "error": "secure desktop control disabled"})
-                    return
-                send_secure_input(payload)
-            else:
-                handle_remote_input(payload)
+            with REMOTE_INPUT_DISPATCH_LOCK:
+                if secure_desktop_active():
+                    if not self.server.state.settings.values["secure_desktop_enabled"]:
+                        json_response(self, HTTPStatus.LOCKED, {"ok": False, "error": "secure desktop control disabled"})
+                        return
+                    send_secure_input(payload)
+                elif not try_send_elevated_input(payload):
+                    handle_remote_input(payload)
         except ValueError as exc:
             json_response(self, HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(exc)})
             return
