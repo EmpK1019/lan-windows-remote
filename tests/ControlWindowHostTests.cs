@@ -127,7 +127,7 @@ internal static class ControlWindowHostTests
             throw new InvalidOperationException("Tray window members were not found.");
 
         using (Form mainWindow = (Form)constructor.Invoke(new object[] {
-            new Uri("http://127.0.0.1:8765/?v=0.6.12")
+            new Uri("http://127.0.0.1:8765/?v=0.6.13")
         }))
         {
             SuppressShownHandler(mainWindow);
@@ -181,7 +181,9 @@ internal static class ControlWindowHostTests
         MethodInfo setCapture = windowType.GetMethod("SetKeyboardCapture", BindingFlags.Instance | BindingFlags.NonPublic);
         MethodInfo hookCallback = windowType.GetMethod("KeyboardHookCallback", BindingFlags.Instance | BindingFlags.NonPublic);
         MethodInfo forwardKey = windowType.GetMethod("ForwardNativeKey", BindingFlags.Instance | BindingFlags.NonPublic);
-        if (constructor == null || initializeHook == null || setCapture == null || hookCallback == null || forwardKey == null)
+        MethodInfo drainKeyQueue = windowType.GetMethod("DrainNativeKeyQueue", BindingFlags.Instance | BindingFlags.NonPublic);
+        if (constructor == null || initializeHook == null || setCapture == null || hookCallback == null ||
+            forwardKey == null || drainKeyQueue == null)
             throw new InvalidOperationException("Native keyboard capture members were not found.");
 
         using (Form remoteWindow = (Form)constructor.Invoke(new object[] {

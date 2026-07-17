@@ -165,6 +165,13 @@ class CoreFunctionTests(unittest.TestCase):
         self.assertIn("state.inputQueue = state.inputQueue.catch", html)
         self.assertIn("state.pendingMouseMove = entry", html)
         self.assertIn("state.mouseMoveQueued", html)
+        self.assertIn("INPUT_REQUEST_TIMEOUT_MS", html)
+        self.assertIn("state.inputAbortController.abort()", html)
+        self.assertIn("resetInputTransport()", html)
+        self.assertIn('id="lockRemoteButton"', html)
+        self.assertIn('id="settingLockRemoteOnDisconnect"', html)
+        self.assertIn('navigator.sendBeacon(endpoint("/lock")', html)
+        self.assertIn('type: "text/plain;charset=UTF-8"', html)
         self.assertIn("event.stopImmediatePropagation()", html)
         self.assertIn('{capture: true}', html)
         self.assertNotIn('event.key === "Escape"', html)
@@ -241,6 +248,7 @@ class SettingsAndAuthenticationTests(unittest.TestCase):
             settings.values["view_only"] = True
             settings.values["auto_install_updates"] = False
             settings.values["close_to_tray"] = False
+            settings.values["lock_remote_on_disconnect"] = True
             settings.set_permanent_password("persistent password value")
             settings.save()
 
@@ -249,6 +257,7 @@ class SettingsAndAuthenticationTests(unittest.TestCase):
             self.assertIs(reloaded.values["view_only"], True)
             self.assertIs(reloaded.values["auto_install_updates"], False)
             self.assertIs(reloaded.values["close_to_tray"], False)
+            self.assertIs(reloaded.values["lock_remote_on_disconnect"], True)
             self.assertTrue(reloaded.permanent_password_is_set())
             self.assertTrue(reloaded.verify_permanent_password("persistent password value"))
 
@@ -582,6 +591,20 @@ class HttpIntegrationTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(received[0]["code"], "KeyA")
 
+        with (
+            patch.object(lan_remote, "secure_desktop_active", return_value=False),
+            patch.object(lan_remote, "lock_remote_workstation") as lock_workstation,
+        ):
+            status, _, data = self.request(
+                "POST",
+                "/lock",
+                body=b"{}",
+                headers={"X-Remote-Token": session_token, "Content-Type": "application/json"},
+            )
+        self.assertEqual(status, 200, data)
+        self.assertEqual(json.loads(data)["status"], "locked")
+        lock_workstation.assert_called_once_with()
+
     def test_invalid_input_monitor_and_view_only_are_rejected(self) -> None:
         headers = {"X-Remote-Token": "TEST-TEMP-CODE", "Content-Type": "application/json"}
         status, _, _ = self.request(
@@ -606,6 +629,8 @@ class HttpIntegrationTests(unittest.TestCase):
             body=json.dumps({"type": "key_down", "key": "a", "code": "KeyA"}).encode("utf-8"),
             headers=headers,
         )
+        self.assertEqual(status, 403)
+        status, _, _ = self.request("POST", "/lock", body=b"{}", headers=headers)
         self.assertEqual(status, 403)
 
     def test_concurrent_upload_to_same_destination_is_rejected(self) -> None:
@@ -687,6 +712,7 @@ class HttpIntegrationTests(unittest.TestCase):
                 "frame_delay_ms": 80,
                 "auto_install_updates": False,
                 "close_to_tray": False,
+                "lock_remote_on_disconnect": True,
             }
         ).encode("utf-8")
         with (
@@ -703,6 +729,7 @@ class HttpIntegrationTests(unittest.TestCase):
         self.assertEqual(self.state.device_name, "Renamed")
         self.assertIs(self.settings.values["auto_install_updates"], False)
         self.assertIs(self.settings.values["close_to_tray"], False)
+        self.assertIs(self.settings.values["lock_remote_on_disconnect"], True)
         set_startup.assert_called_once_with(False)
 
         bad_payload = json.dumps({"device_name": "Rejected"}).encode("utf-8")

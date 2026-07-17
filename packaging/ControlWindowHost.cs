@@ -103,6 +103,8 @@ namespace WindowsLANRemoteControlHost
         private IntPtr keyboardHook = IntPtr.Zero;
         private LowLevelKeyboardProc keyboardHookProc;
         private volatile bool keyboardCaptureEnabled;
+        private readonly Queue<NativeKeyEvent> nativeKeyQueue = new Queue<NativeKeyEvent>();
+        private bool nativeKeyDispatching;
 
         [DllImport("user32.dll")]
         private static extern bool ReleaseCapture();
@@ -135,6 +137,13 @@ namespace WindowsLANRemoteControlHost
             public uint Flags;
             public uint Time;
             public UIntPtr ExtraInfo;
+        }
+
+        private sealed class NativeKeyEvent
+        {
+            public uint ScanCode;
+            public bool Extended;
+            public bool KeyDown;
         }
 
         public ControlWindow(Uri url)
@@ -245,20 +254,56 @@ namespace WindowsLANRemoteControlHost
             {
                 BeginInvoke(new Action(delegate
                 {
-                    if (browser.CoreWebView2 == null)
+                    nativeKeyQueue.Enqueue(new NativeKeyEvent
                     {
-                        return;
-                    }
-                    string script = "window.__lanForwardNativeKey&&window.__lanForwardNativeKey(" +
-                        scanCode.ToString() + "," +
-                        (extended ? "true" : "false") + "," +
-                        (keyDown ? "true" : "false") + ");";
-                    browser.CoreWebView2.ExecuteScriptAsync(script);
+                        ScanCode = scanCode,
+                        Extended = extended,
+                        KeyDown = keyDown
+                    });
+                    DrainNativeKeyQueue();
                 }));
             }
             catch (InvalidOperationException)
             {
                 // The window is closing; no further input should be forwarded.
+            }
+        }
+
+        private async void DrainNativeKeyQueue()
+        {
+            if (nativeKeyDispatching)
+            {
+                return;
+            }
+            nativeKeyDispatching = true;
+            try
+            {
+                while (nativeKeyQueue.Count > 0 && !IsDisposed)
+                {
+                    if (browser.CoreWebView2 == null)
+                    {
+                        nativeKeyQueue.Clear();
+                        return;
+                    }
+                    NativeKeyEvent input = nativeKeyQueue.Dequeue();
+                    string script = "window.__lanForwardNativeKey&&window.__lanForwardNativeKey(" +
+                        input.ScanCode.ToString() + "," +
+                        (input.Extended ? "true" : "false") + "," +
+                        (input.KeyDown ? "true" : "false") + ");";
+                    await browser.CoreWebView2.ExecuteScriptAsync(script);
+                }
+            }
+            catch (InvalidOperationException)
+            {
+                nativeKeyQueue.Clear();
+            }
+            catch (COMException)
+            {
+                nativeKeyQueue.Clear();
+            }
+            finally
+            {
+                nativeKeyDispatching = false;
             }
         }
 
@@ -489,6 +534,7 @@ namespace WindowsLANRemoteControlHost
         protected override void OnFormClosed(FormClosedEventArgs e)
         {
             keyboardCaptureEnabled = false;
+            nativeKeyQueue.Clear();
             if (keyboardHook != IntPtr.Zero)
             {
                 UnhookWindowsHookEx(keyboardHook);

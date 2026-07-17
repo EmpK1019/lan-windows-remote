@@ -53,7 +53,7 @@ if platform.system() == "Windows":
 
 
 APP_NAME = "Windows LAN Remote"
-APP_VERSION = "0.6.12"
+APP_VERSION = "0.6.13"
 GITHUB_REPOSITORY = "EmpK1019/lan-windows-remote"
 GITHUB_LATEST_RELEASE_API = f"https://api.github.com/repos/{GITHUB_REPOSITORY}/releases/latest"
 DEFAULT_PORT = 8765
@@ -97,6 +97,7 @@ LOCAL_DESKTOP_PATHS = frozenset(
     }
 )
 SCREEN_LOCK = threading.Lock()
+INPUT_LOCK = threading.Lock()
 CLIPBOARD_LOCK = threading.Lock()
 GDIPLUS_LOCK = threading.Lock()
 FILE_UPLOAD_LOCK = threading.Lock()
@@ -634,6 +635,7 @@ class SettingsStore:
         "launch_at_login": False,
         "start_maximized": False,
         "close_to_tray": True,
+        "lock_remote_on_disconnect": False,
         "reduce_motion": False,
         "auto_check_updates": True,
         "auto_install_updates": True,
@@ -664,6 +666,7 @@ class SettingsStore:
             "launch_at_login",
             "start_maximized",
             "close_to_tray",
+            "lock_remote_on_disconnect",
             "reduce_motion",
             "auto_check_updates",
             "auto_install_updates",
@@ -761,6 +764,7 @@ class SettingsStore:
             "launch_at_login": startup_enabled(),
             "start_maximized": bool(self.values["start_maximized"]),
             "close_to_tray": bool(self.values["close_to_tray"]),
+            "lock_remote_on_disconnect": bool(self.values["lock_remote_on_disconnect"]),
             "reduce_motion": bool(self.values["reduce_motion"]),
             "auto_check_updates": bool(self.values["auto_check_updates"]),
             "auto_install_updates": bool(self.values["auto_install_updates"]),
@@ -2505,19 +2509,27 @@ def validate_remote_input_payload(payload: dict[str, Any]) -> None:
 
 def handle_remote_input(payload: dict[str, Any]) -> None:
     validate_remote_input_payload(payload)
-    input_type = str(payload.get("type", ""))
-    if input_type.startswith("mouse_"):
-        send_mouse_event(payload)
-    elif input_type in {"key_down", "key_up"}:
-        send_keyboard_event(payload)
-    elif input_type in {"native_key_down", "native_key_up"}:
-        send_native_keyboard_event(payload)
-    elif input_type == "key_press":
-        send_key_press(payload)
-    elif input_type == "text":
-        send_unicode_text(str(payload.get("text", "")))
-    elif input_type == "text_sequence":
-        send_unicode_text_sequence(str(payload.get("text", "")))
+    with INPUT_LOCK:
+        input_type = str(payload.get("type", ""))
+        if input_type.startswith("mouse_"):
+            send_mouse_event(payload)
+        elif input_type in {"key_down", "key_up"}:
+            send_keyboard_event(payload)
+        elif input_type in {"native_key_down", "native_key_up"}:
+            send_native_keyboard_event(payload)
+        elif input_type == "key_press":
+            send_key_press(payload)
+        elif input_type == "text":
+            send_unicode_text(str(payload.get("text", "")))
+        elif input_type == "text_sequence":
+            send_unicode_text_sequence(str(payload.get("text", "")))
+
+
+def lock_remote_workstation() -> None:
+    if platform.system() != "Windows":
+        raise OSError("remote workstation locking is only available on Windows")
+    if not ctypes.windll.user32.LockWorkStation():
+        raise ctypes.WinError()
 
 
 @dataclass(frozen=True)
@@ -2988,6 +3000,7 @@ class RemoteHandler(BaseHTTPRequestHandler):
             "/health",
             "/screen",
             "/input",
+            "/lock",
             "/clipboard",
             "/files",
             "/files/download",
@@ -3519,6 +3532,25 @@ class RemoteHandler(BaseHTTPRequestHandler):
                 return
             self.handle_file_upload(parsed)
             return
+        if parsed.path == "/lock":
+            payload = self.read_json_payload()
+            if payload is None:
+                return
+            if self.authenticate_request(parsed, payload) is None:
+                return
+            if self.server.state.view_only:
+                json_response(self, HTTPStatus.FORBIDDEN, {"ok": False, "error": "server is view-only"})
+                return
+            if secure_desktop_active():
+                json_response(self, HTTPStatus.OK, {"ok": True, "status": "already_secure"})
+                return
+            try:
+                lock_remote_workstation()
+            except OSError as exc:
+                json_response(self, HTTPStatus.CONFLICT, {"ok": False, "error": str(exc)})
+                return
+            json_response(self, HTTPStatus.OK, {"ok": True, "status": "locked"})
+            return
         if parsed.path != "/input":
             json_response(self, HTTPStatus.NOT_FOUND, {"ok": False, "error": "not found"})
             return
@@ -3682,6 +3714,7 @@ class RemoteHandler(BaseHTTPRequestHandler):
             "launch_at_login",
             "start_maximized",
             "close_to_tray",
+            "lock_remote_on_disconnect",
             "reduce_motion",
             "auto_check_updates",
             "auto_install_updates",

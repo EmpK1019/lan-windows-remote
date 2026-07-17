@@ -21,12 +21,14 @@ LAN Remote 是一个 Windows 桌面软件，只在局域网内工作。启动后
 - 控制画面使用标准箭头光标，不使用十字光标
 - 常用键盘按键与组合键严格按顺序发送；物理键位交给远端当前键盘布局解释，进入控制会话后默认开启键盘操控
 - 独立远控窗口获得焦点时启用窗口级原生键盘捕获，Alt+Tab、Windows 键等组合键只发送到远端；远控文件或本地输入框获得焦点时会临时释放捕获
+- 输入请求超时后会自动解除阻塞；关键点击和按键可跳过过时的鼠标移动请求，重新连接也会建立全新的输入队列
 - 枚举远端显示器，可在全部显示器、主屏和各副屏之间即时切换
 - 纯文字剪贴板双向同步，发送与接收可分别开启且仅在当前会话生效
 - 远程文件浏览、上传和下载，支持本机磁盘与用户目录
 - 桌面观看模式
 - 原生桌面窗口全屏
 - 远控功能工具栏为顶部透明小条；窗口状态栏独立自动隐藏，鼠标触及顶部时显示最小化、最大化和关闭按钮
+- 顶部工具栏可一键锁定远端电脑，也可在设置中选择断开远控时自动锁定
 - Windows 锁屏和 UAC 安全桌面控制（管理员安装版）
 - 设备名、发现、只读、画面速度、开机启动等持久化设置
 - 自动检查 GitHub Release，并可在软件内下载更新安装包
@@ -63,9 +65,9 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-windows-
 
 构建产物：
 
-- `dist\WindowsLANRemote-0.6.12-portable.zip`：免安装桌面程序（解压后运行其中的 EXE）
-- `dist\WindowsLANRemoteSetup-0.6.12.exe`：管理员安装包
-- `dist\WindowsLANRemoteService-0.6.12.exe`：构建产生的安全桌面服务组件
+- `dist\WindowsLANRemote-0.6.13-portable.zip`：免安装桌面程序（解压后运行其中的 EXE）
+- `dist\WindowsLANRemoteSetup-0.6.13.exe`：管理员安装包
+- `dist\WindowsLANRemoteService-0.6.13.exe`：构建产生的安全桌面服务组件
 
 安装包需要 UAC 管理员确认，安装位置为 `%ProgramFiles%\Windows LAN Remote`。它会创建开始菜单快捷方式、卸载项、专用网络防火墙规则，并注册自动启动的 `WindowsLANRemoteSecureDesktop` LocalSystem 服务。服务只在 `127.0.0.1:8767` 上提供经过本机密钥验证的安全桌面通道，不直接对局域网开放。
 

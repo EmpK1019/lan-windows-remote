@@ -930,6 +930,7 @@
     <symbol id="i-restore" viewBox="0 0 24 24"><path d="M8 8V5h11v11h-3"/><rect x="5" y="8" width="11" height="11" rx=".5"/></symbol>
     <symbol id="i-chevron-up" viewBox="0 0 24 24"><path d="m6 15 6-6 6 6"/></symbol>
     <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3 6h7l2 2h9v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6Z"/></symbol>
+    <symbol id="i-lock" viewBox="0 0 24 24"><rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3M12 14v3"/></symbol>
     <symbol id="i-file" viewBox="0 0 24 24"><path d="M6 2h8l4 4v16H6V2Z"/><path d="M14 2v5h5"/></symbol>
     <symbol id="i-clipboard" viewBox="0 0 24 24"><rect x="5" y="4" width="14" height="17" rx="2"/><path d="M9 4.5V3h6v1.5M9 9h6M9 13h6M9 17h4"/></symbol>
     <symbol id="i-upload" viewBox="0 0 24 24"><path d="M12 16V3M7 8l5-5 5 5M4 15v5h16v-5"/></symbol>
@@ -1051,6 +1052,7 @@
           <h4 class="settings-section-title"><svg><use href="#i-eye"/></svg>远程体验</h4>
           <div class="settings-card">
             <div class="setting-row"><div class="setting-copy"><strong>画面刷新速度</strong></div><select class="setting-select" id="settingFrameDelay"><option value="80">响应优先</option><option value="120">平衡</option><option value="220">流畅优先</option></select></div>
+            <div class="setting-row"><div class="setting-copy"><strong>断开远控时自动锁定远端电脑</strong></div><label class="switch"><input id="settingLockRemoteOnDisconnect" type="checkbox"><span></span></label></div>
             <div class="setting-row"><div class="setting-copy"><strong>减少界面动效</strong></div><label class="switch"><input id="settingReduceMotion" type="checkbox"><span></span></label></div>
           </div>
         </section>
@@ -1113,6 +1115,7 @@
       <button class="button" id="keyboardButton" title="键盘控制"><svg><use href="#i-keyboard"/></svg><span>键盘</span></button>
       <button class="button" id="clipboardButton" title="剪贴板同步"><svg><use href="#i-clipboard"/></svg><span>剪贴板</span></button>
       <button class="button" id="remoteFileButton" title="远程文件"><svg><use href="#i-folder"/></svg><span>远程文件</span></button>
+      <button class="button" id="lockRemoteButton" title="锁定远端电脑"><svg><use href="#i-lock"/></svg><span>锁屏</span></button>
       <button class="button" id="fullscreenButton" title="全屏"><svg><use href="#i-expand"/></svg><span>全屏</span></button>
       <span class="remote-status pywebview-drag-region" id="remoteStatus">正在连接…</span>
       <button class="button toolbar-toggle" id="toolbarToggle" type="button" title="收起工具栏" aria-label="收起工具栏"><svg><use href="#i-chevron-up"/></svg></button>
@@ -1165,6 +1168,10 @@
       inputQueue: Promise.resolve(),
       pendingMouseMove: null,
       mouseMoveQueued: false,
+      inputGeneration: 0,
+      inputAbortController: null,
+      inputAbortReason: "",
+      inputInFlightType: "",
       lastMoveAt: 0,
       refreshTimer: 0,
       toastTimer: 0,
@@ -1185,13 +1192,14 @@
       toolbarCollapseTimer: 0,
       toolbarPointerInside: false,
       remoteTitlebarHideTimer: 0,
+      remoteLockSentForClose: false,
       pairCredentialSource: "",
       pairCredentialStatus: {access_saved: false, lock_saved: false},
       refreshingAccessCode: false,
       settingsSaveQueue: Promise.resolve(true),
       settingsSaveRevision: 0,
       settingsSaveTimer: 0,
-      settings: {frame_delay_ms: 120, remember_codes: true, close_to_tray: true, auto_check_updates: true, auto_install_updates: true},
+      settings: {frame_delay_ms: 120, remember_codes: true, close_to_tray: true, lock_remote_on_disconnect: false, auto_check_updates: true, auto_install_updates: true},
       latestUpdate: null,
       autoUpdateStartedForVersion: ""
     };
@@ -1230,6 +1238,7 @@
       $("secureDesktopStatus").classList.toggle("warning", !state.settings.secure_desktop_available);
       $("settingRememberCodes").checked = Boolean(state.settings.remember_codes);
       $("settingFrameDelay").value = String(state.settings.frame_delay_ms || 120);
+      $("settingLockRemoteOnDisconnect").checked = Boolean(state.settings.lock_remote_on_disconnect);
       $("settingReduceMotion").checked = Boolean(state.settings.reduce_motion);
       $("settingLaunchAtLogin").checked = Boolean(state.settings.launch_at_login);
       $("settingStartMaximized").checked = Boolean(state.settings.start_maximized);
@@ -1275,6 +1284,7 @@
         secure_desktop_enabled: $("settingSecureDesktop").checked,
         remember_codes: $("settingRememberCodes").checked,
         frame_delay_ms: Number($("settingFrameDelay").value),
+        lock_remote_on_disconnect: $("settingLockRemoteOnDisconnect").checked,
         reduce_motion: $("settingReduceMotion").checked,
         launch_at_login: $("settingLaunchAtLogin").checked,
         start_maximized: $("settingStartMaximized").checked,
@@ -1661,6 +1671,7 @@
     }
 
     function startSession(device, token, viewOnly, authMethod = "temporary", credentialExpiresAt = null) {
+      resetInputTransport();
       state.remotePressedKeys.clear();
       state.remotePressedNativeKeys.clear();
       state.remotePressedButtons.clear();
@@ -1668,6 +1679,7 @@
       state.loadingFrame = false;
       state.keyboardEnabled = false;
       state.autoUnlockLastCheck = 0;
+      state.remoteLockSentForClose = false;
       state.filePath = "";
       state.fileParent = "";
       state.fileEntries = [];
@@ -1676,6 +1688,7 @@
       $("keyboardButton").style.display = viewOnly ? "none" : "inline-flex";
       $("clipboardButton").style.display = viewOnly ? "none" : "inline-flex";
       $("remoteFileButton").style.display = viewOnly ? "none" : "inline-flex";
+      $("lockRemoteButton").style.display = viewOnly ? "none" : "inline-flex";
       $("keyboardButton").classList.toggle("active", state.keyboardEnabled);
       $("remoteStage").classList.toggle("controlling", !viewOnly);
       $("remoteHint").classList.remove("hidden");
@@ -1694,9 +1707,21 @@
       if (state.keyboardEnabled) requestAnimationFrame(() => $("remoteStage").focus());
     }
 
-    async function stopSession(closeWindow = false) {
-      await releaseAllRemoteInput();
+    async function stopSession(closeWindow = false, lockOnDisconnect = false) {
+      if (
+        lockOnDisconnect &&
+        state.settings.lock_remote_on_disconnect &&
+        state.session?.connected &&
+        !state.session.viewOnly
+      ) {
+        state.remoteLockSentForClose = await lockRemoteWorkstation(false);
+      }
       setNativeKeyboardCapture(false);
+      await Promise.race([
+        releaseAllRemoteInput(),
+        new Promise((resolve) => setTimeout(resolve, 2400))
+      ]);
+      resetInputTransport();
       if (state.session) state.session.connected = false;
       clearTimeout(state.refreshTimer);
       resetClipboardSync();
@@ -2072,19 +2097,56 @@
       return {x: Math.round(x), y: Math.round(y)};
     }
 
+    const INPUT_REQUEST_TIMEOUT_MS = 1800;
+
+    function resetInputTransport() {
+      state.inputGeneration += 1;
+      if (state.inputAbortController) {
+        state.inputAbortReason = "reset";
+        state.inputAbortController.abort();
+      }
+      state.inputAbortController = null;
+      state.inputAbortReason = "";
+      state.inputInFlightType = "";
+      state.pendingMouseMove = null;
+      state.mouseMoveQueued = false;
+      state.inputQueue = Promise.resolve(false);
+    }
+
     async function transmitInput(entry) {
+      if (entry.generation !== state.inputGeneration) return false;
+      const controller = new AbortController();
+      state.inputAbortController = controller;
+      state.inputAbortReason = "";
+      state.inputInFlightType = entry.payload.type;
+      const timeout = setTimeout(() => {
+        if (state.inputAbortController !== controller) return;
+        state.inputAbortReason = "timeout";
+        controller.abort();
+      }, INPUT_REQUEST_TIMEOUT_MS);
       try {
         const response = await fetch(entry.url, {
           method: "POST",
           headers: {"Content-Type": "application/json", "X-Remote-Token": entry.token},
           body: JSON.stringify(entry.payload),
-          cache: "no-store"
+          cache: "no-store",
+          signal: controller.signal
         });
         if (!response.ok) throw new Error(String(response.status));
         return true;
-      } catch {
-        setRemoteStatus("控制指令发送失败", true);
+      } catch (error) {
+        const reason = state.inputAbortController === controller ? state.inputAbortReason : "";
+        if (entry.generation === state.inputGeneration && reason !== "superseded" && reason !== "reset") {
+          setRemoteStatus(reason === "timeout" ? "输入通道超时，已自动恢复" : "控制指令发送失败", true);
+        }
         return false;
+      } finally {
+        clearTimeout(timeout);
+        if (state.inputAbortController === controller) {
+          state.inputAbortController = null;
+          state.inputAbortReason = "";
+          state.inputInFlightType = "";
+        }
       }
     }
 
@@ -2096,8 +2158,20 @@
     function sendInput(payload) {
       const session = state.session;
       if (!session?.connected || session.viewOnly) return Promise.resolve(false);
-      const entry = {url: endpoint("/input"), token: session.token, payload};
-      if (payload.type !== "mouse_move") return enqueueInput(entry);
+      const entry = {
+        url: endpoint("/input"),
+        token: session.token,
+        payload,
+        generation: state.inputGeneration
+      };
+      if (payload.type !== "mouse_move") {
+        state.pendingMouseMove = null;
+        if (state.inputInFlightType === "mouse_move" && state.inputAbortController) {
+          state.inputAbortReason = "superseded";
+          state.inputAbortController.abort();
+        }
+        return enqueueInput(entry);
+      }
 
       state.pendingMouseMove = entry;
       if (state.mouseMoveQueued) return state.inputQueue;
@@ -2109,6 +2183,46 @@
         return latest ? transmitInput(latest) : false;
       });
       return state.inputQueue;
+    }
+
+    async function lockRemoteWorkstation(notify = true) {
+      const session = state.session;
+      if (!session?.connected || session.viewOnly) return false;
+      const button = $("lockRemoteButton");
+      button.disabled = true;
+      releaseAllRemoteInput();
+      try {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 3500);
+        let response;
+        try {
+          response = await fetch(endpoint("/lock"), {
+            method: "POST",
+            headers: {"Content-Type": "application/json", "X-Remote-Token": session.token},
+            body: "{}",
+            cache: "no-store",
+            signal: controller.signal
+          });
+        } finally {
+          clearTimeout(timeout);
+        }
+        const result = await response.json().catch(() => ({}));
+        if (!response.ok || !result.ok) throw new Error(result.error || `HTTP ${response.status}`);
+        if (notify) {
+          setRemoteStatus(result.status === "already_secure" ? "远端已处于锁屏或安全桌面" : "远端电脑已锁定");
+          showToast(result.status === "already_secure" ? "远端已处于锁屏或安全桌面" : "已锁定远端电脑");
+        }
+        return true;
+      } catch (error) {
+        const message = error?.name === "AbortError" ? "锁屏请求超时" : (error.message || "无法锁定远端电脑");
+        if (notify) {
+          setRemoteStatus(message, true);
+          showToast(message);
+        }
+        return false;
+      } finally {
+        button.disabled = false;
+      }
     }
 
     function remoteKeyId(key, code) {
@@ -2227,6 +2341,7 @@
       "settingSecureDesktop",
       "settingRememberCodes",
       "settingFrameDelay",
+      "settingLockRemoteOnDisconnect",
       "settingReduceMotion",
       "settingLaunchAtLogin",
       "settingStartMaximized",
@@ -2258,7 +2373,7 @@
     $("lockPasswordInput").addEventListener("input", () => {
       if ($("lockPasswordInput").value) $("rememberLockPassword").checked = true;
     });
-    $("closeSession").addEventListener("click", () => stopSession(remoteWindowMode));
+    $("closeSession").addEventListener("click", () => stopSession(remoteWindowMode, true));
     $("monitorSelect").addEventListener("change", () => {
       if (!state.session?.connected) return;
       releaseAllRemoteInput();
@@ -2289,6 +2404,7 @@
       }
     });
     $("remoteFileButton").addEventListener("click", openRemoteFiles);
+    $("lockRemoteButton").addEventListener("click", lockRemoteWorkstation);
     $("fileClose").addEventListener("click", closeRemoteFiles);
     $("fileModal").addEventListener("mousedown", (event) => { if (event.target === $("fileModal")) closeRemoteFiles(); });
     $("fileRootSelect").addEventListener("change", () => loadRemoteDirectory($("fileRootSelect").value));
@@ -2488,6 +2604,19 @@
     window.addEventListener("blur", releaseAllRemoteInput);
     document.addEventListener("visibilitychange", () => {
       if (document.hidden) releaseAllRemoteInput();
+    });
+    window.addEventListener("pagehide", () => {
+      const session = state.session;
+      if (
+        !state.remoteLockSentForClose &&
+        state.settings.lock_remote_on_disconnect &&
+        session?.connected &&
+        !session.viewOnly
+      ) {
+        state.remoteLockSentForClose = true;
+        const body = new Blob([JSON.stringify({token: session.token})], {type: "text/plain;charset=UTF-8"});
+        navigator.sendBeacon(endpoint("/lock"), body);
+      }
     });
 
     function waitForNativeBridge(timeoutMs = 60000) {
