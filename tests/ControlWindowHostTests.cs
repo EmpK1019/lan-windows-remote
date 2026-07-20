@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.ComponentModel;
 using System.Drawing;
 using System.IO;
@@ -200,6 +201,23 @@ internal static class ControlWindowHostTests
         }))
         {
             SuppressShownHandler(remoteWindow);
+            Dictionary<string, object> mouseFallbackConfiguration = new Dictionary<string, object>
+            {
+                { "enabled", true },
+                { "endpoint", "http://127.0.0.1:8765/input" },
+                { "token", "abcdefghijklmnop" },
+                { "monitor", "all" },
+                { "remote_width", 1920 },
+                { "remote_height", 1080 },
+                { "content_left", 0.0 },
+                { "content_top", 0.0 },
+                { "content_width", 800.0 },
+                { "content_height", 600.0 },
+                { "keyboard_enabled", false },
+                { "suspended", false }
+            };
+            if ((bool)configureNativeInput.Invoke(remoteWindow, new object[] { mouseFallbackConfiguration }))
+                throw new InvalidOperationException("Native mouse input was reported active without an installed hook.");
             bool enabledWithoutHook = (bool)setCapture.Invoke(remoteWindow, new object[] { true });
             if (enabledWithoutHook)
                 throw new InvalidOperationException("Keyboard capture enabled without an installed hook.");
@@ -233,9 +251,17 @@ internal static class ControlWindowHostTests
         AssertMouseButton(tryMouseButton, 0x020C, 1U << 16, 3, false);
         AssertMouseButton(tryMouseButton, 0x020B, 2U << 16, 4, true);
         AssertMouseButton(tryMouseButton, 0x020C, 2U << 16, 4, false);
-        if (!(bool)shouldPassInjectedMouseInput.Invoke(null, new object[] { 1U }))
-            throw new InvalidOperationException("Injected mouse input was not passed back to WebView.");
-        if ((bool)shouldPassInjectedMouseInput.Invoke(null, new object[] { 0U }))
+        if (!(bool)shouldPassInjectedMouseInput.Invoke(
+            null,
+            new object[] { 1U, new UIntPtr(0x4C414E52UL) }))
+            throw new InvalidOperationException("LAN Remote's own injected mouse input was recaptured.");
+        if ((bool)shouldPassInjectedMouseInput.Invoke(
+            null,
+            new object[] { 1U, new UIntPtr(0x1234UL) }))
+            throw new InvalidOperationException("Touchpad or vendor-injected mouse input bypassed native capture.");
+        if ((bool)shouldPassInjectedMouseInput.Invoke(
+            null,
+            new object[] { 0U, UIntPtr.Zero }))
             throw new InvalidOperationException("Physical mouse input bypassed native capture.");
     }
 

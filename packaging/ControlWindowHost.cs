@@ -458,7 +458,7 @@ namespace WindowsLANRemoteControlHost
             FormBorderStyle = FormBorderStyle.None;
             BackColor = Color.FromArgb(15, 16, 20);
             ClientSize = remoteWindow ? new Size(1280, 800) : new Size(1200, 760);
-            MinimumSize = remoteWindow ? new Size(720, 480) : new Size(920, 600);
+            MinimumSize = remoteWindow ? new Size(720, 480) : new Size(820, 600);
             KeyPreview = true;
             if (startMaximized)
             {
@@ -623,7 +623,7 @@ namespace WindowsLANRemoteControlHost
             LowLevelMouseInput input = (LowLevelMouseInput)Marshal.PtrToStructure(
                 lParam,
                 typeof(LowLevelMouseInput));
-            if (ShouldPassInjectedMouseInput(input.Flags))
+            if (ShouldPassInjectedMouseInput(input.Flags, input.ExtraInfo))
             {
                 return CallNextHookEx(mouseHook, code, wParam, lParam);
             }
@@ -795,12 +795,14 @@ namespace WindowsLANRemoteControlHost
             }
         }
 
-        private static bool ShouldPassInjectedMouseInput(uint flags)
+        private static bool ShouldPassInjectedMouseInput(uint flags, UIntPtr extraInfo)
         {
-            // Precision touchpads and vendor mouse utilities can surface clicks
-            // and wheel gestures as injected input. Let WebView receive those
-            // events instead of swallowing them in the low-level hook.
-            return (flags & LlmhfInjected) != 0;
+            // Ignore only LAN Remote's own synthetic input. Precision touchpads
+            // and vendor mouse utilities can mark real user gestures as injected,
+            // so those events must still travel through the native remote path.
+            return
+                (flags & LlmhfInjected) != 0 &&
+                extraInfo.ToUInt64() == RemoteInputExtraInfo;
         }
 
         private void StartNativeInputWorker()

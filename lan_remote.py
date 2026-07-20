@@ -53,7 +53,7 @@ if platform.system() == "Windows":
 
 
 APP_NAME = "Windows LAN Remote"
-APP_VERSION = "0.6.18"
+APP_VERSION = "0.6.19"
 GITHUB_REPOSITORY = "EmpK1019/lan-windows-remote"
 GITHUB_LATEST_RELEASE_API = f"https://api.github.com/repos/{GITHUB_REPOSITORY}/releases/latest"
 DEFAULT_PORT = 8765
@@ -110,330 +110,6 @@ ACTIVE_FILE_UPLOADS: set[Path] = set()
 GDIPLUS_TOKEN = ctypes.c_void_p()
 GDIPLUS_STARTED = False
 ELEVATED_INPUT_HELPER_RETRY_AFTER = 0.0
-
-
-INDEX_HTML = r"""<!doctype html>
-<html lang="zh-CN">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Windows LAN Remote</title>
-  <style>
-    :root {
-      color-scheme: dark;
-      --bg: #121417;
-      --panel: #1d2229;
-      --line: #343b45;
-      --text: #eef2f6;
-      --muted: #a8b0bb;
-      --accent: #35c286;
-      --danger: #ff6b6b;
-    }
-
-    * { box-sizing: border-box; }
-
-    body {
-      margin: 0;
-      min-height: 100vh;
-      font-family: "Segoe UI", system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
-      background: var(--bg);
-      color: var(--text);
-      overflow: hidden;
-    }
-
-    .toolbar {
-      min-height: 58px;
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      padding: 10px 12px;
-      border-bottom: 1px solid var(--line);
-      background: var(--panel);
-      flex-wrap: wrap;
-    }
-
-    .brand {
-      font-weight: 700;
-      margin-right: 8px;
-      white-space: nowrap;
-    }
-
-    input {
-      width: min(280px, 52vw);
-      min-height: 36px;
-      border-radius: 6px;
-      border: 1px solid var(--line);
-      background: #11161c;
-      color: var(--text);
-      padding: 8px 10px;
-      outline: none;
-    }
-
-    button {
-      min-height: 36px;
-      border: 1px solid var(--line);
-      border-radius: 6px;
-      background: #242b34;
-      color: var(--text);
-      padding: 7px 12px;
-      cursor: pointer;
-    }
-
-    button:hover { border-color: #596270; }
-    button.primary { background: #1f6f52; border-color: #2d9b72; }
-    button.danger { background: #703038; border-color: #9b4650; }
-    button.active { outline: 2px solid var(--accent); }
-
-    .status {
-      margin-left: auto;
-      color: var(--muted);
-      font-size: 13px;
-      white-space: nowrap;
-    }
-
-    .stage {
-      height: calc(100vh - 58px);
-      display: grid;
-      place-items: center;
-      background: #080a0d;
-      position: relative;
-    }
-
-    #screen {
-      width: 100%;
-      height: 100%;
-      object-fit: contain;
-      user-select: none;
-      -webkit-user-drag: none;
-      cursor: default !important;
-      image-rendering: auto;
-    }
-
-    .empty {
-      position: absolute;
-      inset: 0;
-      display: grid;
-      place-items: center;
-      padding: 20px;
-      color: var(--muted);
-      text-align: center;
-      pointer-events: none;
-    }
-
-    .empty.hidden { display: none; }
-
-    @media (max-width: 720px) {
-      body { overflow: auto; }
-      .toolbar { min-height: 112px; align-content: center; }
-      .status { width: 100%; margin-left: 0; }
-      .stage { height: calc(100vh - 112px); }
-      button { padding-inline: 10px; }
-    }
-  </style>
-</head>
-<body>
-  <div class="toolbar">
-    <div class="brand">Windows LAN Remote</div>
-    <input id="token" autocomplete="off" spellcheck="false" placeholder="输入控制端显示的访问码" />
-    <button id="connect" class="primary">连接</button>
-    <button id="keyboard">键盘</button>
-    <button id="viewOnly">仅观看</button>
-    <button id="fullscreen">全屏</button>
-    <button id="disconnect" class="danger">断开</button>
-    <div id="status" class="status">未连接</div>
-  </div>
-
-  <main class="stage" id="stage">
-    <img id="screen" alt="远程屏幕" draggable="false" />
-    <div id="empty" class="empty">在被控制电脑上启动程序，然后输入访问码。</div>
-  </main>
-
-  <script>
-    const screen = document.getElementById("screen");
-    const stage = document.getElementById("stage");
-    const empty = document.getElementById("empty");
-    const tokenInput = document.getElementById("token");
-    const statusText = document.getElementById("status");
-    const keyboardButton = document.getElementById("keyboard");
-    const viewOnlyButton = document.getElementById("viewOnly");
-
-    let token = "";
-    let connected = false;
-    let keyboardEnabled = false;
-    let viewOnly = false;
-    let loadingFrame = false;
-    let lastMoveAt = 0;
-    let lastPointer = null;
-    let frameDelayMs = 160;
-
-    function setStatus(text, danger = false) {
-      statusText.textContent = text;
-      statusText.style.color = danger ? "var(--danger)" : "var(--muted)";
-    }
-
-    function endpoint(path) {
-      const separator = path.includes("?") ? "&" : "?";
-      return `${path}${separator}token=${encodeURIComponent(token)}`;
-    }
-
-    function connect() {
-      token = tokenInput.value.trim();
-      if (!token) {
-        setStatus("请输入访问码", true);
-        return;
-      }
-      connected = true;
-      keyboardEnabled = !viewOnly;
-      keyboardButton.classList.toggle("active", keyboardEnabled);
-      empty.classList.add("hidden");
-      setStatus("正在连接...");
-      refreshScreen();
-    }
-
-    function disconnect() {
-      connected = false;
-      keyboardEnabled = false;
-      keyboardButton.classList.remove("active");
-      screen.removeAttribute("src");
-      empty.classList.remove("hidden");
-      setStatus("已断开");
-    }
-
-    function refreshScreen() {
-      if (!connected || loadingFrame) return;
-      loadingFrame = true;
-      const next = new Image();
-      next.onload = () => {
-        screen.src = next.src;
-        loadingFrame = false;
-        setStatus(`已连接 · ${screen.naturalWidth || next.width}×${screen.naturalHeight || next.height}`);
-        if (connected) window.setTimeout(refreshScreen, frameDelayMs);
-      };
-      next.onerror = () => {
-        loadingFrame = false;
-        setStatus("连接失败或访问码不正确", true);
-        if (connected) window.setTimeout(refreshScreen, 900);
-      };
-      next.src = endpoint(`/screen?t=${Date.now()}`);
-    }
-
-    function remotePoint(event) {
-      if (!screen.naturalWidth || !screen.naturalHeight) return null;
-      const rect = screen.getBoundingClientRect();
-      const scale = Math.min(rect.width / screen.naturalWidth, rect.height / screen.naturalHeight);
-      const renderedWidth = screen.naturalWidth * scale;
-      const renderedHeight = screen.naturalHeight * scale;
-      const offsetX = (rect.width - renderedWidth) / 2;
-      const offsetY = (rect.height - renderedHeight) / 2;
-      const x = (event.clientX - rect.left - offsetX) / scale;
-      const y = (event.clientY - rect.top - offsetY) / scale;
-      if (x < 0 || y < 0 || x > screen.naturalWidth || y > screen.naturalHeight) return null;
-      return { x: Math.round(x), y: Math.round(y) };
-    }
-
-    async function sendInput(payload) {
-      if (!connected || viewOnly) return;
-      try {
-        await fetch(endpoint("/input"), {
-          method: "POST",
-          headers: { "Content-Type": "application/json", "X-Remote-Token": token },
-          body: JSON.stringify(payload),
-          cache: "no-store"
-        });
-      } catch {
-        setStatus("输入发送失败", true);
-      }
-    }
-
-    function pointerPayload(event, type) {
-      const point = remotePoint(event);
-      if (!point) return null;
-      lastPointer = point;
-      return {
-        type,
-        x: point.x,
-        y: point.y,
-        button: event.button,
-        delta: 0
-      };
-    }
-
-    stage.addEventListener("contextmenu", (event) => event.preventDefault());
-
-    stage.addEventListener("pointermove", (event) => {
-      const now = performance.now();
-      if (now - lastMoveAt < 24) return;
-      lastMoveAt = now;
-      const payload = pointerPayload(event, "mouse_move");
-      if (payload) sendInput(payload);
-    });
-
-    stage.addEventListener("pointerdown", (event) => {
-      stage.setPointerCapture(event.pointerId);
-      const payload = pointerPayload(event, "mouse_down");
-      if (payload) sendInput(payload);
-      event.preventDefault();
-    });
-
-    stage.addEventListener("pointerup", (event) => {
-      const payload = pointerPayload(event, "mouse_up");
-      if (payload) sendInput(payload);
-      event.preventDefault();
-    });
-
-    stage.addEventListener("wheel", (event) => {
-      const payload = pointerPayload(event, "mouse_wheel");
-      if (payload && event.deltaY) sendInput({ ...payload, delta: event.deltaY });
-      if (payload && event.deltaX) sendInput({ ...payload, type: "mouse_hwheel", delta: event.deltaX });
-      event.preventDefault();
-    }, { passive: false });
-
-    window.addEventListener("keydown", (event) => {
-      if (!connected || viewOnly || !keyboardEnabled) return;
-      if (event.key === "Escape") {
-        keyboardEnabled = false;
-        keyboardButton.classList.remove("active");
-        return;
-      }
-      sendInput({ type: "key_down", key: event.key, code: event.code });
-      event.preventDefault();
-    });
-
-    window.addEventListener("keyup", (event) => {
-      if (!connected || viewOnly || !keyboardEnabled) return;
-      sendInput({ type: "key_up", key: event.key, code: event.code });
-      event.preventDefault();
-    });
-
-    document.getElementById("connect").addEventListener("click", connect);
-    document.getElementById("disconnect").addEventListener("click", disconnect);
-    tokenInput.addEventListener("keydown", (event) => {
-      if (event.key === "Enter") connect();
-    });
-
-    keyboardButton.addEventListener("click", () => {
-      keyboardEnabled = !keyboardEnabled;
-      keyboardButton.classList.toggle("active", keyboardEnabled);
-      setStatus(keyboardEnabled ? "键盘控制已开启，按 Esc 关闭" : "键盘控制已关闭");
-    });
-
-    viewOnlyButton.addEventListener("click", () => {
-      viewOnly = !viewOnly;
-      viewOnlyButton.classList.toggle("active", viewOnly);
-      setStatus(viewOnly ? "仅观看模式" : "控制模式");
-    });
-
-    document.getElementById("fullscreen").addEventListener("click", () => {
-      if (document.fullscreenElement) {
-        document.exitFullscreen();
-      } else {
-        stage.requestFullscreen?.();
-      }
-    });
-  </script>
-</body>
-</html>
-"""
 
 
 def application_path(*parts: str) -> Path:
@@ -1531,6 +1207,25 @@ class RECT(ctypes.Structure):
     ]
 
 
+class CURSORINFO(ctypes.Structure):
+    _fields_ = [
+        ("cbSize", wintypes.DWORD),
+        ("flags", wintypes.DWORD),
+        ("hCursor", wintypes.HANDLE),
+        ("ptScreenPos", wintypes.POINT),
+    ]
+
+
+class ICONINFO(ctypes.Structure):
+    _fields_ = [
+        ("fIcon", wintypes.BOOL),
+        ("xHotspot", wintypes.DWORD),
+        ("yHotspot", wintypes.DWORD),
+        ("hbmMask", wintypes.HBITMAP),
+        ("hbmColor", wintypes.HBITMAP),
+    ]
+
+
 class MONITORINFOEXW(ctypes.Structure):
     _fields_ = [
         ("cbSize", wintypes.DWORD),
@@ -1662,6 +1357,22 @@ def configure_win32_signatures() -> None:
     user32.ReleaseDC.restype = ctypes.c_int
     user32.SetCursorPos.argtypes = [ctypes.c_int, ctypes.c_int]
     user32.SetCursorPos.restype = wintypes.BOOL
+    user32.GetCursorInfo.argtypes = [ctypes.POINTER(CURSORINFO)]
+    user32.GetCursorInfo.restype = wintypes.BOOL
+    user32.GetIconInfo.argtypes = [wintypes.HANDLE, ctypes.POINTER(ICONINFO)]
+    user32.GetIconInfo.restype = wintypes.BOOL
+    user32.DrawIconEx.argtypes = [
+        wintypes.HDC,
+        ctypes.c_int,
+        ctypes.c_int,
+        wintypes.HANDLE,
+        ctypes.c_int,
+        ctypes.c_int,
+        wintypes.UINT,
+        wintypes.HBRUSH,
+        wintypes.UINT,
+    ]
+    user32.DrawIconEx.restype = wintypes.BOOL
     user32.mouse_event.argtypes = [wintypes.DWORD, wintypes.DWORD, wintypes.DWORD, wintypes.DWORD, ctypes.c_ulong]
     user32.mouse_event.restype = None
     user32.keybd_event.argtypes = [wintypes.BYTE, wintypes.BYTE, wintypes.DWORD, ctypes.c_ulong]
@@ -1867,6 +1578,41 @@ def monitor_payload() -> list[dict[str, Any]]:
     ]
 
 
+def draw_desktop_cursor(target_dc: int, capture_left: int, capture_top: int) -> None:
+    user32 = ctypes.windll.user32
+    gdi32 = ctypes.windll.gdi32
+    cursor = CURSORINFO()
+    cursor.cbSize = ctypes.sizeof(CURSORINFO)
+    if not user32.GetCursorInfo(ctypes.byref(cursor)) or not (cursor.flags & 0x00000001) or not cursor.hCursor:
+        return
+
+    icon = ICONINFO()
+    hotspot_x = 0
+    hotspot_y = 0
+    has_icon_info = bool(user32.GetIconInfo(cursor.hCursor, ctypes.byref(icon)))
+    if has_icon_info:
+        hotspot_x = int(icon.xHotspot)
+        hotspot_y = int(icon.yHotspot)
+    try:
+        user32.DrawIconEx(
+            target_dc,
+            int(cursor.ptScreenPos.x) - capture_left - hotspot_x,
+            int(cursor.ptScreenPos.y) - capture_top - hotspot_y,
+            cursor.hCursor,
+            0,
+            0,
+            0,
+            None,
+            0x0003,
+        )
+    finally:
+        if has_icon_info:
+            if icon.hbmMask:
+                gdi32.DeleteObject(icon.hbmMask)
+            if icon.hbmColor:
+                gdi32.DeleteObject(icon.hbmColor)
+
+
 def capture_screen_bmp(monitor_id: str = "all") -> bytes:
     user32 = ctypes.windll.user32
     gdi32 = ctypes.windll.gdi32
@@ -1896,6 +1642,7 @@ def capture_screen_bmp(monitor_id: str = "all") -> bytes:
 
             if not gdi32.BitBlt(mem_dc, 0, 0, width, height, screen_dc, left, top, 0x00CC0020 | 0x40000000):
                 raise ctypes.WinError()
+            draw_desktop_cursor(mem_dc, left, top)
 
             info = BITMAPINFO()
             info.bmiHeader.biSize = ctypes.sizeof(BITMAPINFOHEADER)
@@ -2024,6 +1771,7 @@ def capture_screen_jpeg(monitor_id: str = "all") -> bytes:
 
             if not gdi32.BitBlt(mem_dc, 0, 0, width, height, screen_dc, left, top, 0x00CC0020 | 0x40000000):
                 raise ctypes.WinError()
+            draw_desktop_cursor(mem_dc, left, top)
 
             return encode_hbitmap_jpeg(bitmap)
         finally:
@@ -2519,8 +2267,10 @@ def send_mouse_event(payload: dict[str, Any]) -> None:
         delta = int(payload.get("delta", 0))
         if delta == 0:
             return
-        wheel_delta = -delta if event_type == "mouse_wheel" else delta
-        wheel_delta = max(-32768, min(wheel_delta, 32767))
+        if event_type == "mouse_wheel":
+            wheel_delta = -120 if delta > 0 else 120
+        else:
+            wheel_delta = 120 if delta > 0 else -120
         wheel_flag = MOUSEEVENTF_WHEEL if event_type == "mouse_wheel" else MOUSEEVENTF_HWHEEL
         mouse_input = INPUT(
             type=0,
@@ -2530,7 +2280,7 @@ def send_mouse_event(payload: dict[str, Any]) -> None:
                 wheel_delta & 0xFFFFFFFF,
                 wheel_flag,
                 0,
-                REMOTE_INPUT_EXTRA_INFO,
+                0,
             ),
         )
         sent = user32.SendInput(1, ctypes.byref(mouse_input), ctypes.sizeof(INPUT))
@@ -2545,7 +2295,7 @@ def send_mouse_event(payload: dict[str, Any]) -> None:
         flag, data = event
         mouse_input = INPUT(
             type=0,
-            mi=MOUSEINPUT(0, 0, data, flag, 0, REMOTE_INPUT_EXTRA_INFO),
+            mi=MOUSEINPUT(0, 0, data, flag, 0, 0),
         )
         sent = user32.SendInput(1, ctypes.byref(mouse_input), ctypes.sizeof(INPUT))
         if sent != 1:
@@ -3055,7 +2805,7 @@ def run_webview_shell(
         js_api=desktop_api,
         width=1280 if remote_window else 1200,
         height=800 if remote_window else 760,
-        min_size=(720, 480) if remote_window else (920, 600),
+        min_size=(720, 480) if remote_window else (820, 600),
         resizable=True,
         background_color="#0f1014",
         text_select=False,

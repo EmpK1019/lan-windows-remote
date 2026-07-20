@@ -14,7 +14,6 @@
     :root {
       --bg: #0f1014;
       --rail: #121318;
-      --nav: #15161b;
       --panel: #18191f;
       --panel-2: #202229;
       --panel-3: #282b34;
@@ -35,7 +34,7 @@
     html, body { width: 100%; height: 100%; }
     body {
       margin: 0;
-      min-width: 920px;
+      min-width: 820px;
       overflow: hidden;
       background:
         radial-gradient(circle at 70% -20%, rgba(29, 116, 82, .12), transparent 30%),
@@ -55,7 +54,7 @@
 
     .app {
       display: grid;
-      grid-template-columns: 68px 170px minmax(440px, 1fr) 330px;
+      grid-template-columns: 68px minmax(440px, 1fr) 330px;
       grid-template-rows: 40px 58px 1fr;
       width: 100vw;
       height: 100vh;
@@ -66,7 +65,7 @@
     }
 
     .window-titlebar {
-      grid-column: 1 / 5;
+      grid-column: 1 / 4;
       grid-row: 1;
       display: flex;
       align-items: stretch;
@@ -151,7 +150,7 @@
     .rail-button svg { width: 19px; height: 19px; }
 
     .topbar {
-      grid-column: 2 / 5;
+      grid-column: 2 / 4;
       grid-row: 2;
       display: flex;
       align-items: center;
@@ -159,13 +158,6 @@
       padding: 9px 16px;
       border-bottom: 1px solid var(--line-soft);
       background: rgba(20, 21, 26, .95);
-    }
-
-    .app-name {
-      width: 140px;
-      font-weight: 700;
-      letter-spacing: .2px;
-      color: #dfe2ea;
     }
 
     .search {
@@ -214,84 +206,8 @@
       box-shadow: 0 0 0 5px rgba(50,213,131,.09);
     }
 
-    .sidebar {
-      grid-column: 2;
-      grid-row: 3;
-      padding: 22px 12px;
-      border-right: 1px solid var(--line);
-      background: var(--nav);
-    }
-
-    .sidebar h2 { margin: 0 10px 20px; font-size: 18px; }
-
-    .nav-item {
-      display: flex;
-      align-items: center;
-      gap: 11px;
-      width: 100%;
-      height: 42px;
-      margin: 4px 0;
-      padding: 0 10px;
-      border: 0;
-      border-radius: 8px;
-      background: transparent;
-      color: #b8bbc5;
-      text-align: left;
-    }
-
-    .nav-item svg { width: 18px; height: 18px; color: #60b995; }
-    .nav-item .count { margin-left: auto; color: #7f838f; font-size: 12px; }
-    .nav-item.active { background: #204f3e; color: white; }
-    .nav-item.active .count { color: #ccd9f2; }
-
-    .nav-note {
-      margin: 28px 10px 0;
-      padding-top: 20px;
-      border-top: 1px solid var(--line);
-      color: #6f7380;
-      font-size: 12px;
-      line-height: 1.7;
-    }
-
-    .access-card {
-      display: none;
-      margin: 22px 6px 0;
-      padding: 12px;
-      border: 1px solid #28684f;
-      border-radius: 9px;
-      background: linear-gradient(145deg, rgba(28, 91, 67, .46), rgba(24, 46, 38, .62));
-    }
-
-    .access-card.show { display: block; }
-    .access-label { display: flex; align-items: center; gap: 6px; color: #abd9c6; font-size: 11px; }
-    .access-label svg { width: 14px; height: 14px; color: #67bf9b; }
-    .access-code {
-      display: block;
-      margin: 8px 0 6px;
-      overflow-wrap: anywhere;
-      color: white;
-      font: 600 12px/1.35 ui-monospace, "Cascadia Mono", Consolas, monospace;
-      letter-spacing: .2px;
-      user-select: all;
-    }
-
-    .access-help { color: #7d988d; font-size: 10px; line-height: 1.5; }
-    .copy-code {
-      width: 100%;
-      height: 28px;
-      margin-top: 9px;
-      border: 1px solid #337b5f;
-      border-radius: 6px;
-      background: rgba(29, 116, 82, .35);
-      color: #ccebdd;
-      font-size: 11px;
-      cursor: pointer;
-    }
-
-    .copy-code:hover { background: rgba(29, 116, 82, .55); }
-
     .content {
-      grid-column: 3;
+      grid-column: 2;
       grid-row: 3;
       display: flex;
       min-width: 0;
@@ -310,6 +226,20 @@
     }
 
     .content-head h3 { margin: 0; font-size: 15px; font-weight: 600; }
+    .heading-count {
+      display: inline-flex;
+      min-width: 22px;
+      height: 20px;
+      margin-left: 7px;
+      align-items: center;
+      justify-content: center;
+      padding: 0 6px;
+      border-radius: 10px;
+      background: #203d32;
+      color: #83d3b2;
+      font-size: 11px;
+      vertical-align: 1px;
+    }
     .content-head .actions { display: flex; gap: 4px; margin-left: auto; }
     .icon-button {
       display: grid;
@@ -362,6 +292,7 @@
 
     .device-row:hover { background: #1b1d23; }
     .device-row.selected { background: #1a3b2f; border-color: #28684f; color: white; }
+    .device-row:focus-visible { outline: 2px solid #58c69b; outline-offset: -2px; }
     .device-main { display: flex; align-items: center; min-width: 0; gap: 10px; }
     .device-platform { display: grid; place-items: center; width: 22px; color: var(--blue); }
     .device-platform svg { width: 18px; height: 18px; fill: currentColor; stroke: none; }
@@ -414,7 +345,7 @@
     .empty-state svg { width: 44px; height: 44px; margin-bottom: 10px; color: #474a55; }
 
     .details {
-      grid-column: 4;
+      grid-column: 3;
       grid-row: 3;
       overflow-y: auto;
       padding: 20px 16px;
@@ -564,8 +495,6 @@
     .control-card span { font-size: 12px; }
     .control-card.primary { border-color: #2d775a; background: linear-gradient(145deg, #245b46, #1d392f); }
     .control-card.wide { grid-column: 1 / 3; }
-    .soon { position: absolute; top: 6px; right: 7px; padding: 1px 5px; border-radius: 4px; background: #3b3d45; color: #999ca6; font-size: 9px; }
-
     .info-card {
       margin-top: 14px;
       padding: 13px;
@@ -620,7 +549,9 @@
     .dialog-check input { accent-color: var(--blue); }
     .dialog-subtitle { margin-top: 2px; color: #7f838e; font-size: 11px; }
     .dialog-password-row { display: flex; gap: 8px; }
-    .dialog-password-row .code-input { height: 38px; margin: 0; letter-spacing: .2px; }
+    .dialog > .dialog-password-row { margin-top: 20px; }
+    .dialog-password-row .code-input { min-width: 0; flex: 1; height: 38px; margin: 0; letter-spacing: .2px; }
+    .dialog-password-row .password-toggle { height: 38px; }
     .credential-state { color: #72c5a4; font-size: 11px; }
     .button { min-width: 82px; height: 36px; border: 1px solid #3b3e47; border-radius: 7px; background: #282a31; cursor: pointer; }
     .button:hover { background: #30333b; }
@@ -930,38 +861,27 @@
 
     .settings-view {
       display: none;
-      grid-column: 2 / 5;
+      grid-column: 2 / 4;
       grid-row: 3;
-      grid-template-columns: 230px minmax(0, 1fr);
+      grid-template-columns: minmax(0, 1fr);
       min-height: 0;
       background: #111217;
     }
 
-    .app.settings-mode .sidebar,
     .app.settings-mode .content,
     .app.settings-mode .details { display: none; }
     .app.settings-mode .settings-view { display: grid; }
     .app.settings-mode .search { visibility: hidden; }
 
-    .settings-nav {
-      padding: 22px 14px;
-      border-right: 1px solid var(--line);
-      background: var(--nav);
-    }
-
-    .settings-nav h2 { margin: 0 10px 20px; font-size: 18px; }
-    .settings-nav .nav-item.active { background: #1a3b2f; }
-    .settings-nav-note { margin: 22px 10px; color: #777b86; font-size: 12px; line-height: 1.7; }
-
     .settings-content { overflow-y: auto; padding: 26px 34px 38px; scrollbar-color: #3b3e47 transparent; }
-    .settings-content-head { display: flex; align-items: center; max-width: 760px; margin-bottom: 20px; }
+    .settings-content-head { display: flex; align-items: center; max-width: 860px; margin: 0 auto 20px; }
     .settings-content-head h3 { margin: 0; font-size: 18px; }
     .settings-content-head p { margin: 4px 0 0; color: var(--muted); font-size: 12px; }
     .settings-save-state { margin-left: auto; color: #72c5a4; font-size: 12px; }
     .settings-save-state.saving { color: #b3b7c1; }
     .settings-save-state.error { color: #ff8393; }
 
-    .settings-section { max-width: 760px; margin: 0; overflow: visible; }
+    .settings-section { max-width: 860px; margin: 0 auto; overflow: visible; }
     .settings-section + .settings-section { margin-top: 22px; }
     .settings-section-title { display: flex; align-items: center; gap: 8px; min-height: 20px; margin: 0 0 9px; font-size: 14px; font-weight: 600; line-height: 20px; }
     .settings-section-title svg { width: 17px; height: 17px; color: #72c5a4; }
@@ -990,10 +910,12 @@
     .switch span::after { content: ""; position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; border-radius: 50%; background: #d8dae0; transition: .18s ease; }
     .switch input:checked + span { background: var(--blue); }
     .switch input:checked + span::after { transform: translateX(18px); background: white; }
+    .switch:has(input:disabled) { opacity: .42; cursor: not-allowed; }
     .settings-code { color: #d7f2e6; font: 600 15px/1 ui-monospace, "Cascadia Mono", Consolas, monospace; letter-spacing: 1.2px; user-select: all; }
     .password-setting { display: flex; align-items: center; width: 360px; min-width: 0; gap: 8px; }
     .password-setting .setting-input { width: auto; min-width: 0; flex: 1 1 auto; }
     .password-setting .button { min-width: 52px; flex: 0 0 auto; white-space: nowrap; }
+    .password-toggle { min-width: 52px !important; }
     .expiry-note { min-width: 74px; color: #86bca6; font: 500 11px/1.3 "Segoe UI", sans-serif; text-align: right; }
     .setting-actions { display: flex; align-items: center; gap: 8px; }
     .button.compact { min-width: 0; height: 32px; padding: 0 11px; flex: 0 0 auto; font-size: 12px; white-space: nowrap; }
@@ -1007,7 +929,7 @@
     .control-occupation {
       position: relative;
       z-index: 14;
-      grid-column: 2 / 5;
+      grid-column: 2 / 4;
       grid-row: 2 / 4;
       display: none;
       grid-template-columns: minmax(390px, 1.2fr) minmax(330px, .8fr);
@@ -1124,10 +1046,17 @@
     .occupation-lock-note svg { width: 15px; height: 15px; color: #5ccf9f; }
 
     @media (max-width: 1160px) {
-      .app { grid-template-columns: 64px 155px minmax(420px, 1fr) 285px; }
+      .app { grid-template-columns: 64px minmax(420px, 1fr) 285px; }
       .table-head, .device-row { grid-template-columns: minmax(180px, 1.3fr) 120px 90px 70px; }
-      .settings-view { grid-template-columns: 190px minmax(0, 1fr); }
       .control-occupation { gap: 30px; padding: 48px; }
+    }
+
+    @media (max-width: 960px) {
+      .app { grid-template-columns: 60px minmax(0, 1fr) 270px; }
+      .table-head, .device-row { grid-template-columns: minmax(150px, 1fr) 90px 50px; }
+      .table-head .device-address, .device-row .device-address { display: none; }
+      .details { padding-inline: 13px; }
+      .settings-content { padding-inline: 24px; }
     }
   </style>
 </head>
@@ -1138,8 +1067,6 @@
     <symbol id="i-eye" viewBox="0 0 24 24"><path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12Z"/><circle cx="12" cy="12" r="2.5"/></symbol>
     <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 7v5h-5M4 17v-5h5"/><path d="M18.5 9A7 7 0 0 0 6 7M5.5 15A7 7 0 0 0 18 17"/></symbol>
     <symbol id="i-settings" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2.8 2.8-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6v.2h-4V21a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1L4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9A1.7 1.7 0 0 0 3 14H3v-4h.1a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9L4.2 7 7 4.2l.1.1a1.7 1.7 0 0 0 1.9.3 1.7 1.7 0 0 0 1-1.6V3h4v.1a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1L19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.2v4H21a1.7 1.7 0 0 0-1.6 1Z"/></symbol>
-    <symbol id="i-grid" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></symbol>
-    <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></symbol>
     <symbol id="i-windows" viewBox="0 0 24 24"><path d="M3 5.2 10.5 4v7.2H3V5.2Zm8.5-1.4L21 2.4v8.8h-9.5V3.8ZM3 12.2h7.5v7.3L3 18.3v-6.1Zm8.5 0H21v9.4l-9.5-1.8v-7.6Z"/></symbol>
     <symbol id="i-link" viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7.5.5l2-2a5 5 0 0 0-7-7l-1.1 1.1"/><path d="M14 11a5 5 0 0 0-7.5-.5l-2 2a5 5 0 0 0 7 7l1.1-1.1"/></symbol>
     <symbol id="i-keyboard" viewBox="0 0 24 24"><rect x="2" y="5" width="20" height="14" rx="2"/><path d="M6 9h.01M10 9h.01M14 9h.01M18 9h.01M6 13h.01M10 13h.01M14 13h.01M18 13h.01M8 16h8"/></symbol>
@@ -1156,9 +1083,7 @@
     <symbol id="i-upload" viewBox="0 0 24 24"><path d="M12 16V3M7 8l5-5 5 5M4 15v5h16v-5"/></symbol>
     <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 3v13M7 11l5 5 5-5M4 20h16"/></symbol>
     <symbol id="i-up" viewBox="0 0 24 24"><path d="m6 14 6-6 6 6"/></symbol>
-    <symbol id="i-terminal" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="m7 9 3 3-3 3M13 16h4"/></symbol>
     <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 3 20 6v5c0 5-3.5 8.5-8 10-4.5-1.5-8-5-8-10V6l8-3Z"/><path d="m9 12 2 2 4-4"/></symbol>
-    <symbol id="i-star" viewBox="0 0 24 24"><path d="m12 2.5 2.9 5.9 6.5.9-4.7 4.6 1.1 6.5-5.8-3.1-5.8 3.1 1.1-6.5-4.7-4.6 6.5-.9L12 2.5Z"/></symbol>
   </svg>
 
   <div class="app" id="app">
@@ -1181,27 +1106,21 @@
     <header class="topbar">
       <label class="search">
         <svg><use href="#i-search"/></svg>
-        <input id="searchInput" type="search" placeholder="搜索局域网设备" autocomplete="off">
+        <input id="searchInput" type="search" placeholder="搜索局域网设备" aria-label="搜索局域网设备" autocomplete="off">
       </label>
-      <div class="top-status"><span class="pulse"></span><span id="discoveryStatus">正在发现设备</span></div>
+      <div class="top-status" role="status" aria-live="polite"><span class="pulse"></span><span id="discoveryStatus">正在发现设备</span></div>
     </header>
-
-    <nav class="sidebar">
-      <h2>设备</h2>
-      <button class="nav-item active" id="allDevicesNav"><svg><use href="#i-monitor"/></svg><span>全部设备</span><span class="count" id="allCount">0</span></button>
-      <div class="nav-note">设备会通过局域网广播自动出现。两台电脑都需要运行 LAN Remote。</div>
-    </nav>
 
     <main class="content">
       <div class="content-head">
-        <h3>全部设备</h3>
+        <h3>全部设备 <span class="heading-count" id="allCount">0</span></h3>
         <div class="actions">
           <button class="icon-button" id="refreshButton" title="刷新"><svg><use href="#i-refresh"/></svg></button>
         </div>
       </div>
-      <div class="table-head"><span>设备名</span><span>地址</span><span>状态</span><span style="text-align:right">操作</span></div>
-      <div class="device-list" id="deviceList"></div>
-      <div class="empty-state" id="emptyState"><div><svg><use href="#i-monitor"/></svg><div>没有找到匹配的设备</div></div></div>
+      <div class="table-head"><span>设备名</span><span class="device-address">地址</span><span>状态</span><span style="text-align:right">操作</span></div>
+      <div class="device-list" id="deviceList" role="listbox" aria-label="在线设备"></div>
+      <div class="empty-state" id="emptyState"><div><svg><use href="#i-monitor"/></svg><div id="emptyStateMessage">还没有发现局域网设备</div></div></div>
     </main>
 
     <aside class="details">
@@ -1258,15 +1177,10 @@
     </section>
 
     <section class="settings-view" id="settingsView">
-      <nav class="settings-nav">
-        <h2>设置</h2>
-        <button class="nav-item active" type="button"><svg><use href="#i-settings"/></svg><span>常规与安全</span></button>
-        <div class="settings-nav-note">所有修改都会立即保存在当前 Windows 用户目录，软件更新不会删除。永久密码通过“设置/清除”按钮即时生效。</div>
-      </nav>
       <main class="settings-content">
         <div class="settings-content-head">
-          <div><h3>常规与安全</h3><p>管理本机身份、访问权限、远程体验和软件更新。</p></div>
-          <span class="settings-save-state" id="settingsSaveState">所有修改已自动保存</span>
+          <div><h3>设置</h3><p>开关和选项自动保存；永久密码需点击“设置”或“清除”后生效。</p></div>
+          <span class="settings-save-state" id="settingsSaveState" role="status" aria-live="polite">所有修改已自动保存</span>
         </div>
 
         <section class="settings-section">
@@ -1274,7 +1188,7 @@
           <div class="settings-card">
             <div class="setting-row">
               <div class="setting-copy"><strong>设备名称</strong></div>
-              <input class="setting-input" id="settingDeviceName" maxlength="64" autocomplete="off">
+              <input class="setting-input" id="settingDeviceName" maxlength="64" aria-label="设备名称" autocomplete="off">
             </div>
             <div class="setting-row">
               <div class="setting-copy"><strong>临时访问码</strong></div>
@@ -1282,7 +1196,7 @@
             </div>
             <div class="setting-row">
               <div class="setting-copy"><strong>永久访问密码 <span class="setting-inline-status warning" id="permanentPasswordStatus">未设置</span></strong></div>
-              <div class="password-setting"><input class="setting-input" id="settingPermanentPassword" type="password" minlength="8" maxlength="128" autocomplete="new-password" placeholder="输入 8–128 位新密码"><button class="button compact primary" id="setPermanentPassword" type="button">设置</button><button class="button compact danger" id="clearPermanentPassword" type="button">清除</button></div>
+              <div class="password-setting"><input class="setting-input" id="settingPermanentPassword" type="password" minlength="8" maxlength="128" aria-label="新的永久访问密码" autocomplete="new-password" placeholder="输入 8–128 位新密码"><button class="button compact password-toggle" type="button" data-password-toggle data-target="settingPermanentPassword" aria-pressed="false">显示</button><button class="button compact primary" id="setPermanentPassword" type="button">设置</button><button class="button compact danger" id="clearPermanentPassword" type="button">清除</button></div>
             </div>
           </div>
         </section>
@@ -1290,36 +1204,36 @@
         <section class="settings-section">
           <h4 class="settings-section-title"><svg><use href="#i-shield"/></svg>连接与权限</h4>
           <div class="settings-card">
-            <div class="setting-row"><div class="setting-copy"><strong>允许局域网发现</strong></div><label class="switch"><input id="settingDiscovery" type="checkbox"><span></span></label></div>
-            <div class="setting-row"><div class="setting-copy"><strong>仅允许桌面观看</strong></div><label class="switch"><input id="settingViewOnly" type="checkbox"><span></span></label></div>
-            <div class="setting-row"><div class="setting-copy"><strong>允许锁屏与安全桌面控制 <span class="setting-inline-status warning" id="secureDesktopStatus">服务未安装</span></strong></div><label class="switch"><input id="settingSecureDesktop" type="checkbox"><span></span></label></div>
-            <div class="setting-row"><div class="setting-copy"><strong>记住临时访问码直到失效</strong></div><label class="switch"><input id="settingRememberCodes" type="checkbox"><span></span></label></div>
+            <div class="setting-row"><div class="setting-copy"><strong>允许局域网发现</strong></div><label class="switch"><input id="settingDiscovery" type="checkbox" aria-label="允许局域网发现"><span></span></label></div>
+            <div class="setting-row"><div class="setting-copy"><strong>仅允许桌面观看</strong></div><label class="switch"><input id="settingViewOnly" type="checkbox" aria-label="仅允许桌面观看"><span></span></label></div>
+            <div class="setting-row"><div class="setting-copy"><strong>允许锁屏与安全桌面控制 <span class="setting-inline-status warning" id="secureDesktopStatus">服务未安装</span></strong></div><label class="switch"><input id="settingSecureDesktop" type="checkbox" aria-label="允许锁屏与安全桌面控制"><span></span></label></div>
+            <div class="setting-row"><div class="setting-copy"><strong>记住临时访问码直到失效</strong></div><label class="switch"><input id="settingRememberCodes" type="checkbox" aria-label="记住临时访问码直到失效"><span></span></label></div>
           </div>
         </section>
 
         <section class="settings-section">
           <h4 class="settings-section-title"><svg><use href="#i-eye"/></svg>远程体验</h4>
           <div class="settings-card">
-            <div class="setting-row"><div class="setting-copy"><strong>画面刷新速度</strong></div><select class="setting-select" id="settingFrameDelay"><option value="80">响应优先</option><option value="120">平衡</option><option value="220">流畅优先</option></select></div>
-            <div class="setting-row"><div class="setting-copy"><strong>断开远控时自动锁定远端电脑</strong></div><label class="switch"><input id="settingLockRemoteOnDisconnect" type="checkbox"><span></span></label></div>
-            <div class="setting-row"><div class="setting-copy"><strong>减少界面动效</strong></div><label class="switch"><input id="settingReduceMotion" type="checkbox"><span></span></label></div>
+            <div class="setting-row"><div class="setting-copy"><strong>画面刷新速度</strong></div><select class="setting-select" id="settingFrameDelay" aria-label="画面刷新速度"><option value="80">快速（约 12 帧/秒）</option><option value="120">平衡（约 8 帧/秒）</option><option value="220">省流量（约 4 帧/秒）</option></select></div>
+            <div class="setting-row"><div class="setting-copy"><strong>断开远控时自动锁定远端电脑</strong></div><label class="switch"><input id="settingLockRemoteOnDisconnect" type="checkbox" aria-label="断开远控时自动锁定远端电脑"><span></span></label></div>
+            <div class="setting-row"><div class="setting-copy"><strong>减少界面动效</strong></div><label class="switch"><input id="settingReduceMotion" type="checkbox" aria-label="减少界面动效"><span></span></label></div>
           </div>
         </section>
 
         <section class="settings-section">
           <h4 class="settings-section-title"><svg><use href="#i-settings"/></svg>系统</h4>
           <div class="settings-card">
-            <div class="setting-row"><div class="setting-copy"><strong>登录 Windows 后启动</strong></div><label class="switch"><input id="settingLaunchAtLogin" type="checkbox"><span></span></label></div>
-            <div class="setting-row"><div class="setting-copy"><strong>启动时最大化</strong></div><label class="switch"><input id="settingStartMaximized" type="checkbox"><span></span></label></div>
-            <div class="setting-row"><div class="setting-copy"><strong>关闭主窗口时隐藏到系统托盘</strong></div><label class="switch"><input id="settingCloseToTray" type="checkbox"><span></span></label></div>
+            <div class="setting-row"><div class="setting-copy"><strong>登录 Windows 后启动</strong></div><label class="switch"><input id="settingLaunchAtLogin" type="checkbox" aria-label="登录 Windows 后启动"><span></span></label></div>
+            <div class="setting-row"><div class="setting-copy"><strong>启动时最大化</strong></div><label class="switch"><input id="settingStartMaximized" type="checkbox" aria-label="启动时最大化"><span></span></label></div>
+            <div class="setting-row"><div class="setting-copy"><strong>关闭主窗口时隐藏到系统托盘</strong></div><label class="switch"><input id="settingCloseToTray" type="checkbox" aria-label="关闭主窗口时隐藏到系统托盘"><span></span></label></div>
           </div>
         </section>
 
         <section class="settings-section">
           <h4 class="settings-section-title"><svg><use href="#i-refresh"/></svg>软件更新</h4>
           <div class="settings-card">
-            <div class="setting-row"><div class="setting-copy"><strong>自动检查 GitHub 最新版本</strong></div><label class="switch"><input id="settingAutoUpdate" type="checkbox"><span></span></label></div>
-            <div class="setting-row"><div class="setting-copy"><strong>自动下载并安装更新</strong></div><label class="switch"><input id="settingAutoInstallUpdate" type="checkbox"><span></span></label></div>
+            <div class="setting-row"><div class="setting-copy"><strong>自动检查 GitHub 最新版本</strong></div><label class="switch"><input id="settingAutoUpdate" type="checkbox" aria-label="自动检查 GitHub 最新版本"><span></span></label></div>
+            <div class="setting-row"><div class="setting-copy"><strong>自动下载并安装更新</strong></div><label class="switch"><input id="settingAutoInstallUpdate" type="checkbox" aria-label="自动下载并安装更新"><span></span></label></div>
             <div class="setting-row"><div class="setting-copy"><strong id="versionLabel">当前版本</strong></div><div class="setting-actions"><span class="update-state" id="updateState"></span><button class="button compact" id="checkUpdate" type="button">立即检查</button><button class="button compact primary update-action" id="installUpdate" type="button">下载并安装</button></div></div>
           </div>
         </section>
@@ -1327,21 +1241,21 @@
     </section>
   </div>
 
-  <div class="modal" id="pairModal" role="dialog" aria-modal="true">
+  <div class="modal" id="pairModal" role="dialog" aria-modal="true" aria-labelledby="pairTitle">
     <form class="dialog" id="pairForm">
       <div class="dialog-head">
         <div class="dialog-icon"><svg><use href="#i-shield"/></svg></div>
-        <div><h3>连接到 <span id="pairDeviceName"></span></h3><p>可输入目标电脑的临时访问码或永久访问密码</p></div>
+        <div><h3 id="pairTitle">连接到 <span id="pairDeviceName"></span></h3><p>可输入目标电脑的临时访问码或永久访问密码</p></div>
       </div>
-      <input class="code-input" id="codeInput" type="password" placeholder="临时访问码或永久访问密码" autocomplete="off" spellcheck="false">
+      <div class="dialog-password-row"><input class="code-input" id="codeInput" type="password" aria-label="临时访问码或永久访问密码" placeholder="临时访问码或永久访问密码" autocomplete="off" spellcheck="false"><button class="button password-toggle" type="button" data-password-toggle data-target="codeInput" aria-pressed="false">显示</button></div>
       <div class="dialog-options">
         <label class="dialog-check"><input id="rememberPermanentAccess" type="checkbox" checked>如果验证为永久访问密码，使用 Windows 加密后长期记住</label>
         <div class="dialog-subtitle">锁屏自动输入（可选）</div>
-        <div class="dialog-password-row"><input class="code-input" id="lockPasswordInput" type="password" maxlength="128" placeholder="对方 Windows 锁屏密码" autocomplete="off"></div>
+        <div class="dialog-password-row"><input class="code-input" id="lockPasswordInput" type="password" maxlength="128" aria-label="对方 Windows 锁屏密码" placeholder="对方 Windows 锁屏密码" autocomplete="off"><button class="button password-toggle" type="button" data-password-toggle data-target="lockPasswordInput" aria-pressed="false">显示</button></div>
         <label class="dialog-check"><input id="rememberLockPassword" type="checkbox">加密记住，并在确认对方锁屏时自动输入一次</label>
         <span class="credential-state" id="credentialState"></span>
       </div>
-      <div class="dialog-error" id="pairError"></div>
+      <div class="dialog-error" id="pairError" role="alert"></div>
       <div class="dialog-actions">
         <button class="button" type="button" id="pairCancel">取消</button>
         <button class="button primary" type="submit" id="pairSubmit">连接</button>
@@ -1366,7 +1280,7 @@
       <button class="button" id="remoteFileButton" title="远程文件"><svg><use href="#i-folder"/></svg><span>远程文件</span></button>
       <button class="button" id="lockRemoteButton" title="锁定远端电脑"><svg><use href="#i-lock"/></svg><span>锁屏</span></button>
       <button class="button" id="fullscreenButton" title="全屏"><svg><use href="#i-expand"/></svg><span>全屏</span></button>
-      <span class="remote-status pywebview-drag-region" id="remoteStatus">正在连接…</span>
+      <span class="remote-status pywebview-drag-region" id="remoteStatus" role="status" aria-live="polite">正在连接…</span>
       <button class="button toolbar-toggle" id="toolbarToggle" type="button" title="收起工具栏" aria-label="收起工具栏"><svg><use href="#i-chevron-up"/></svg></button>
     </div>
     <div class="remote-stage" id="remoteStage" tabindex="0">
@@ -1380,9 +1294,9 @@
     <label class="clipboard-option"><span>接收远端复制内容到本机</span><input id="clipboardReceive" type="checkbox"></label>
     <small>两个方向可独立开启，仅当前远控会话生效；断开连接后自动关闭。</small>
   </div>
-  <div class="modal file-modal" id="fileModal" role="dialog" aria-modal="true">
+  <div class="modal file-modal" id="fileModal" role="dialog" aria-modal="true" aria-labelledby="fileDialogTitle">
     <div class="file-dialog">
-      <div class="file-head"><strong>远程文件</strong><span class="file-muted" id="fileDeviceName"></span><button class="icon-button" id="fileClose" type="button" title="关闭"><svg><use href="#i-x"/></svg></button></div>
+      <div class="file-head"><strong id="fileDialogTitle">远程文件</strong><span class="file-muted" id="fileDeviceName"></span><button class="icon-button" id="fileClose" type="button" title="关闭"><svg><use href="#i-x"/></svg></button></div>
       <div class="file-actions">
         <select class="file-root-select" id="fileRootSelect" aria-label="磁盘与常用位置"></select>
         <button class="icon-button" id="fileUp" type="button" title="上一级"><svg><use href="#i-up"/></svg></button>
@@ -1395,7 +1309,7 @@
       <div class="file-footer"><span class="file-progress" id="fileProgress">请选择文件夹</span><button class="button compact" id="fileCancelTransfer" type="button" disabled>取消传输</button></div>
     </div>
   </div>
-  <div class="toast" id="toast"></div>
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
   <script>
     "use strict";
@@ -1579,12 +1493,26 @@
       state.toastTimer = setTimeout(() => toast.classList.remove("show"), 2400);
     }
 
+    function setPasswordVisibility(button, visible) {
+      const field = $(button.dataset.target);
+      if (!field) return;
+      field.type = visible ? "text" : "password";
+      button.textContent = visible ? "隐藏" : "显示";
+      button.setAttribute("aria-pressed", String(visible));
+    }
+
+    function resetPasswordVisibility(scope = document) {
+      scope.querySelectorAll("[data-password-toggle]").forEach((button) => setPasswordVisibility(button, false));
+    }
+
     function applySettings(settings) {
       state.settings = {...state.settings, ...settings};
       $("settingDeviceName").value = state.settings.device_name || "";
       $("settingDiscovery").checked = Boolean(state.settings.discovery_enabled);
       $("settingViewOnly").checked = Boolean(state.settings.view_only);
       $("settingSecureDesktop").checked = Boolean(state.settings.secure_desktop_enabled);
+      $("settingSecureDesktop").disabled = !state.settings.secure_desktop_available;
+      $("settingSecureDesktop").title = state.settings.secure_desktop_available ? "" : "安装版系统服务不可用";
       $("secureDesktopStatus").textContent = state.settings.secure_desktop_available
         ? "服务可用"
         : "服务未安装";
@@ -1598,6 +1526,8 @@
       $("settingCloseToTray").checked = Boolean(state.settings.close_to_tray);
       $("settingAutoUpdate").checked = Boolean(state.settings.auto_check_updates);
       $("settingAutoInstallUpdate").checked = Boolean(state.settings.auto_install_updates);
+      $("settingAutoInstallUpdate").disabled = !state.settings.auto_check_updates;
+      $("settingAutoInstallUpdate").title = state.settings.auto_check_updates ? "" : "请先开启自动检查更新";
       $("localAccessCode").textContent = state.settings.access_code || "";
       $("permanentPasswordStatus").textContent = state.settings.permanent_password_set ? "已设置" : "未设置";
       $("permanentPasswordStatus").classList.toggle("warning", !state.settings.permanent_password_set);
@@ -1874,16 +1804,19 @@
       const visible = state.devices.filter((device) => `${device.name} ${device.ip}`.toLowerCase().includes(query));
       $("allCount").textContent = state.devices.length;
       $("deviceList").innerHTML = visible.map((device) => `
-        <div class="device-row ${device.id === state.selectedId ? "selected" : ""}" data-id="${escapeHtml(device.id)}">
+        <div class="device-row ${device.id === state.selectedId ? "selected" : ""}" data-id="${escapeHtml(device.id)}" role="option" aria-selected="${device.id === state.selectedId}" tabindex="0">
           <div class="device-main">
             <span class="device-platform"><svg><use href="#i-windows"/></svg></span>
             <span class="device-name" title="${escapeHtml(device.name)}">${escapeHtml(device.name)}${device.is_self ? '<span class="local-tag">本机</span>' : ""}${device.view_only ? '<span class="mode-tag">只读</span>' : ""}${device.busy ? `<span class="busy-tag">${device.busy_mode === "view" ? "观看中" : "控制中"}</span>` : ""}</span>
           </div>
-          <span class="cell-muted">${escapeHtml(device.ip)}:${device.port}</span>
+          <span class="cell-muted device-address">${escapeHtml(device.ip)}:${device.port}</span>
           <span class="online ${device.busy ? "busy" : ""}">${device.busy ? (device.busy_mode === "view" ? "观看中" : "会话中") : "在线"}</span>
           <span class="row-action"><button class="icon-button quick-connect" data-id="${escapeHtml(device.id)}" title="${device.is_self ? "不能远程控制本机" : (device.busy ? "设备正在远程会话中" : "桌面控制")}" ${device.is_self || device.busy || state.localStatus?.active ? "disabled" : ""}><svg><use href="#i-monitor"/></svg></button></span>
         </div>`).join("");
       $("emptyState").classList.toggle("show", visible.length === 0);
+      $("emptyStateMessage").textContent = state.devices.length === 0
+        ? "还没有发现局域网设备，请确认两台电脑都已运行 LAN Remote"
+        : `没有匹配“${query}”的设备`;
       renderDetails();
     }
 
@@ -1908,7 +1841,11 @@
 
     function selectDevice(id) {
       state.selectedId = id;
-      document.querySelectorAll(".device-row").forEach((row) => row.classList.toggle("selected", row.dataset.id === id));
+      document.querySelectorAll(".device-row").forEach((row) => {
+        const selected = row.dataset.id === id;
+        row.classList.toggle("selected", selected);
+        row.setAttribute("aria-selected", String(selected));
+      });
       renderDetails();
     }
 
@@ -1934,6 +1871,7 @@
       state.pairMode = mode;
       $("pairDeviceName").textContent = device.name;
       $("pairError").textContent = "";
+      resetPasswordVisibility($("pairModal"));
       $("lockPasswordInput").value = "";
       state.pairCredentialStatus = {access_saved: false, lock_saved: false};
       if (window.pywebview?.api?.credential_status) {
@@ -1960,6 +1898,7 @@
     function closePair() {
       $("pairModal").classList.remove("show");
       $("pairError").textContent = "";
+      resetPasswordVisibility($("pairModal"));
     }
 
     async function verifyAndConnect(event) {
@@ -2940,17 +2879,24 @@
       selectDevice(row.dataset.id);
       openPair(selectedDevice()?.view_only ? "view" : "control");
     });
+    $("deviceList").addEventListener("keydown", (event) => {
+      if (event.target.closest("button")) return;
+      const row = event.target.closest(".device-row");
+      if (!row || !["Enter", " "].includes(event.key)) return;
+      event.preventDefault();
+      selectDevice(row.dataset.id);
+      if (event.key === "Enter") openPair(selectedDevice()?.view_only ? "view" : "control");
+    });
     $("searchInput").addEventListener("input", renderDevices);
     $("refreshButton").addEventListener("click", () => refreshDevices(true));
     $("railDevices").addEventListener("click", showDevicesView);
     $("railSettings").addEventListener("click", showSettingsView);
-    $("allDevicesNav").addEventListener("click", () => {
-      $("searchInput").value = "";
-      renderDevices();
-    });
     $("copyCode").addEventListener("click", copyLocalAccessCode);
     $("setPermanentPassword").addEventListener("click", setPermanentPassword);
     $("clearPermanentPassword").addEventListener("click", clearPermanentPassword);
+    document.querySelectorAll("[data-password-toggle]").forEach((button) => {
+      button.addEventListener("click", () => setPasswordVisibility(button, button.getAttribute("aria-pressed") !== "true"));
+    });
     $("regenerateCode").addEventListener("click", () => {
       if (window.confirm("立即刷新后，正在使用旧临时访问码的连接会失效。确定继续吗？")) saveSettings({regenerate_access_code: true});
     });

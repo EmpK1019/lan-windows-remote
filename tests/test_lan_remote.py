@@ -307,6 +307,9 @@ class CoreFunctionTests(unittest.TestCase):
             lan_remote.send_mouse_event(
                 {"type": "mouse_hwheel", "x": 100, "y": 200, "delta": -240, "monitor": "all"}
             )
+            lan_remote.send_mouse_event(
+                {"type": "mouse_wheel", "x": 100, "y": 200, "delta": 1, "monitor": "all"}
+            )
 
         reports = [entry.args[1]._obj.mi for entry in user32.SendInput.call_args_list]
         self.assertEqual(
@@ -314,12 +317,42 @@ class CoreFunctionTests(unittest.TestCase):
             [
                 (0x0080, 0x0001),
                 (0x0100, 0x0002),
-                (lan_remote.MOUSEEVENTF_HWHEEL, (-240) & 0xFFFFFFFF),
+                (lan_remote.MOUSEEVENTF_HWHEEL, (-120) & 0xFFFFFFFF),
+                (lan_remote.MOUSEEVENTF_WHEEL, (-120) & 0xFFFFFFFF),
             ],
         )
-        self.assertTrue(
-            all(report.dwExtraInfo == lan_remote.REMOTE_INPUT_EXTRA_INFO for report in reports)
-        )
+        self.assertTrue(all(report.dwExtraInfo == 0 for report in reports))
+
+    def test_cursor_is_composited_into_desktop_capture(self) -> None:
+        user32 = Mock()
+        gdi32 = Mock()
+
+        def populate_cursor(pointer: Any) -> bool:
+            cursor = pointer._obj
+            cursor.flags = 1
+            cursor.hCursor = 99
+            cursor.ptScreenPos.x = 320
+            cursor.ptScreenPos.y = 240
+            return True
+
+        def populate_icon(pointer_handle: Any, pointer: Any) -> bool:
+            icon = pointer._obj
+            icon.xHotspot = 4
+            icon.yHotspot = 6
+            icon.hbmMask = 101
+            icon.hbmColor = 102
+            return True
+
+        user32.GetCursorInfo.side_effect = populate_cursor
+        user32.GetIconInfo.side_effect = populate_icon
+        with (
+            patch.object(lan_remote.ctypes.windll, "user32", user32),
+            patch.object(lan_remote.ctypes.windll, "gdi32", gdi32),
+        ):
+            lan_remote.draw_desktop_cursor(7, 100, 50)
+
+        user32.DrawIconEx.assert_called_once_with(7, 216, 184, 99, 0, 0, 0, None, 3)
+        self.assertEqual([call(101), call(102)], gdi32.DeleteObject.call_args_list)
 
     def test_remote_frontend_serializes_input_and_suppresses_local_shortcuts(self) -> None:
         html = (Path(__file__).resolve().parents[1] / "web" / "index.html").read_text(encoding="utf-8")
@@ -343,10 +376,31 @@ class CoreFunctionTests(unittest.TestCase):
         self.assertIn("configure_native_input", html)
         self.assertIn("release_native_input", html)
         self.assertIn("state.nativeInputActive", html)
+        self.assertIn(
+            '$("remoteStage").addEventListener("pointermove", (event) => {\n'
+            "      if (state.nativeInputActive) return;",
+            html,
+        )
+        self.assertIn(
+            '$("remoteStage").addEventListener("wheel", (event) => {\n'
+            "      if (state.nativeInputActive) {",
+            html,
+        )
         host = (Path(__file__).resolve().parents[1] / "packaging" / "ControlWindowHost.cs").read_text(encoding="utf-8")
         self.assertIn("AreBrowserAcceleratorKeysEnabled = false", host)
         self.assertIn("SetWindowsHookEx(WhKeyboardLl", host)
         self.assertIn("SetWindowsMouseHookEx(WhMouseLl", host)
+        self.assertIn(
+            "InitializeKeyboardHook();\n"
+            "                        InitializeMouseHook();\n"
+            "                        StartNativeInputWorker();",
+            host,
+        )
+        self.assertIn(
+            "return mouseHook != IntPtr.Zero && "
+            "(!session.KeyboardEnabled || keyboardHook != IntPtr.Zero);",
+            host,
+        )
         self.assertIn("WmMouseHWheel", host)
         self.assertIn('MousePayload("mouse_hwheel"', host)
         self.assertIn("RemoteInputExtraInfo", host)
