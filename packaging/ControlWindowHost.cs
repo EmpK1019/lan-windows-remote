@@ -623,9 +623,7 @@ namespace WindowsLANRemoteControlHost
             LowLevelMouseInput input = (LowLevelMouseInput)Marshal.PtrToStructure(
                 lParam,
                 typeof(LowLevelMouseInput));
-            if (
-                (input.Flags & LlmhfInjected) != 0 &&
-                input.ExtraInfo.ToUInt64() == RemoteInputExtraInfo)
+            if (ShouldPassInjectedMouseInput(input.Flags))
             {
                 return CallNextHookEx(mouseHook, code, wParam, lParam);
             }
@@ -795,6 +793,14 @@ namespace WindowsLANRemoteControlHost
                 default:
                     return false;
             }
+        }
+
+        private static bool ShouldPassInjectedMouseInput(uint flags)
+        {
+            // Precision touchpads and vendor mouse utilities can surface clicks
+            // and wheel gestures as injected input. Let WebView receive those
+            // events instead of swallowing them in the low-level hook.
+            return (flags & LlmhfInjected) != 0;
         }
 
         private void StartNativeInputWorker()

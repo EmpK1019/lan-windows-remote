@@ -9,7 +9,7 @@ $AppId = "WindowsLANRemote"
 $Publisher = "EmpK1019"
 $ServiceName = "WindowsLANRemoteSecureDesktop"
 $VersionFile = Join-Path $PSScriptRoot "VERSION.txt"
-$Version = if (Test-Path -LiteralPath $VersionFile) { (Get-Content -Raw -LiteralPath $VersionFile).Trim() } else { "0.6.17" }
+$Version = if (Test-Path -LiteralPath $VersionFile) { (Get-Content -Raw -LiteralPath $VersionFile).Trim() } else { "0.6.18" }
 
 $InstallDir = Join-Path $env:ProgramFiles $AppName
 $LegacyInstallDir = Join-Path $env:LOCALAPPDATA "Programs\$AppName"

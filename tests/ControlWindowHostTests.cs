@@ -212,13 +212,17 @@ internal static class ControlWindowHostTests
         MethodInfo tryMouseButton = windowType.GetMethod(
             "TryMouseButton",
             BindingFlags.Static | BindingFlags.NonPublic);
+        MethodInfo shouldPassInjectedMouseInput = windowType.GetMethod(
+            "ShouldPassInjectedMouseInput",
+            BindingFlags.Static | BindingFlags.NonPublic);
         FieldInfo horizontalWheel = windowType.GetField(
             "WmMouseHWheel",
             BindingFlags.Static | BindingFlags.NonPublic);
         FieldInfo remoteInputExtraInfo = windowType.GetField(
             "RemoteInputExtraInfo",
             BindingFlags.Static | BindingFlags.NonPublic);
-        if (tryMouseButton == null || horizontalWheel == null || remoteInputExtraInfo == null)
+        if (tryMouseButton == null || shouldPassInjectedMouseInput == null ||
+            horizontalWheel == null || remoteInputExtraInfo == null)
             throw new InvalidOperationException("Extended mouse capture members were not found.");
         if ((int)horizontalWheel.GetRawConstantValue() != 0x020E)
             throw new InvalidOperationException("Horizontal wheel message is incorrect.");
@@ -229,6 +233,10 @@ internal static class ControlWindowHostTests
         AssertMouseButton(tryMouseButton, 0x020C, 1U << 16, 3, false);
         AssertMouseButton(tryMouseButton, 0x020B, 2U << 16, 4, true);
         AssertMouseButton(tryMouseButton, 0x020C, 2U << 16, 4, false);
+        if (!(bool)shouldPassInjectedMouseInput.Invoke(null, new object[] { 1U }))
+            throw new InvalidOperationException("Injected mouse input was not passed back to WebView.");
+        if ((bool)shouldPassInjectedMouseInput.Invoke(null, new object[] { 0U }))
+            throw new InvalidOperationException("Physical mouse input bypassed native capture.");
     }
 
     private static void AssertMouseButton(
