@@ -52,6 +52,93 @@ def make_state(settings: lan_remote.SettingsStore) -> lan_remote.ServerState:
 
 
 class CoreFunctionTests(unittest.TestCase):
+    def test_remote_session_status_is_exclusive_and_expires(self) -> None:
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {"APPDATA": directory}):
+            state = make_state(lan_remote.SettingsStore())
+            accepted, status = state.touch_remote_session(
+                "session-0000000000000001",
+                "controller-one",
+                "Office controller",
+                False,
+                "192.168.1.20",
+            )
+            self.assertTrue(accepted)
+            self.assertTrue(status["active"])
+            self.assertEqual(status["controller_name"], "Office controller")
+            self.assertEqual(status["mode"], "control")
+
+            accepted, occupied = state.touch_remote_session(
+                "session-0000000000000002",
+                "controller-two",
+                "Second controller",
+                True,
+                "192.168.1.21",
+            )
+            self.assertFalse(accepted)
+            self.assertEqual(occupied["controller_id"], "controller-one")
+            self.assertFalse(state.end_remote_session("session-0000000000000002"))
+            self.assertTrue(state.end_remote_session("session-0000000000000001"))
+            self.assertEqual(state.remote_session_status(), {"active": False})
+
+            state.touch_remote_session(
+                "session-0000000000000003",
+                "controller-three",
+                "Third controller",
+                True,
+                "192.168.1.22",
+            )
+            with state.active_remote_session_lock:
+                state.active_remote_session["last_seen"] = time.time() - lan_remote.ACTIVE_REMOTE_SESSION_TTL_SECONDS - 1
+            self.assertEqual(state.remote_session_status(), {"active": False})
+
+    def test_remote_window_payload_carries_controller_identity(self) -> None:
+        normalized = lan_remote.normalize_remote_window_payload(
+            {
+                "device": {"id": "remote-device", "ip": "192.168.1.30", "port": 8765, "name": "Remote"},
+                "token": "session-token",
+                "viewOnly": False,
+                "authMethod": "permanent",
+                "controllerSessionId": "session-0000000000000001",
+                "controllerId": "local-device",
+                "controllerName": "Local controller",
+            }
+        )
+        self.assertEqual(normalized["controllerSessionId"], "session-0000000000000001")
+        self.assertEqual(normalized["controllerId"], "local-device")
+        self.assertEqual(normalized["controllerName"], "Local controller")
+
+    def test_remote_window_payload_rejects_local_device(self) -> None:
+        with self.assertRaisesRegex(ValueError, "不能远程控制本机"):
+            lan_remote.normalize_remote_window_payload(
+                {
+                    "device": {"id": "local-device", "ip": "127.0.0.1", "port": 8765, "name": "Local"},
+                    "token": "session-token",
+                    "viewOnly": False,
+                    "authMethod": "temporary",
+                    "controllerSessionId": "session-0000000000000001",
+                    "controllerId": "local-device",
+                    "controllerName": "Local controller",
+                }
+            )
+
+    def test_frontend_has_graphical_busy_state_and_cached_preview(self) -> None:
+        html = (Path(__file__).resolve().parents[1] / "web" / "index.html").read_text(encoding="utf-8")
+        for marker in (
+            'id="controlOccupation"',
+            'id="controlledDuration"',
+            'id="detailPreviewImage"',
+            "lan-remote-preview:",
+            "/api/session/heartbeat",
+            "本机正在被远程控制",
+        ):
+            self.assertIn(marker, html)
+
+    def test_frontend_blocks_remote_control_of_local_device(self) -> None:
+        html = (Path(__file__).resolve().parents[1] / "web" / "index.html").read_text(encoding="utf-8")
+        self.assertIn("device.is_self || device.busy || state.localStatus?.active", html)
+        self.assertIn("不能控制或观看本机", html)
+        self.assertIn("本机不可远程连接", html)
+
     def test_remote_window_chrome_is_separate_from_control_toolbar(self) -> None:
         html = (Path(__file__).resolve().parents[1] / "web" / "index.html").read_text(encoding="utf-8")
         titlebar = html.split('<header class="remote-titlebar"', 1)[1].split("</header>", 1)[0]
@@ -126,6 +213,7 @@ class CoreFunctionTests(unittest.TestCase):
             {"type": "mouse_down", "x": 12, "y": 18, "button": 3},
             {"type": "mouse_up", "x": 12, "y": 18, "button": 4},
             {"type": "mouse_wheel", "x": 12, "y": 18, "delta": -120},
+            {"type": "mouse_hwheel", "x": 12, "y": 18, "delta": 120},
             {"type": "key_down", "key": "a", "code": "KeyA"},
             {"type": "key_up", "key": "Shift", "code": "ShiftLeft"},
             {"type": "native_key_down", "scan_code": 30, "extended": False},
@@ -193,6 +281,37 @@ class CoreFunctionTests(unittest.TestCase):
         user32.mouse_event.assert_not_called()
         user32.keybd_event.assert_not_called()
 
+    def test_extended_mouse_buttons_and_horizontal_wheel_use_native_reports(self) -> None:
+        user32 = Mock()
+        user32.SetCursorPos.return_value = True
+        user32.SendInput.return_value = 1
+        with (
+            patch.object(lan_remote.ctypes.windll, "user32", user32),
+            patch.object(lan_remote, "screen_rect", return_value=(0, 0, 1920, 1080)),
+        ):
+            lan_remote.send_mouse_event(
+                {"type": "mouse_down", "x": 100, "y": 200, "button": 3, "monitor": "all"}
+            )
+            lan_remote.send_mouse_event(
+                {"type": "mouse_up", "x": 100, "y": 200, "button": 4, "monitor": "all"}
+            )
+            lan_remote.send_mouse_event(
+                {"type": "mouse_hwheel", "x": 100, "y": 200, "delta": -240, "monitor": "all"}
+            )
+
+        reports = [entry.args[1]._obj.mi for entry in user32.SendInput.call_args_list]
+        self.assertEqual(
+            [(report.dwFlags, report.mouseData) for report in reports],
+            [
+                (0x0080, 0x0001),
+                (0x0100, 0x0002),
+                (lan_remote.MOUSEEVENTF_HWHEEL, (-240) & 0xFFFFFFFF),
+            ],
+        )
+        self.assertTrue(
+            all(report.dwExtraInfo == lan_remote.REMOTE_INPUT_EXTRA_INFO for report in reports)
+        )
+
     def test_remote_frontend_serializes_input_and_suppresses_local_shortcuts(self) -> None:
         html = (Path(__file__).resolve().parents[1] / "web" / "index.html").read_text(encoding="utf-8")
         self.assertIn("state.inputQueue = state.inputQueue.catch", html)
@@ -219,6 +338,9 @@ class CoreFunctionTests(unittest.TestCase):
         self.assertIn("AreBrowserAcceleratorKeysEnabled = false", host)
         self.assertIn("SetWindowsHookEx(WhKeyboardLl", host)
         self.assertIn("SetWindowsMouseHookEx(WhMouseLl", host)
+        self.assertIn("WmMouseHWheel", host)
+        self.assertIn('MousePayload("mouse_hwheel"', host)
+        self.assertIn("RemoteInputExtraInfo", host)
         self.assertIn("CONNECT /input-stream HTTP/1.1", host)
         self.assertIn('case "configure_native_input"', host)
         self.assertIn("GetForegroundWindow() == Handle", host)
@@ -652,6 +774,58 @@ class HttpIntegrationTests(unittest.TestCase):
         self.assertEqual(status, 200, data)
         elevated_input.assert_called_once()
         local_input.assert_not_called()
+
+    def test_remote_session_heartbeat_is_visible_and_exclusive(self) -> None:
+        status, _, data = self.request(
+            "POST",
+            "/api/verify",
+            headers={"X-Remote-Token": "TEST-TEMP-CODE", "Content-Type": "application/json"},
+        )
+        self.assertEqual(status, 200)
+        session_token = json.loads(data)["session_token"]
+        heartbeat = {
+            "token": session_token,
+            "session_id": "session-0000000000000001",
+            "controller_id": "controller-one",
+            "controller_name": "Controller one",
+            "view_only": False,
+        }
+        status, _, data = self.request(
+            "POST",
+            "/api/session/heartbeat",
+            body=json.dumps(heartbeat).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+        self.assertEqual(status, 200, data)
+        self.assertTrue(json.loads(data)["session_status"]["active"])
+
+        status, _, data = self.request("GET", "/api/devices")
+        self.assertEqual(status, 200)
+        devices_payload = json.loads(data)
+        self.assertTrue(devices_payload["local_status"]["active"])
+        self.assertTrue(devices_payload["devices"][0]["busy"])
+
+        occupied = {
+            **heartbeat,
+            "session_id": "session-0000000000000002",
+            "controller_id": "controller-two",
+        }
+        status, _, _ = self.request(
+            "POST",
+            "/api/session/heartbeat",
+            body=json.dumps(occupied).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+        self.assertEqual(status, 409)
+
+        status, _, data = self.request(
+            "POST",
+            "/api/session/end",
+            body=json.dumps({"token": session_token, "session_id": heartbeat["session_id"]}).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+        self.assertEqual(status, 200, data)
+        self.assertTrue(json.loads(data)["ended"])
 
         with (
             patch.object(lan_remote, "secure_desktop_active", return_value=False),

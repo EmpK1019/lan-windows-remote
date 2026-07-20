@@ -53,7 +53,7 @@ if platform.system() == "Windows":
 
 
 APP_NAME = "Windows LAN Remote"
-APP_VERSION = "0.6.15"
+APP_VERSION = "0.6.16"
 GITHUB_REPOSITORY = "EmpK1019/lan-windows-remote"
 GITHUB_LATEST_RELEASE_API = f"https://api.github.com/repos/{GITHUB_REPOSITORY}/releases/latest"
 DEFAULT_PORT = 8765
@@ -62,6 +62,7 @@ SECURE_HELPER_PORT = 8767
 ELEVATED_INPUT_HELPER_PORT = 8768
 DISCOVERY_MAGIC = "windows-lan-remote-v1"
 DISCOVERY_TTL_SECONDS = 9
+ACTIVE_REMOTE_SESSION_TTL_SECONDS = 8
 TEMPORARY_ACCESS_CODE_TTL_SECONDS = 30 * 60
 PERMANENT_PASSWORD_ITERATIONS = 240_000
 PERMANENT_PASSWORD_MIN_LENGTH = 8
@@ -353,7 +354,7 @@ INDEX_HTML = r"""<!doctype html>
         x: point.x,
         y: point.y,
         button: event.button,
-        delta: event.deltaY || 0
+        delta: 0
       };
     }
 
@@ -382,7 +383,8 @@ INDEX_HTML = r"""<!doctype html>
 
     stage.addEventListener("wheel", (event) => {
       const payload = pointerPayload(event, "mouse_wheel");
-      if (payload) sendInput(payload);
+      if (payload && event.deltaY) sendInput({ ...payload, delta: event.deltaY });
+      if (payload && event.deltaX) sendInput({ ...payload, type: "mouse_hwheel", delta: event.deltaX });
       event.preventDefault();
     }, { passive: false });
 
@@ -609,6 +611,8 @@ class DiscoveryRegistry:
             "port": port,
             "os": str(payload.get("os", "Windows"))[:80],
             "view_only": bool(payload.get("view_only", False)),
+            "busy": bool(payload.get("busy", False)),
+            "busy_mode": "view" if payload.get("busy_mode") == "view" else "control",
             "last_seen": time.monotonic(),
             "is_self": False,
         }
@@ -831,6 +835,8 @@ class ServerState:
     session_token_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
     remote_window_sessions: dict[str, tuple[dict[str, Any], float]] = field(default_factory=dict, repr=False)
     remote_window_session_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+    active_remote_session: dict[str, Any] | None = field(default=None, repr=False)
+    active_remote_session_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
     credential_api: Any = field(default=None, repr=False)
     credential_api_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
     update_install_started: bool = field(default=False, repr=False)
@@ -976,6 +982,77 @@ class ServerState:
         if item is None or item[1] <= time.time():
             return None
         return item[0]
+
+    @staticmethod
+    def _public_remote_session(session: dict[str, Any] | None, now: float) -> dict[str, Any]:
+        if session is None:
+            return {"active": False}
+        return {
+            "active": True,
+            "session_id": session["session_id"],
+            "controller_id": session["controller_id"],
+            "controller_name": session["controller_name"],
+            "client_ip": session["client_ip"],
+            "mode": session["mode"],
+            "started_at": int(session["started_at"] * 1000),
+            "last_seen": int(session["last_seen"] * 1000),
+            "elapsed_seconds": max(0, int(now - session["started_at"])),
+        }
+
+    def remote_session_status(self) -> dict[str, Any]:
+        now = time.time()
+        with self.active_remote_session_lock:
+            session = self.active_remote_session
+            if session is not None and now - float(session["last_seen"]) > ACTIVE_REMOTE_SESSION_TTL_SECONDS:
+                self.active_remote_session = None
+                session = None
+            return self._public_remote_session(session, now)
+
+    def touch_remote_session(
+        self,
+        session_id: str,
+        controller_id: str,
+        controller_name: str,
+        view_only: bool,
+        client_ip: str,
+    ) -> tuple[bool, dict[str, Any]]:
+        session_id = session_id.strip()[:64]
+        controller_id = controller_id.strip()[:64]
+        controller_name = controller_name.strip()[:128] or "局域网控制端"
+        if len(session_id) < 16 or not controller_id:
+            raise ValueError("远程会话身份无效")
+        now = time.time()
+        with self.active_remote_session_lock:
+            session = self.active_remote_session
+            if session is not None and now - float(session["last_seen"]) > ACTIVE_REMOTE_SESSION_TTL_SECONDS:
+                session = None
+                self.active_remote_session = None
+            if session is not None and session["session_id"] != session_id:
+                return False, self._public_remote_session(session, now)
+            if session is None:
+                session = {
+                    "session_id": session_id,
+                    "controller_id": controller_id,
+                    "controller_name": controller_name,
+                    "client_ip": client_ip,
+                    "mode": "view" if view_only else "control",
+                    "started_at": now,
+                    "last_seen": now,
+                }
+                self.active_remote_session = session
+            else:
+                session["controller_name"] = controller_name
+                session["client_ip"] = client_ip
+                session["mode"] = "view" if view_only else "control"
+                session["last_seen"] = now
+            return True, self._public_remote_session(session, now)
+
+    def end_remote_session(self, session_id: str) -> bool:
+        with self.active_remote_session_lock:
+            if self.active_remote_session is None or self.active_remote_session["session_id"] != session_id:
+                return False
+            self.active_remote_session = None
+            return True
 
 
 def require_windows() -> None:
@@ -1237,6 +1314,7 @@ class DiscoveryService:
         discovery_port: int,
         view_only: bool,
         enabled: bool = True,
+        status_provider: Any = None,
     ) -> None:
         self.registry = registry
         self.device_id = device_id
@@ -1245,6 +1323,7 @@ class DiscoveryService:
         self.discovery_port = discovery_port
         self.view_only = view_only
         self.enabled = enabled
+        self.status_provider = status_provider
         self.state_lock = threading.Lock()
         self.stop_event = threading.Event()
         self.threads: list[threading.Thread] = []
@@ -1313,6 +1392,7 @@ class DiscoveryService:
                     device_name = self.device_name
                     view_only = self.view_only
                 if enabled:
+                    remote_status = self.status_provider() if callable(self.status_provider) else {"active": False}
                     payload = json.dumps(
                         {
                             "magic": DISCOVERY_MAGIC,
@@ -1321,6 +1401,8 @@ class DiscoveryService:
                             "port": self.service_port,
                             "os": f"Windows {platform.release()}",
                             "view_only": view_only,
+                            "busy": bool(remote_status.get("active", False)),
+                            "busy_mode": remote_status.get("mode", "control"),
                         },
                         ensure_ascii=False,
                         separators=(",", ":"),
@@ -2301,6 +2383,9 @@ MOUSE_EVENTS = {
     ("down", 4): (0x0080, 0x0002),
     ("up", 4): (0x0100, 0x0002),
 }
+REMOTE_INPUT_EXTRA_INFO = 0x4C414E52
+MOUSEEVENTF_WHEEL = 0x0800
+MOUSEEVENTF_HWHEEL = 0x1000
 
 KEY_MAP = {
     "Backspace": 0x08,
@@ -2430,14 +2515,23 @@ def send_mouse_event(payload: dict[str, Any]) -> None:
     event_type = str(payload.get("type", ""))
     if event_type == "mouse_move":
         return
-    if event_type == "mouse_wheel":
+    if event_type in {"mouse_wheel", "mouse_hwheel"}:
         delta = int(payload.get("delta", 0))
         if delta == 0:
             return
-        wheel_delta = -120 if delta > 0 else 120
+        wheel_delta = -delta if event_type == "mouse_wheel" else delta
+        wheel_delta = max(-32768, min(wheel_delta, 32767))
+        wheel_flag = MOUSEEVENTF_WHEEL if event_type == "mouse_wheel" else MOUSEEVENTF_HWHEEL
         mouse_input = INPUT(
             type=0,
-            mi=MOUSEINPUT(0, 0, wheel_delta & 0xFFFFFFFF, 0x0800, 0, 0),
+            mi=MOUSEINPUT(
+                0,
+                0,
+                wheel_delta & 0xFFFFFFFF,
+                wheel_flag,
+                0,
+                REMOTE_INPUT_EXTRA_INFO,
+            ),
         )
         sent = user32.SendInput(1, ctypes.byref(mouse_input), ctypes.sizeof(INPUT))
         if sent != 1:
@@ -2449,7 +2543,10 @@ def send_mouse_event(payload: dict[str, Any]) -> None:
     event = MOUSE_EVENTS.get((direction, button))
     if event:
         flag, data = event
-        mouse_input = INPUT(type=0, mi=MOUSEINPUT(0, 0, data, flag, 0, 0))
+        mouse_input = INPUT(
+            type=0,
+            mi=MOUSEINPUT(0, 0, data, flag, 0, REMOTE_INPUT_EXTRA_INFO),
+        )
         sent = user32.SendInput(1, ctypes.byref(mouse_input), ctypes.sizeof(INPUT))
         if sent != 1:
             raise ctypes.WinError()
@@ -2462,7 +2559,10 @@ def send_native_keyboard_event(payload: dict[str, Any]) -> None:
         flags |= 0x0001
     if payload.get("type") == "native_key_up":
         flags |= 0x0002
-    keyboard_input = INPUT(type=1, ki=KEYBDINPUT(0, scan_code, flags, 0, 0))
+    keyboard_input = INPUT(
+        type=1,
+        ki=KEYBDINPUT(0, scan_code, flags, 0, REMOTE_INPUT_EXTRA_INFO),
+    )
     sent = ctypes.windll.user32.SendInput(1, ctypes.byref(keyboard_input), ctypes.sizeof(INPUT))
     if sent != 1:
         raise ctypes.WinError()
@@ -2480,7 +2580,10 @@ def send_keyboard_event(payload: dict[str, Any]) -> None:
     flags = 0x0001 if code in EXTENDED_KEY_CODES else 0
     if event_type == "key_up":
         flags |= 0x0002
-    keyboard_input = INPUT(type=1, ki=KEYBDINPUT(vk, scan, flags, 0, 0))
+    keyboard_input = INPUT(
+        type=1,
+        ki=KEYBDINPUT(vk, scan, flags, 0, REMOTE_INPUT_EXTRA_INFO),
+    )
     sent = user32.SendInput(1, ctypes.byref(keyboard_input), ctypes.sizeof(INPUT))
     if sent != 1:
         raise ctypes.WinError()
@@ -2503,8 +2606,24 @@ def send_unicode_text(text: str) -> None:
     code_units = [int.from_bytes(encoded[index:index + 2], "little") for index in range(0, len(encoded), 2)]
     inputs: list[INPUT] = []
     for code_unit in code_units:
-        inputs.append(INPUT(type=1, ki=KEYBDINPUT(0, code_unit, 0x0004, 0, 0)))
-        inputs.append(INPUT(type=1, ki=KEYBDINPUT(0, code_unit, 0x0004 | 0x0002, 0, 0)))
+        inputs.append(
+            INPUT(
+                type=1,
+                ki=KEYBDINPUT(0, code_unit, 0x0004, 0, REMOTE_INPUT_EXTRA_INFO),
+            )
+        )
+        inputs.append(
+            INPUT(
+                type=1,
+                ki=KEYBDINPUT(
+                    0,
+                    code_unit,
+                    0x0004 | 0x0002,
+                    0,
+                    REMOTE_INPUT_EXTRA_INFO,
+                ),
+            )
+        )
     array_type = INPUT * len(inputs)
     sent = ctypes.windll.user32.SendInput(len(inputs), array_type(*inputs), ctypes.sizeof(INPUT))
     if sent != len(inputs):
@@ -2523,7 +2642,7 @@ def send_unicode_text_sequence(text: str) -> None:
 
 def validate_remote_input_payload(payload: dict[str, Any]) -> None:
     input_type = payload.get("type")
-    if input_type not in {"mouse_move", "mouse_down", "mouse_up", "mouse_wheel", "key_down", "key_up", "key_press", "native_key_down", "native_key_up", "text", "text_sequence"}:
+    if input_type not in {"mouse_move", "mouse_down", "mouse_up", "mouse_wheel", "mouse_hwheel", "key_down", "key_up", "key_press", "native_key_down", "native_key_up", "text", "text_sequence"}:
         raise ValueError("unsupported input type")
     if input_type.startswith("mouse_"):
         for key in ("x", "y"):
@@ -2537,7 +2656,7 @@ def validate_remote_input_payload(payload: dict[str, Any]) -> None:
             button = payload.get("button", 0)
             if isinstance(button, bool) or not isinstance(button, int) or button not in {0, 1, 2, 3, 4}:
                 raise ValueError("invalid mouse button")
-        if input_type == "mouse_wheel":
+        if input_type in {"mouse_wheel", "mouse_hwheel"}:
             delta = payload.get("delta", 0)
             if isinstance(delta, bool) or not isinstance(delta, (int, float)):
                 raise ValueError("mouse wheel delta must be numeric")
@@ -3020,6 +3139,17 @@ def normalize_remote_window_payload(payload: dict[str, Any]) -> dict[str, Any]:
             expires_at = int(expires_at)
         except (TypeError, ValueError) as exc:
             raise ValueError("远程凭据到期时间无效") from exc
+    controller_session_id = str(payload.get("controllerSessionId", "")).strip()
+    controller_id = str(payload.get("controllerId", "")).strip()
+    controller_name = str(payload.get("controllerName", "")).strip()
+    if not 16 <= len(controller_session_id) <= 64:
+        raise ValueError("控制端会话身份无效")
+    if not 1 <= len(controller_id) <= 64:
+        raise ValueError("控制端设备身份无效")
+    if bool(raw_device.get("is_self", False)) or str(validated["id"]) == controller_id:
+        raise ValueError("不能远程控制本机，请选择另一台局域网设备")
+    if not controller_name:
+        controller_name = "局域网控制端"
     device = {
         **validated,
         "name": str(raw_device.get("name", "远程桌面"))[:128],
@@ -3033,6 +3163,9 @@ def normalize_remote_window_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "viewOnly": bool(payload.get("viewOnly", False)),
         "authMethod": auth_method,
         "credentialExpiresAt": expires_at,
+        "controllerSessionId": controller_session_id,
+        "controllerId": controller_id,
+        "controllerName": controller_name[:128],
     }
 
 
@@ -3076,6 +3209,8 @@ class RemoteHandler(BaseHTTPRequestHandler):
             "/files",
             "/files/download",
             "/files/upload",
+            "/api/session/heartbeat",
+            "/api/session/end",
         }:
             return
         # A PyInstaller windowed application deliberately has no stdout.
@@ -3198,6 +3333,7 @@ class RemoteHandler(BaseHTTPRequestHandler):
             if not self.check_local_desktop():
                 return
             ips = get_lan_ips()
+            local_status = self.server.state.remote_session_status()
             local_device = {
                 "id": self.server.state.device_id,
                 "name": self.server.state.device_name,
@@ -3206,12 +3342,14 @@ class RemoteHandler(BaseHTTPRequestHandler):
                 "os": f"Windows {platform.release()}",
                 "view_only": self.server.state.view_only,
                 "is_self": True,
+                "busy": bool(local_status.get("active", False)),
+                "busy_mode": local_status.get("mode", "control"),
             }
             devices = [local_device, *self.server.state.registry.online_devices()]
             json_response(
                 self,
                 HTTPStatus.OK,
-                {"ok": True, "devices": devices},
+                {"ok": True, "devices": devices, "local_status": local_status},
                 allow_cross_origin=False,
             )
             return
@@ -3308,6 +3446,7 @@ class RemoteHandler(BaseHTTPRequestHandler):
             json_response(self, HTTPStatus.OK, {"ok": True, **result}, allow_cross_origin=False)
             return
         if parsed.path in {"/api/info", "/health"}:
+            remote_status = self.server.state.remote_session_status()
             json_response(
                 self,
                 HTTPStatus.OK,
@@ -3320,6 +3459,8 @@ class RemoteHandler(BaseHTTPRequestHandler):
                     "port": self.server.state.port,
                     "os": f"Windows {platform.release()}",
                     "view_only": self.server.state.view_only,
+                    "busy": bool(remote_status.get("active", False)),
+                    "busy_mode": remote_status.get("mode", "control"),
                     "uptime_seconds": int(time.time() - self.server.state.started_at),
                 },
             )
@@ -3432,12 +3573,24 @@ class RemoteHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/remote-window/open":
             if not self.check_local_desktop():
                 return
+            local_status = self.server.state.remote_session_status()
+            if local_status.get("active"):
+                controller_name = str(local_status.get("controller_name", "另一台设备"))
+                json_response(
+                    self,
+                    HTTPStatus.CONFLICT,
+                    {"ok": False, "error": f"本机正在被 {controller_name} 远程控制，结束后才能控制其他设备"},
+                    allow_cross_origin=False,
+                )
+                return
             payload = self.read_json_payload()
             if payload is None:
                 return
             handoff_id = ""
             try:
                 normalized = normalize_remote_window_payload(payload)
+                if str(normalized["device"]["id"]) == self.server.state.device_id:
+                    raise ValueError("不能远程控制本机，请选择另一台局域网设备")
                 handoff_id = self.server.state.create_remote_window_session(normalized)
                 process_id = launch_remote_window(self.server.state.port, handoff_id)
             except (OSError, ValueError) as exc:
@@ -3631,6 +3784,13 @@ class RemoteHandler(BaseHTTPRequestHandler):
             )
             return
         if parsed.path == "/api/verify":
+            if self.server.state.remote_session_status().get("active"):
+                json_response(
+                    self,
+                    HTTPStatus.CONFLICT,
+                    {"ok": False, "error": "目标设备正在远程会话中，请稍后再试"},
+                )
+                return
             authentication = self.authenticate_request(parsed)
             if authentication is None:
                 return
@@ -3645,6 +3805,41 @@ class RemoteHandler(BaseHTTPRequestHandler):
                     **authentication,
                 },
             )
+            return
+        if parsed.path == "/api/session/heartbeat":
+            payload = self.read_json_payload()
+            if payload is None:
+                return
+            if self.authenticate_request(parsed, payload) is None:
+                return
+            try:
+                accepted, session_status = self.server.state.touch_remote_session(
+                    str(payload.get("session_id", "")),
+                    str(payload.get("controller_id", "")),
+                    str(payload.get("controller_name", "")),
+                    bool(payload.get("view_only", False)),
+                    self.client_address[0],
+                )
+            except ValueError as exc:
+                json_response(self, HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(exc)})
+                return
+            if not accepted:
+                json_response(
+                    self,
+                    HTTPStatus.CONFLICT,
+                    {"ok": False, "error": "目标设备已被另一台电脑占用", "session_status": session_status},
+                )
+                return
+            json_response(self, HTTPStatus.OK, {"ok": True, "session_status": session_status})
+            return
+        if parsed.path == "/api/session/end":
+            payload = self.read_json_payload()
+            if payload is None:
+                return
+            if self.authenticate_request(parsed, payload) is None:
+                return
+            ended = self.server.state.end_remote_session(str(payload.get("session_id", "")))
+            json_response(self, HTTPStatus.OK, {"ok": True, "ended": ended})
             return
         if parsed.path == "/clipboard":
             payload = self.read_json_payload(max_bytes=MAX_CLIPBOARD_PAYLOAD_BYTES)
@@ -4964,6 +5159,7 @@ def main(argv: list[str] | None = None) -> int:
             discovery_port=args.discovery_port,
             view_only=state.view_only,
             enabled=bool(settings.values["discovery_enabled"]),
+            status_provider=state.remote_session_status,
         )
         discovery.start()
         server.discovery_service = discovery

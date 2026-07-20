@@ -28,6 +28,7 @@ internal static class ControlWindowHostTests
             TestFullscreenRestore(assembly, true);
             TestCloseToTray(assembly);
             TestKeyboardCaptureSurface(assembly);
+            TestMouseCaptureMappings(assembly);
             TestNativeInputTransport(assembly);
             Console.WriteLine("CONTROL_HOST_STATE_TESTS_OK");
             return 0;
@@ -133,7 +134,7 @@ internal static class ControlWindowHostTests
             throw new InvalidOperationException("Tray window members were not found.");
 
         using (Form mainWindow = (Form)constructor.Invoke(new object[] {
-            new Uri("http://127.0.0.1:8765/?v=0.6.15")
+            new Uri("http://127.0.0.1:8765/?v=0.6.16")
         }))
         {
             SuppressShownHandler(mainWindow);
@@ -203,6 +204,45 @@ internal static class ControlWindowHostTests
             if (enabledWithoutHook)
                 throw new InvalidOperationException("Keyboard capture enabled without an installed hook.");
         }
+    }
+
+    private static void TestMouseCaptureMappings(Assembly assembly)
+    {
+        Type windowType = RequiredType(assembly, "WindowsLANRemoteControlHost.ControlWindow");
+        MethodInfo tryMouseButton = windowType.GetMethod(
+            "TryMouseButton",
+            BindingFlags.Static | BindingFlags.NonPublic);
+        FieldInfo horizontalWheel = windowType.GetField(
+            "WmMouseHWheel",
+            BindingFlags.Static | BindingFlags.NonPublic);
+        FieldInfo remoteInputExtraInfo = windowType.GetField(
+            "RemoteInputExtraInfo",
+            BindingFlags.Static | BindingFlags.NonPublic);
+        if (tryMouseButton == null || horizontalWheel == null || remoteInputExtraInfo == null)
+            throw new InvalidOperationException("Extended mouse capture members were not found.");
+        if ((int)horizontalWheel.GetRawConstantValue() != 0x020E)
+            throw new InvalidOperationException("Horizontal wheel message is incorrect.");
+        if ((ulong)remoteInputExtraInfo.GetRawConstantValue() != 0x4C414E52UL)
+            throw new InvalidOperationException("Remote input marker is incorrect.");
+
+        AssertMouseButton(tryMouseButton, 0x020B, 1U << 16, 3, true);
+        AssertMouseButton(tryMouseButton, 0x020C, 1U << 16, 3, false);
+        AssertMouseButton(tryMouseButton, 0x020B, 2U << 16, 4, true);
+        AssertMouseButton(tryMouseButton, 0x020C, 2U << 16, 4, false);
+    }
+
+    private static void AssertMouseButton(
+        MethodInfo tryMouseButton,
+        int message,
+        uint mouseData,
+        int expectedButton,
+        bool expectedDown)
+    {
+        object[] arguments = { message, mouseData, 0, false };
+        if (!(bool)tryMouseButton.Invoke(null, arguments))
+            throw new InvalidOperationException("Mouse side button message was rejected.");
+        if ((int)arguments[2] != expectedButton || (bool)arguments[3] != expectedDown)
+            throw new InvalidOperationException("Mouse side button mapping is incorrect.");
     }
 
     private static void TestNativeInputTransport(Assembly assembly)

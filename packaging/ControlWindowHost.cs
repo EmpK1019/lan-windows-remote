@@ -101,9 +101,11 @@ namespace WindowsLANRemoteControlHost
         private const int WmMouseWheel = 0x020A;
         private const int WmXButtonDown = 0x020B;
         private const int WmXButtonUp = 0x020C;
+        private const int WmMouseHWheel = 0x020E;
         private const uint LlkhfExtended = 0x00000001;
         private const uint LlkhfInjected = 0x00000010;
         private const uint LlmhfInjected = 0x00000001;
+        private const ulong RemoteInputExtraInfo = 0x4C414E52;
 
         private readonly Uri sessionUrl;
         private readonly WebView2 browser;
@@ -547,7 +549,9 @@ namespace WindowsLANRemoteControlHost
                 LowLevelKeyboardInput input = (LowLevelKeyboardInput)Marshal.PtrToStructure(
                     lParam,
                     typeof(LowLevelKeyboardInput));
-                if ((input.Flags & LlkhfInjected) != 0)
+                if (
+                    (input.Flags & LlkhfInjected) != 0 &&
+                    input.ExtraInfo.ToUInt64() == RemoteInputExtraInfo)
                 {
                     return CallNextHookEx(keyboardHook, code, wParam, lParam);
                 }
@@ -619,7 +623,9 @@ namespace WindowsLANRemoteControlHost
             LowLevelMouseInput input = (LowLevelMouseInput)Marshal.PtrToStructure(
                 lParam,
                 typeof(LowLevelMouseInput));
-            if ((input.Flags & LlmhfInjected) != 0)
+            if (
+                (input.Flags & LlmhfInjected) != 0 &&
+                input.ExtraInfo.ToUInt64() == RemoteInputExtraInfo)
             {
                 return CallNextHookEx(mouseHook, code, wParam, lParam);
             }
@@ -664,6 +670,15 @@ namespace WindowsLANRemoteControlHost
                     EnqueueNativeInputUnsafe(
                         session,
                         MousePayload("mouse_wheel", remoteX, remoteY, 0, -wheel, session.Monitor),
+                        false);
+                    swallow = true;
+                }
+                else if (message == WmMouseHWheel && inside)
+                {
+                    int wheel = unchecked((short)((input.MouseData >> 16) & 0xFFFF));
+                    EnqueueNativeInputUnsafe(
+                        session,
+                        MousePayload("mouse_hwheel", remoteX, remoteY, 0, wheel, session.Monitor),
                         false);
                     swallow = true;
                 }

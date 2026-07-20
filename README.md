@@ -17,7 +17,7 @@ LAN Remote 是一个 Windows 桌面软件，只在局域网内工作。启动后
 - 可设置永久访问密码，并在受信任控制端长期免输连接
 - 对方锁屏密码使用 Windows DPAPI 加密保存在控制端；确认锁屏后会先唤醒登录界面，再逐字输入并提交一次
 - 远程桌面实时画面
-- 鼠标移动、单击、右键、滚轮以及前进/后退侧键
+- 鼠标移动、单击、右键、纵向/横向滚轮以及原始 XBUTTON1/XBUTTON2 侧键
 - 控制画面使用标准箭头光标，不使用十字光标
 - 常用键盘按键与组合键严格按顺序发送；物理键位交给远端当前键盘布局解释，进入控制会话后默认开启键盘操控
 - 独立远控窗口使用 C# 低级键盘与鼠标钩子捕获输入，Alt+Tab、Windows 键、F1、Esc 和鼠标操作不再经过 WebView/JavaScript 输入队列，也不会在本机窗口产生相应操作
@@ -66,9 +66,9 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-windows-
 
 构建产物：
 
-- `dist\WindowsLANRemote-0.6.15-portable.zip`：免安装桌面程序（解压后运行其中的 EXE）
-- `dist\WindowsLANRemoteSetup-0.6.15.exe`：管理员安装包
-- `dist\WindowsLANRemoteService-0.6.15.exe`：构建产生的安全桌面服务组件
+- `dist\WindowsLANRemote-0.6.16-portable.zip`：免安装桌面程序（解压后运行其中的 EXE）
+- `dist\WindowsLANRemoteSetup-0.6.16.exe`：管理员安装包
+- `dist\WindowsLANRemoteService-0.6.16.exe`：构建产生的安全桌面服务组件
 
 安装包需要 UAC 管理员确认，安装位置为 `%ProgramFiles%\Windows LAN Remote`。它会创建开始菜单快捷方式、卸载项、专用网络防火墙规则，并注册自动启动的 `WindowsLANRemoteSecureDesktop` LocalSystem 服务。服务只在 `127.0.0.1:8767` 和 `127.0.0.1:8768` 上提供经过本机密钥验证的安全桌面与高权限输入通道，不直接对局域网开放。
 
