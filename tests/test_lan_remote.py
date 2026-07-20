@@ -386,6 +386,11 @@ class CoreFunctionTests(unittest.TestCase):
             "      if (state.nativeInputActive) {",
             html,
         )
+        self.assertIn("state.remoteFrameWidth = frame.naturalWidth", html)
+        self.assertIn(
+            "const remoteWidth = image.naturalWidth || state.remoteFrameWidth || 0",
+            html,
+        )
         host = (Path(__file__).resolve().parents[1] / "packaging" / "ControlWindowHost.cs").read_text(encoding="utf-8")
         self.assertIn("AreBrowserAcceleratorKeysEnabled = false", host)
         self.assertIn("SetWindowsHookEx(WhKeyboardLl", host)
@@ -397,10 +402,11 @@ class CoreFunctionTests(unittest.TestCase):
             host,
         )
         self.assertIn(
-            "return mouseHook != IntPtr.Zero && "
+            "return mouseCaptureReady && "
             "(!session.KeyboardEnabled || keyboardHook != IntPtr.Zero);",
             host,
         )
+        self.assertIn("session.RemoteBounds.Width >= 1", host)
         self.assertIn("WmMouseHWheel", host)
         self.assertIn('MousePayload("mouse_hwheel"', host)
         self.assertIn("RemoteInputExtraInfo", host)

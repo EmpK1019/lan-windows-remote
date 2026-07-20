@@ -1,5 +1,5 @@
 param(
-    [string]$Version = "0.6.19",
+    [string]$Version = "0.6.20",
     [switch]$SkipDependencyInstall
 )
 
@@ -183,7 +183,11 @@ if ($LASTEXITCODE -ne 0) {
     throw "Control window host state tests failed with exit code $LASTEXITCODE."
 }
 
-foreach ($InteractiveTest in @("PackagedKeyboardE2ETests", "PackagedMouseE2ETests")) {
+foreach ($InteractiveTest in @(
+    "PackagedKeyboardE2ETests",
+    "PackagedMouseE2ETests",
+    "PackagedMouseHookE2ETests"
+)) {
     $InteractiveTestPath = Join-Path $BuildDir "$InteractiveTest.exe"
     & $CscPath `
         /nologo `
@@ -195,6 +199,24 @@ foreach ($InteractiveTest in @("PackagedKeyboardE2ETests", "PackagedMouseE2ETest
     if ($LASTEXITCODE -ne 0) {
         throw "$InteractiveTest compilation failed with exit code $LASTEXITCODE."
     }
+}
+
+$MouseHookTestPath = Join-Path $BuildDir "PackagedMouseHookE2ETests.exe"
+& $MouseHookTestPath $ControlHostPath
+if ($LASTEXITCODE -ne 0) {
+    throw "Packaged native mouse hook end-to-end test failed with exit code $LASTEXITCODE."
+}
+
+$PreviousControllerPort = $env:LAN_REMOTE_CONTROLLER_PORT
+try {
+    $env:LAN_REMOTE_CONTROLLER_PORT = "0"
+    & $VenvPython (Join-Path $Root "tests\full_mouse_pipeline_e2e.py")
+    if ($LASTEXITCODE -ne 0) {
+        throw "Full mouse page/bridge/hook/stream end-to-end test failed with exit code $LASTEXITCODE."
+    }
+}
+finally {
+    $env:LAN_REMOTE_CONTROLLER_PORT = $PreviousControllerPort
 }
 
 $StagedAppDir = Join-Path $StageDir "app"

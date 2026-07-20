@@ -980,11 +980,19 @@ namespace WindowsLANRemoteControlHost
                 nativeInputSession = session;
                 pendingNativeMouseMove = null;
             }
+            bool mouseCaptureReady =
+                mouseHook != IntPtr.Zero &&
+                !session.Suspended &&
+                session.RemoteWidth > 0 &&
+                session.RemoteHeight > 0 &&
+                session.RemoteBounds.Width >= 1 &&
+                session.RemoteBounds.Height >= 1;
             keyboardCaptureEnabled =
+                mouseCaptureReady &&
                 session.KeyboardEnabled &&
                 keyboardHook != IntPtr.Zero &&
                 !session.Suspended;
-            return mouseHook != IntPtr.Zero && (!session.KeyboardEnabled || keyboardHook != IntPtr.Zero);
+            return mouseCaptureReady && (!session.KeyboardEnabled || keyboardHook != IntPtr.Zero);
         }
 
         private RectangleF BrowserRectangleToScreen(double left, double top, double width, double height)

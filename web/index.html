@@ -1344,6 +1344,8 @@
       nativeInputSyncTimer: 0,
       lastMoveAt: 0,
       refreshTimer: 0,
+      remoteFrameWidth: 0,
+      remoteFrameHeight: 0,
       toastTimer: 0,
       autoUnlockChecking: false,
       monitors: [],
@@ -2014,6 +2016,8 @@
         monitorId: "all"
       };
       state.loadingFrame = false;
+      state.remoteFrameWidth = 0;
+      state.remoteFrameHeight = 0;
       state.keyboardEnabled = false;
       state.autoUnlockChecking = false;
       state.remoteLockSentForClose = false;
@@ -2079,6 +2083,8 @@
       state.session = null;
       state.sessionHeartbeatInFlight = false;
       state.loadingFrame = false;
+      state.remoteFrameWidth = 0;
+      state.remoteFrameHeight = 0;
       state.keyboardEnabled = false;
       $("remoteScreen").removeAttribute("src");
       $("remoteSession").classList.remove("show");
@@ -2478,6 +2484,8 @@
       frame.crossOrigin = "anonymous";
       frame.onload = () => {
         if (!state.session?.connected) return;
+        state.remoteFrameWidth = frame.naturalWidth;
+        state.remoteFrameHeight = frame.naturalHeight;
         $("remoteScreen").src = frame.src;
         saveDevicePreview(session.device, frame);
         $("remoteHint").classList.add("hidden");
@@ -2544,14 +2552,16 @@
     function nativeInputLayout() {
       const image = $("remoteScreen");
       const rect = image.getBoundingClientRect();
+      const remoteWidth = image.naturalWidth || state.remoteFrameWidth || 0;
+      const remoteHeight = image.naturalHeight || state.remoteFrameHeight || 0;
       let contentLeft = rect.left;
       let contentTop = rect.top;
       let contentWidth = 0;
       let contentHeight = 0;
-      if (image.naturalWidth > 0 && image.naturalHeight > 0 && rect.width > 0 && rect.height > 0) {
-        const scale = Math.min(rect.width / image.naturalWidth, rect.height / image.naturalHeight);
-        contentWidth = image.naturalWidth * scale;
-        contentHeight = image.naturalHeight * scale;
+      if (remoteWidth > 0 && remoteHeight > 0 && rect.width > 0 && rect.height > 0) {
+        const scale = Math.min(rect.width / remoteWidth, rect.height / remoteHeight);
+        contentWidth = remoteWidth * scale;
+        contentHeight = remoteHeight * scale;
         contentLeft += (rect.width - contentWidth) / 2;
         contentTop += (rect.height - contentHeight) / 2;
       }
@@ -2565,8 +2575,8 @@
         content_top: contentTop,
         content_width: contentWidth,
         content_height: contentHeight,
-        remote_width: image.naturalWidth || 0,
-        remote_height: image.naturalHeight || 0,
+        remote_width: remoteWidth,
+        remote_height: remoteHeight,
         exclusions
       };
     }
