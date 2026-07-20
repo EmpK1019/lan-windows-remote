@@ -1431,7 +1431,6 @@
       lastMoveAt: 0,
       refreshTimer: 0,
       toastTimer: 0,
-      autoUnlockLastCheck: 0,
       autoUnlockChecking: false,
       monitors: [],
       clipboardTimer: 0,
@@ -2072,11 +2071,12 @@
         controllerId,
         controllerName,
         connected: true,
+        initialAutoUnlockPending: !viewOnly,
         monitorId: "all"
       };
       state.loadingFrame = false;
       state.keyboardEnabled = false;
-      state.autoUnlockLastCheck = 0;
+      state.autoUnlockChecking = false;
       state.remoteLockSentForClose = false;
       state.lastPreviewSavedAt = 0;
       state.filePath = "";
@@ -2104,6 +2104,7 @@
       setRemoteStatus("正在获取远程画面…");
       sendSessionHeartbeat(true).then((ready) => {
         if (!ready || !state.session?.connected) return;
+        enableDefaultClipboardSync();
         loadMonitors();
         refreshScreen();
       });
@@ -2314,6 +2315,17 @@
       clearTimeout(state.clipboardTimer);
       if (!state.session?.connected || (!$("clipboardSend").checked && !$("clipboardReceive").checked)) return;
       state.clipboardTimer = setTimeout(syncClipboard, delay);
+    }
+
+    async function enableDefaultClipboardSync() {
+      if (!state.session?.connected || state.session.viewOnly) return;
+      $("clipboardSend").checked = true;
+      $("clipboardReceive").checked = true;
+      $("clipboardButton").classList.add("active");
+      await Promise.all([
+        primeClipboardDirection("send"),
+        primeClipboardDirection("receive")
+      ]);
     }
 
     async function clipboardSnapshot(url) {
@@ -2547,10 +2559,14 @@
 
     async function maybeAutoUnlock() {
       const session = state.session;
-      if (!session?.connected || session.viewOnly || !window.pywebview?.api?.try_auto_unlock) return;
-      const now = Date.now();
-      if (state.autoUnlockChecking || now - state.autoUnlockLastCheck < 1400) return;
-      state.autoUnlockLastCheck = now;
+      if (
+        !session?.connected ||
+        session.viewOnly ||
+        !session.initialAutoUnlockPending ||
+        !window.pywebview?.api?.try_auto_unlock
+      ) return;
+      session.initialAutoUnlockPending = false;
+      if (state.autoUnlockChecking) return;
       state.autoUnlockChecking = true;
       try {
         const result = await window.pywebview.api.try_auto_unlock(JSON.stringify(session.device), session.token);

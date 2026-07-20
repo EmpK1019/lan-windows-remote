@@ -139,6 +139,15 @@ class CoreFunctionTests(unittest.TestCase):
         self.assertIn("不能控制或观看本机", html)
         self.assertIn("本机不可远程连接", html)
 
+    def test_clipboard_defaults_on_and_auto_unlock_only_runs_at_session_start(self) -> None:
+        html = (Path(__file__).resolve().parents[1] / "web" / "index.html").read_text(encoding="utf-8")
+        self.assertIn("enableDefaultClipboardSync();", html)
+        self.assertIn('$("clipboardSend").checked = true;', html)
+        self.assertIn('$("clipboardReceive").checked = true;', html)
+        self.assertIn("initialAutoUnlockPending: !viewOnly", html)
+        self.assertIn("session.initialAutoUnlockPending = false;", html)
+        self.assertNotIn("autoUnlockLastCheck", html)
+
     def test_remote_window_chrome_is_separate_from_control_toolbar(self) -> None:
         html = (Path(__file__).resolve().parents[1] / "web" / "index.html").read_text(encoding="utf-8")
         titlebar = html.split('<header class="remote-titlebar"', 1)[1].split("</header>", 1)[0]
