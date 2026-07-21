@@ -53,6 +53,59 @@ def make_state(settings: lan_remote.SettingsStore) -> lan_remote.ServerState:
 
 
 class CoreFunctionTests(unittest.TestCase):
+    def test_native_video_protocol_round_trip_and_validation(self) -> None:
+        message = lan_remote.NativeVideoMessage(
+            message_type=lan_remote.NATIVE_VIDEO_MESSAGE_ACCESS_UNIT,
+            flags=lan_remote.NATIVE_VIDEO_FLAG_KEYFRAME | lan_remote.NATIVE_VIDEO_FLAG_CODEC_CONFIG,
+            generation=3,
+            sequence=19,
+            timestamp_us=123456789,
+            width=1920,
+            height=1080,
+            fps_limit=120,
+            payload=b"\x00\x00\x00\x01\x65encoded",
+        )
+        packed = lan_remote.pack_native_video_message(message)
+        self.assertEqual(len(packed), lan_remote.NATIVE_VIDEO_HEADER.size + len(message.payload))
+        self.assertEqual(lan_remote.unpack_native_video_message(packed), message)
+
+        with self.assertRaisesRegex(ValueError, "unsupported"):
+            lan_remote.unpack_native_video_message(b"BAD!" + packed[4:])
+        with self.assertRaisesRegex(ValueError, "does not match"):
+            lan_remote.unpack_native_video_message(packed[:-1])
+        with self.assertRaisesRegex(ValueError, "FPS ceiling"):
+            lan_remote.pack_native_video_message(
+                lan_remote.NativeVideoMessage(
+                    message_type=lan_remote.NATIVE_VIDEO_MESSAGE_STREAM_CONFIG,
+                    flags=0,
+                    generation=1,
+                    sequence=0,
+                    timestamp_us=0,
+                    width=1920,
+                    height=1080,
+                    fps_limit=144,
+                    payload=b"{}",
+                )
+            )
+
+    def test_native_video_protocol_rejects_oversized_payload_before_allocation(self) -> None:
+        header = lan_remote.NATIVE_VIDEO_HEADER.pack(
+            lan_remote.NATIVE_VIDEO_PROTOCOL_MAGIC,
+            lan_remote.NATIVE_VIDEO_PROTOCOL_VERSION,
+            lan_remote.NATIVE_VIDEO_MESSAGE_STREAM_CONFIG,
+            0,
+            1,
+            0,
+            0,
+            lan_remote.NATIVE_VIDEO_MAX_CONFIG_BYTES + 1,
+            1920,
+            1080,
+            60,
+            0,
+        )
+        with self.assertRaisesRegex(ValueError, "too large"):
+            lan_remote.unpack_native_video_message(header)
+
     def test_remote_session_status_is_exclusive_and_expires(self) -> None:
         with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {"APPDATA": directory}):
             state = make_state(lan_remote.SettingsStore())
@@ -887,6 +940,41 @@ class HttpIntegrationTests(unittest.TestCase):
         )
         self.assertEqual(status, 403)
         self.assertNotIn("access-control-allow-origin", headers)
+
+    def test_native_video_connect_rejects_unauthenticated_and_invalid_negotiation(self) -> None:
+        status, _, _ = self.request(
+            "CONNECT",
+            "/video-stream?monitor=all&fps=60",
+            headers={"X-Remote-Token": "wrong", "X-LAN-Video-Protocol": "1"},
+        )
+        self.assertEqual(status, 401)
+
+        status, _, data = self.request(
+            "CONNECT",
+            "/video-stream?monitor=all&fps=60",
+            headers={"X-Remote-Token": "TEST-TEMP-CODE", "X-LAN-Video-Protocol": "2"},
+        )
+        self.assertEqual(status, 426)
+        self.assertIn(b"unsupported video protocol", data)
+
+        status, _, _ = self.request(
+            "CONNECT",
+            "/video-stream?monitor=all&fps=144",
+            headers={"X-Remote-Token": "TEST-TEMP-CODE", "X-LAN-Video-Protocol": "1"},
+        )
+        self.assertEqual(status, 400)
+
+        with (
+            patch.object(lan_remote, "screen_rect", return_value=(0, 0, 100, 80)),
+            patch.object(lan_remote, "secure_desktop_active", return_value=True),
+        ):
+            status, _, data = self.request(
+                "CONNECT",
+                "/video-stream?monitor=all&fps=60",
+                headers={"X-Remote-Token": "TEST-TEMP-CODE", "X-LAN-Video-Protocol": "1"},
+            )
+        self.assertEqual(status, 423)
+        self.assertIn(b"MJPEG", data)
 
     def test_authentication_session_input_and_monitor_endpoints(self) -> None:
         status, _, _ = self.request("GET", "/monitors")

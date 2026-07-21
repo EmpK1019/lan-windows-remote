@@ -1,5 +1,5 @@
 param(
-    [string]$Version = "0.7.0",
+    [string]$Version = "1.0.0",
     [switch]$SkipDependencyInstall
 )
 
@@ -22,6 +22,9 @@ $ServicePath = Join-Path $DistDir "WindowsLANRemoteService-$Version.exe"
 $IconPath = Join-Path $Root "assets\lan-remote-icon.ico"
 $WebViewLibDir = Join-Path $Root ".venv-build\Lib\site-packages\webview\lib"
 $ControlHostPath = Join-Path $PortableDir "WindowsLANRemoteControlHost.exe"
+$NativeBuildDir = Join-Path $BuildDir "native"
+$NativeVideoDll = Join-Path $NativeBuildDir "WindowsLANRemoteVideo.dll"
+$NativeVideoEncoder = Join-Path $NativeBuildDir "WindowsLANRemoteVideoEncoder.exe"
 
 function Assert-Tool {
     param([string]$Name)
@@ -51,6 +54,17 @@ if (-not $SkipDependencyInstall) {
     & $VenvPython -m pip install -r (Join-Path $PackagingDir "requirements-build.txt")
 }
 
+& powershell.exe `
+    -NoProfile `
+    -NonInteractive `
+    -ExecutionPolicy Bypass `
+    -File (Join-Path $Root "scripts\build-native-video.ps1") `
+    -OutputDir $NativeBuildDir `
+    -RunTests
+if ($LASTEXITCODE -ne 0) {
+    throw "Native H.264 components failed to build or pass protocol tests (exit $LASTEXITCODE)."
+}
+
 $SourceText = Get-Content -Raw -Encoding UTF8 (Join-Path $Root "lan_remote.py")
 $VersionMatch = [regex]::Match($SourceText, 'APP_VERSION\s*=\s*"([^"]+)"')
 if (-not $VersionMatch.Success -or $VersionMatch.Groups[1].Value -ne $Version) {
@@ -69,6 +83,28 @@ if ($LASTEXITCODE -ne 0) {
 & $VenvPython (Join-Path $Root "tests\low_latency_screen_stream_e2e.py")
 if ($LASTEXITCODE -ne 0) {
     throw "Low-latency screen stream failed the 33 FPS release gate with exit code $LASTEXITCODE."
+}
+
+foreach ($NativeFps in @(30, 60, 120)) {
+    & $VenvPython `
+        (Join-Path $Root "tests\native_video_pipeline_e2e.py") `
+        --fps $NativeFps `
+        --measure-seconds 3 `
+        --native-dir $NativeBuildDir `
+        --enforce-performance
+    if ($LASTEXITCODE -ne 0) {
+        throw "Native H.264 $NativeFps FPS end-to-end gate failed with exit code $LASTEXITCODE."
+    }
+}
+
+& $VenvPython `
+    (Join-Path $Root "tests\native_video_pipeline_e2e.py") `
+    --fps 30 `
+    --measure-seconds 1 `
+    --native-dir $NativeBuildDir `
+    --exercise-secure-transition
+if ($LASTEXITCODE -ne 0) {
+    throw "Native secure-desktop fallback/recovery E2E failed with exit code $LASTEXITCODE."
 }
 
 & powershell.exe `
@@ -137,6 +173,9 @@ if (-not (Test-Path -LiteralPath $PortableExecutable)) {
     throw "Portable application directory was not created at $PortableDir"
 }
 
+Copy-Item -LiteralPath $NativeVideoDll -Destination $PortableDir -Force
+Copy-Item -LiteralPath $NativeVideoEncoder -Destination $PortableDir -Force
+
 & $CscPath `
     /nologo `
     /target:winexe `
@@ -151,6 +190,7 @@ if ($LASTEXITCODE -ne 0) {
 $ControlHostCompilerArgs = @(
     "/nologo",
     "/target:winexe",
+    "/platform:x64",
     "/out:$ControlHostPath",
     "/win32icon:$IconPath",
     "/reference:System.Drawing.dll",
@@ -187,6 +227,24 @@ if ($LASTEXITCODE -ne 0) {
 & $ControlHostTestPath $ControlHostPath
 if ($LASTEXITCODE -ne 0) {
     throw "Control window host state tests failed with exit code $LASTEXITCODE."
+}
+
+& $VenvPython `
+    (Join-Path $Root "tests\native_video_pipeline_e2e.py") `
+    --fps 60 `
+    --measure-seconds 3 `
+    --native-dir $PortableDir `
+    --enforce-performance
+if ($LASTEXITCODE -ne 0) {
+    throw "Packaged native H.264 pipeline failed with exit code $LASTEXITCODE."
+}
+
+& $VenvPython `
+    (Join-Path $Root "tests\packaged_native_video_host_e2e.py") `
+    --control-host $ControlHostPath `
+    --native-dir $PortableDir
+if ($LASTEXITCODE -ne 0) {
+    throw "Packaged WebView2/native H.264 host E2E failed with exit code $LASTEXITCODE."
 }
 
 foreach ($InteractiveTest in @(
@@ -303,7 +361,9 @@ $RequiredPortableFiles = @(
     $ControlHostPath,
     (Join-Path $PortableDir "Microsoft.Web.WebView2.Core.dll"),
     (Join-Path $PortableDir "Microsoft.Web.WebView2.WinForms.dll"),
-    (Join-Path $PortableDir "WebView2Loader.dll")
+    (Join-Path $PortableDir "WebView2Loader.dll"),
+    (Join-Path $PortableDir "WindowsLANRemoteVideo.dll"),
+    (Join-Path $PortableDir "WindowsLANRemoteVideoEncoder.exe")
 )
 foreach ($RequiredFile in $RequiredPortableFiles) {
     if (-not (Test-Path -LiteralPath $RequiredFile)) {

@@ -138,6 +138,55 @@ namespace WindowsLANRemoteControlHost
         private int lastRemoteX;
         private int lastRemoteY;
         private bool nativeTransportFailed;
+        private IntPtr nativeVideoHandle = IntPtr.Zero;
+        private string nativeVideoUnavailableReason = "native video DLL unavailable";
+
+        [DllImport("WindowsLANRemoteVideo.dll", CallingConvention = CallingConvention.StdCall)]
+        private static extern IntPtr LANRemoteVideoCreate(IntPtr parent);
+
+        [DllImport("WindowsLANRemoteVideo.dll", CharSet = CharSet.Unicode, CallingConvention = CallingConvention.StdCall)]
+        private static extern int LANRemoteVideoConfigure(
+            IntPtr handle,
+            string host,
+            uint port,
+            string token,
+            string monitor,
+            uint fps,
+            int left,
+            int top,
+            int width,
+            int height);
+
+        [DllImport("WindowsLANRemoteVideo.dll", CallingConvention = CallingConvention.StdCall)]
+        private static extern void LANRemoteVideoSetLayout(
+            IntPtr handle,
+            int left,
+            int top,
+            int width,
+            int height,
+            int visible);
+
+        [DllImport("WindowsLANRemoteVideo.dll", CallingConvention = CallingConvention.StdCall)]
+        private static extern void LANRemoteVideoSetCursor(
+            IntPtr handle,
+            int x,
+            int y,
+            int visible,
+            int remoteWidth,
+            int remoteHeight,
+            int remoteOwner);
+
+        [DllImport("WindowsLANRemoteVideo.dll", CharSet = CharSet.Unicode, CallingConvention = CallingConvention.StdCall)]
+        private static extern int LANRemoteVideoGetStatus(IntPtr handle, StringBuilder output, int capacity);
+
+        [DllImport("WindowsLANRemoteVideo.dll", CharSet = CharSet.Unicode, CallingConvention = CallingConvention.StdCall)]
+        private static extern int LANRemoteVideoGetLastError(StringBuilder output, int capacity);
+
+        [DllImport("WindowsLANRemoteVideo.dll", CallingConvention = CallingConvention.StdCall)]
+        private static extern void LANRemoteVideoStop(IntPtr handle);
+
+        [DllImport("WindowsLANRemoteVideo.dll", CallingConvention = CallingConvention.StdCall)]
+        private static extern void LANRemoteVideoDestroy(IntPtr handle);
 
         [DllImport("user32.dll")]
         private static extern bool ReleaseCapture();
@@ -488,6 +537,34 @@ namespace WindowsLANRemoteControlHost
                         InitializeKeyboardHook();
                         InitializeMouseHook();
                         StartNativeInputWorker();
+                        try
+                        {
+                            nativeVideoHandle = LANRemoteVideoCreate(Handle);
+                            if (nativeVideoHandle == IntPtr.Zero)
+                            {
+                                StringBuilder error = new StringBuilder(1024);
+                                LANRemoteVideoGetLastError(error, error.Capacity);
+                                if (error.Length > 0)
+                                {
+                                    nativeVideoUnavailableReason = error.ToString();
+                                }
+                            }
+                        }
+                        catch (DllNotFoundException ex)
+                        {
+                            nativeVideoHandle = IntPtr.Zero;
+                            nativeVideoUnavailableReason = ex.Message;
+                        }
+                        catch (EntryPointNotFoundException ex)
+                        {
+                            nativeVideoHandle = IntPtr.Zero;
+                            nativeVideoUnavailableReason = ex.Message;
+                        }
+                        catch (BadImageFormatException ex)
+                        {
+                            nativeVideoHandle = IntPtr.Zero;
+                            nativeVideoUnavailableReason = ex.Message;
+                        }
                     }
                     await InitializeBrowser();
                 }
@@ -995,6 +1072,154 @@ namespace WindowsLANRemoteControlHost
             return mouseCaptureReady && (!session.KeyboardEnabled || keyboardHook != IntPtr.Zero);
         }
 
+        private Rectangle BrowserRectangleToClient(double left, double top, double width, double height)
+        {
+            RectangleF screen = BrowserRectangleToScreen(left, top, width, height);
+            if (screen.IsEmpty)
+            {
+                return Rectangle.Empty;
+            }
+            Point topLeft = PointToClient(new Point(
+                (int)Math.Round(screen.Left),
+                (int)Math.Round(screen.Top)));
+            Point bottomRight = PointToClient(new Point(
+                (int)Math.Round(screen.Right),
+                (int)Math.Round(screen.Bottom)));
+            return Rectangle.FromLTRB(topLeft.X, topLeft.Y, bottomRight.X, bottomRight.Y);
+        }
+
+        private bool ConfigureNativeVideo(object payload)
+        {
+            Dictionary<string, object> values = payload as Dictionary<string, object>;
+            if (values == null || !ReadBoolean(values, "enabled", false))
+            {
+                if (nativeVideoHandle != IntPtr.Zero)
+                {
+                    LANRemoteVideoStop(nativeVideoHandle);
+                }
+                return true;
+            }
+            if (!remoteWindow || nativeVideoHandle == IntPtr.Zero)
+            {
+                return false;
+            }
+            Uri endpoint;
+            string endpointValue = ReadString(values, "endpoint");
+            string token = ReadString(values, "token");
+            string monitor = ReadString(values, "monitor");
+            int fps = ReadInteger(values, "fps_limit", 60);
+            Rectangle surface = BrowserRectangleToClient(
+                ReadDouble(values, "surface_left", 0),
+                ReadDouble(values, "surface_top", 0),
+                ReadDouble(values, "surface_width", 0),
+                ReadDouble(values, "surface_height", 0));
+            if (
+                !Uri.TryCreate(endpointValue, UriKind.Absolute, out endpoint) ||
+                !String.Equals(endpoint.Scheme, Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase) ||
+                !String.Equals(endpoint.AbsolutePath, "/video-stream", StringComparison.Ordinal) ||
+                !String.IsNullOrEmpty(endpoint.UserInfo) ||
+                endpoint.Port < 1 || endpoint.Port > 65535 ||
+                String.IsNullOrWhiteSpace(token) || token.Length > 512 ||
+                token.IndexOfAny(new[] { '\r', '\n' }) >= 0 ||
+                (fps != 30 && fps != 60 && fps != 120) ||
+                surface.Width < 1 || surface.Height < 1)
+            {
+                return false;
+            }
+            return LANRemoteVideoConfigure(
+                nativeVideoHandle,
+                endpoint.Host,
+                (uint)endpoint.Port,
+                token,
+                String.IsNullOrWhiteSpace(monitor) ? "all" : monitor,
+                (uint)fps,
+                surface.Left,
+                surface.Top,
+                surface.Width,
+                surface.Height) != 0;
+        }
+
+        private bool SetNativeVideoLayout(object payload)
+        {
+            Dictionary<string, object> values = payload as Dictionary<string, object>;
+            if (values == null || nativeVideoHandle == IntPtr.Zero)
+            {
+                return false;
+            }
+            Rectangle surface = BrowserRectangleToClient(
+                ReadDouble(values, "surface_left", 0),
+                ReadDouble(values, "surface_top", 0),
+                ReadDouble(values, "surface_width", 0),
+                ReadDouble(values, "surface_height", 0));
+            if (surface.Width < 1 || surface.Height < 1)
+            {
+                return false;
+            }
+            LANRemoteVideoSetLayout(
+                nativeVideoHandle,
+                surface.Left,
+                surface.Top,
+                surface.Width,
+                surface.Height,
+                ReadBoolean(values, "visible", true) ? 1 : 0);
+            return true;
+        }
+
+        private object NativeVideoStatus()
+        {
+            if (nativeVideoHandle == IntPtr.Zero)
+            {
+                return new Dictionary<string, object>
+                {
+                    { "state", "unavailable" },
+                    { "transport", "mjpeg_v1" },
+                    { "error", nativeVideoUnavailableReason }
+                };
+            }
+            StringBuilder output = new StringBuilder(4096);
+            int length = LANRemoteVideoGetStatus(nativeVideoHandle, output, output.Capacity);
+            if (length <= 0)
+            {
+                return new Dictionary<string, object>
+                {
+                    { "state", "failed" },
+                    { "transport", "mjpeg_v1" },
+                    { "error", "native video status unavailable" }
+                };
+            }
+            try
+            {
+                return serializer.DeserializeObject(output.ToString());
+            }
+            catch
+            {
+                return new Dictionary<string, object>
+                {
+                    { "state", "failed" },
+                    { "transport", "mjpeg_v1" },
+                    { "error", "native video status is malformed" }
+                };
+            }
+        }
+
+        private bool SetNativeVideoCursor(object payload)
+        {
+            Dictionary<string, object> values = payload as Dictionary<string, object>;
+            if (values == null || nativeVideoHandle == IntPtr.Zero)
+            {
+                return false;
+            }
+            LANRemoteVideoSetCursor(
+                nativeVideoHandle,
+                ReadInteger(values, "x", 0),
+                ReadInteger(values, "y", 0),
+                ReadBoolean(values, "visible", false) ? 1 : 0,
+                ReadInteger(values, "remote_width", 0),
+                ReadInteger(values, "remote_height", 0),
+                ReadBoolean(values, "remote_owner", false) ? 1 : 0);
+            return true;
+        }
+
         private RectangleF BrowserRectangleToScreen(double left, double top, double width, double height)
         {
             if (
@@ -1336,6 +1561,18 @@ namespace WindowsLANRemoteControlHost
                 case "configure_native_input":
                     result = ConfigureNativeInput(payload);
                     break;
+                case "configure_native_video":
+                    result = ConfigureNativeVideo(payload);
+                    break;
+                case "set_native_video_layout":
+                    result = SetNativeVideoLayout(payload);
+                    break;
+                case "native_video_status":
+                    result = NativeVideoStatus();
+                    break;
+                case "set_native_video_cursor":
+                    result = SetNativeVideoCursor(payload);
+                    break;
                 case "release_native_input":
                     ReleaseNativePressedInputs();
                     result = true;
@@ -1413,6 +1650,11 @@ namespace WindowsLANRemoteControlHost
         protected override void OnFormClosed(FormClosedEventArgs e)
         {
             keyboardCaptureEnabled = false;
+            if (nativeVideoHandle != IntPtr.Zero)
+            {
+                LANRemoteVideoDestroy(nativeVideoHandle);
+                nativeVideoHandle = IntPtr.Zero;
+            }
             ReleaseNativePressedInputs();
             nativeInputStopping = true;
             nativeInputSignal.Set();
@@ -1485,6 +1727,10 @@ namespace WindowsLANRemoteControlHost
     set_keyboard_capture: (enabled) => call('set_keyboard_capture', Boolean(enabled)),
     configure_native_input: (config) => call('configure_native_input', config || {enabled: false}),
     release_native_input: () => call('release_native_input'),
+    configure_native_video: (config) => call('configure_native_video', config || {enabled: false}),
+    set_native_video_layout: (layout) => call('set_native_video_layout', layout || {}),
+    native_video_status: () => call('native_video_status'),
+    set_native_video_cursor: (cursor) => call('set_native_video_cursor', cursor || {}),
     close_window: () => call('close'),
     window_state: () => call('window_state'),
     credential_status: (deviceId) => credentialCall('status', {device_id: String(deviceId || '')}),

@@ -1463,6 +1463,11 @@
       nativeInputActive: false,
       nativeInputSyncRevision: 0,
       nativeInputSyncTimer: 0,
+      nativeVideoActive: false,
+      nativeVideoStatusTimer: 0,
+      nativeVideoRetryTimer: 0,
+      nativeVideoRevision: 0,
+      nativeVideoDiagnostics: null,
       lastMoveAt: 0,
       refreshTimer: 0,
       frameRequestRevision: 0,
@@ -2687,6 +2692,15 @@
 
     function resetScreenStream() {
       state.frameRequestRevision += 1;
+      state.nativeVideoRevision += 1;
+      clearTimeout(state.nativeVideoStatusTimer);
+      clearTimeout(state.nativeVideoRetryTimer);
+      state.nativeVideoStatusTimer = 0;
+      state.nativeVideoRetryTimer = 0;
+      state.nativeVideoActive = false;
+      state.nativeVideoDiagnostics = null;
+      document.body.classList.remove("native-video-active");
+      window.pywebview?.api?.configure_native_video?.({enabled: false}).catch(() => {});
       clearTimeout(state.refreshTimer);
       state.refreshTimer = 0;
       state.screenAbortController?.abort();
@@ -2715,6 +2729,124 @@
       scheduleNativeInputSync();
       maybeAutoUnlock();
       updateRemoteCursorOverlay();
+    }
+
+    function nativeVideoLayout() {
+      const rect = $("remoteStage").getBoundingClientRect();
+      const obscured = $("fileModal").classList.contains("show") ||
+        $("clipboardPopover").classList.contains("show") || document.hidden;
+      return {
+        surface_left: rect.left,
+        surface_top: rect.top,
+        surface_width: rect.width,
+        surface_height: rect.height,
+        visible: state.nativeVideoActive && !obscured
+      };
+    }
+
+    function syncNativeVideoLayout() {
+      if (!state.nativeVideoActive || !window.pywebview?.api?.set_native_video_layout) return;
+      window.pywebview.api.set_native_video_layout(nativeVideoLayout()).catch(() => {});
+    }
+
+    function scheduleNativeVideoRetry(session, delay = 1800) {
+      clearTimeout(state.nativeVideoRetryTimer);
+      const revision = state.frameRequestRevision;
+      state.nativeVideoRetryTimer = setTimeout(async () => {
+        if (revision !== state.frameRequestRevision || !state.session?.connected) return;
+        try {
+          const response = await fetch(endpoint(`/api/session-status?t=${Date.now()}`), {cache: "no-store"});
+          const status = await response.json();
+          if (response.ok && status.ok && !status.secure_desktop_active) {
+            resetScreenStream();
+            refreshScreen();
+            return;
+          }
+        } catch {}
+        scheduleNativeVideoRetry(session, delay);
+      }, delay);
+    }
+
+    function startMjpegFallback(session, reason = "") {
+      state.nativeVideoActive = false;
+      state.nativeVideoDiagnostics = {state: "fallback", transport: "mjpeg_v1", error: reason};
+      document.body.classList.remove("native-video-active");
+      window.pywebview?.api?.configure_native_video?.({enabled: false}).catch(() => {});
+      if (!session?.connected || session !== state.session) return;
+      setRemoteStatus(`MJPEG 兼容模式 · 最高 ${sessionControlFps(session)} FPS${reason ? ` · ${reason}` : ""}`);
+      startDesktopScreenStream(session);
+      if (/secure desktop/i.test(reason)) scheduleNativeVideoRetry(session);
+    }
+
+    async function pollNativeVideoStatus(session, revision, attempt = 0) {
+      if (
+        revision !== state.nativeVideoRevision ||
+        session !== state.session ||
+        !session?.connected ||
+        !window.pywebview?.api?.native_video_status
+      ) return;
+      let status;
+      try {
+        status = await window.pywebview.api.native_video_status();
+      } catch (error) {
+        status = {state: "failed", error: error?.message || "原生视频状态不可用"};
+      }
+      if (revision !== state.nativeVideoRevision || session !== state.session) return;
+      state.nativeVideoDiagnostics = status;
+      if (status?.state === "streaming") {
+        const monitor = selectedMonitorGeometry(session);
+        state.nativeVideoActive = true;
+        state.loadingFrame = false;
+        state.remoteFrameWidth = Number(monitor?.width) || Number(status.coordinate_width) || 0;
+        state.remoteFrameHeight = Number(monitor?.height) || Number(status.coordinate_height) || 0;
+        document.body.classList.add("native-video-active");
+        $("remoteHint").classList.add("hidden");
+        syncNativeVideoLayout();
+        updateRemoteCursorOverlay();
+        const actualFps = Math.max(0, Number(status.actual_render_fps) || 0);
+        const actualFpsText = actualFps > 0 ? ` · 实际 ${Math.round(actualFps)} FPS` : "";
+        setRemoteStatus(
+          `原生 H.264 · ${status.hardware_decode ? "硬件解码" : "软件解码"}${actualFpsText} · 最高 ${sessionControlFps(session)} FPS`
+        );
+        scheduleNativeInputSync();
+        maybeAutoUnlock();
+        state.nativeVideoStatusTimer = setTimeout(
+          () => pollNativeVideoStatus(session, revision, attempt + 1),
+          1000
+        );
+        return;
+      }
+      if (status?.state === "failed" || status?.state === "unavailable" || attempt >= 30) {
+        startMjpegFallback(session, String(status?.error || "原生视频初始化超时").slice(0, 100));
+        return;
+      }
+      state.nativeVideoStatusTimer = setTimeout(
+        () => pollNativeVideoStatus(session, revision, attempt + 1),
+        100
+      );
+    }
+
+    async function startNativeVideo(session) {
+      const revision = ++state.nativeVideoRevision;
+      state.loadingFrame = true;
+      const layout = nativeVideoLayout();
+      let started = false;
+      try {
+        started = Boolean(await window.pywebview.api.configure_native_video({
+          enabled: true,
+          endpoint: `${deviceOrigin(session.device)}/video-stream`,
+          token: session.token,
+          monitor: session.monitorId || "all",
+          fps_limit: sessionControlFps(session),
+          ...layout
+        }));
+      } catch {}
+      if (revision !== state.nativeVideoRevision || session !== state.session) return;
+      if (!started) {
+        startMjpegFallback(session, "原生视频组件不可用");
+        return;
+      }
+      pollNativeVideoStatus(session, revision);
     }
 
     function startDesktopScreenStream(session) {
@@ -2781,13 +2913,31 @@
         openPair(mode);
         return;
       }
-      startDesktopScreenStream(session);
+      const nativeAdvertised = Array.isArray(session.device.video_capabilities) &&
+        session.device.video_capabilities.includes("native_h264_v1");
+      if (remoteWindowMode && nativeAdvertised && window.pywebview?.api?.configure_native_video) {
+        startNativeVideo(session);
+      } else {
+        startMjpegFallback(session, nativeAdvertised ? "原生控制窗口不可用" : "对端未提供原生 H.264");
+      }
     }
 
     function updateRemoteCursorOverlay() {
       const cursor = state.remoteCursor;
       const pointer = $("remotePointer");
       const image = $("remoteScreen");
+      if (state.nativeVideoActive && window.pywebview?.api?.set_native_video_cursor) {
+        pointer.classList.remove("visible");
+        window.pywebview.api.set_native_video_cursor({
+          x: Number(cursor?.x) || 0,
+          y: Number(cursor?.y) || 0,
+          visible: Boolean(cursor?.visible),
+          remote_width: Number(cursor?.width) || state.remoteFrameWidth || 0,
+          remote_height: Number(cursor?.height) || state.remoteFrameHeight || 0,
+          remote_owner: state.cursorOwner === "remote"
+        }).catch(() => {});
+        return;
+      }
       if (state.cursorOwner !== "remote" || !cursor?.visible || !image.naturalWidth) {
         pointer.classList.remove("visible");
         return;
@@ -3003,7 +3153,10 @@
     function scheduleNativeInputSync(delay = 0) {
       if (!remoteWindowMode) return;
       clearTimeout(state.nativeInputSyncTimer);
-      state.nativeInputSyncTimer = setTimeout(() => syncNativeInput(), delay);
+      state.nativeInputSyncTimer = setTimeout(() => {
+        syncNativeInput();
+        syncNativeVideoLayout();
+      }, delay);
     }
 
     async function releaseNativeInput() {

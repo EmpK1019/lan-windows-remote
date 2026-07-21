@@ -60,7 +60,7 @@ if platform.system() == "Windows":
 
 
 APP_NAME = "Windows LAN Remote"
-APP_VERSION = "0.7.0"
+APP_VERSION = "1.0.0"
 GITHUB_REPOSITORY = "EmpK1019/lan-windows-remote"
 GITHUB_LATEST_RELEASE_API = f"https://api.github.com/repos/{GITHUB_REPOSITORY}/releases/latest"
 DEFAULT_PORT = 8765
@@ -76,6 +76,35 @@ PERMANENT_PASSWORD_MIN_LENGTH = 8
 ACCESS_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 MAX_POST_BYTES = 16 * 1024
 MAX_NATIVE_INPUT_FRAME_BYTES = 4 * 1024
+NATIVE_VIDEO_PROTOCOL_MAGIC = b"LRV1"
+NATIVE_VIDEO_PROTOCOL_VERSION = 1
+NATIVE_VIDEO_HEADER = struct.Struct("!4sBBHIQQIHHHH")
+NATIVE_VIDEO_MAX_CONFIG_BYTES = 64 * 1024
+NATIVE_VIDEO_MAX_ACCESS_UNIT_BYTES = 16 * 1024 * 1024
+NATIVE_VIDEO_MESSAGE_STREAM_CONFIG = 1
+NATIVE_VIDEO_MESSAGE_ACCESS_UNIT = 2
+NATIVE_VIDEO_MESSAGE_REQUEST_KEYFRAME = 3
+NATIVE_VIDEO_MESSAGE_RECONFIGURE = 4
+NATIVE_VIDEO_MESSAGE_RECEIVER_REPORT = 5
+NATIVE_VIDEO_MESSAGE_STREAM_END = 6
+NATIVE_VIDEO_MESSAGE_ERROR = 7
+NATIVE_VIDEO_MESSAGE_SENDER_REPORT = 8
+NATIVE_VIDEO_FLAG_KEYFRAME = 0x0001
+NATIVE_VIDEO_FLAG_CODEC_CONFIG = 0x0002
+NATIVE_VIDEO_CAPABILITY = "native_h264_v1"
+MJPEG_VIDEO_CAPABILITY = "mjpeg_v1"
+NATIVE_VIDEO_MESSAGE_TYPES = frozenset(
+    {
+        NATIVE_VIDEO_MESSAGE_STREAM_CONFIG,
+        NATIVE_VIDEO_MESSAGE_ACCESS_UNIT,
+        NATIVE_VIDEO_MESSAGE_REQUEST_KEYFRAME,
+        NATIVE_VIDEO_MESSAGE_RECONFIGURE,
+        NATIVE_VIDEO_MESSAGE_RECEIVER_REPORT,
+        NATIVE_VIDEO_MESSAGE_STREAM_END,
+        NATIVE_VIDEO_MESSAGE_ERROR,
+        NATIVE_VIDEO_MESSAGE_SENDER_REPORT,
+    }
+)
 MAX_CLIPBOARD_CHARS = 1_000_000
 MAX_CLIPBOARD_PAYLOAD_BYTES = MAX_CLIPBOARD_CHARS * 4 + 1024
 MAX_FILE_TRANSFER_BYTES = 2 * 1024 * 1024 * 1024
@@ -119,9 +148,142 @@ GDIPLUS_STARTED = False
 ELEVATED_INPUT_HELPER_RETRY_AFTER = 0.0
 
 
+@dataclass(frozen=True)
+class NativeVideoMessage:
+    message_type: int
+    flags: int
+    generation: int
+    sequence: int
+    timestamp_us: int
+    width: int
+    height: int
+    fps_limit: int
+    payload: bytes
+
+
+def _validate_native_video_message(message: NativeVideoMessage) -> None:
+    if message.message_type not in NATIVE_VIDEO_MESSAGE_TYPES:
+        raise ValueError("unknown native video message type")
+    if not 0 <= message.flags <= 0xFFFF:
+        raise ValueError("native video flags are out of range")
+    if not 0 <= message.generation <= 0xFFFFFFFF:
+        raise ValueError("native video generation is out of range")
+    if not 0 <= message.sequence <= 0xFFFFFFFFFFFFFFFF:
+        raise ValueError("native video sequence is out of range")
+    if not 0 <= message.timestamp_us <= 0xFFFFFFFFFFFFFFFF:
+        raise ValueError("native video timestamp is out of range")
+    if not 0 <= message.width <= 0xFFFF or not 0 <= message.height <= 0xFFFF:
+        raise ValueError("native video dimensions are out of range")
+    if not 0 <= message.fps_limit <= 0xFFFF:
+        raise ValueError("native video FPS is out of range")
+    if not isinstance(message.payload, bytes):
+        raise ValueError("native video payload must be bytes")
+    payload_limit = (
+        NATIVE_VIDEO_MAX_ACCESS_UNIT_BYTES
+        if message.message_type == NATIVE_VIDEO_MESSAGE_ACCESS_UNIT
+        else NATIVE_VIDEO_MAX_CONFIG_BYTES
+    )
+    if len(message.payload) > payload_limit:
+        raise ValueError("native video payload is too large")
+    if message.message_type in {
+        NATIVE_VIDEO_MESSAGE_STREAM_CONFIG,
+        NATIVE_VIDEO_MESSAGE_ACCESS_UNIT,
+    }:
+        if message.generation < 1:
+            raise ValueError("native video generation is required")
+        if message.width < 1 or message.height < 1:
+            raise ValueError("native video dimensions are required")
+        if message.fps_limit not in CONTROL_STREAM_FPS_OPTIONS:
+            raise ValueError("native video FPS ceiling is invalid")
+    if message.message_type == NATIVE_VIDEO_MESSAGE_ACCESS_UNIT and not message.payload:
+        raise ValueError("native video access unit is empty")
+
+
+def pack_native_video_message(message: NativeVideoMessage) -> bytes:
+    _validate_native_video_message(message)
+    return NATIVE_VIDEO_HEADER.pack(
+        NATIVE_VIDEO_PROTOCOL_MAGIC,
+        NATIVE_VIDEO_PROTOCOL_VERSION,
+        message.message_type,
+        message.flags,
+        message.generation,
+        message.sequence,
+        message.timestamp_us,
+        len(message.payload),
+        message.width,
+        message.height,
+        message.fps_limit,
+        0,
+    ) + message.payload
+
+
+def unpack_native_video_message(data: bytes) -> NativeVideoMessage:
+    if len(data) < NATIVE_VIDEO_HEADER.size:
+        raise ValueError("native video message is truncated")
+    (
+        magic,
+        version,
+        message_type,
+        flags,
+        generation,
+        sequence,
+        timestamp_us,
+        payload_length,
+        width,
+        height,
+        fps_limit,
+        reserved,
+    ) = NATIVE_VIDEO_HEADER.unpack_from(data)
+    if magic != NATIVE_VIDEO_PROTOCOL_MAGIC or version != NATIVE_VIDEO_PROTOCOL_VERSION:
+        raise ValueError("native video protocol is unsupported")
+    if reserved != 0:
+        raise ValueError("native video reserved header field is non-zero")
+    payload_limit = (
+        NATIVE_VIDEO_MAX_ACCESS_UNIT_BYTES
+        if message_type == NATIVE_VIDEO_MESSAGE_ACCESS_UNIT
+        else NATIVE_VIDEO_MAX_CONFIG_BYTES
+    )
+    if payload_length > payload_limit:
+        raise ValueError("native video payload is too large")
+    if len(data) != NATIVE_VIDEO_HEADER.size + payload_length:
+        raise ValueError("native video payload length does not match header")
+    message = NativeVideoMessage(
+        message_type=message_type,
+        flags=flags,
+        generation=generation,
+        sequence=sequence,
+        timestamp_us=timestamp_us,
+        width=width,
+        height=height,
+        fps_limit=fps_limit,
+        payload=data[NATIVE_VIDEO_HEADER.size :],
+    )
+    _validate_native_video_message(message)
+    return message
+
+
 def application_path(*parts: str) -> Path:
     root = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
     return root.joinpath(*parts)
+
+
+def native_video_encoder_path() -> Path | None:
+    candidates = [
+        application_path("WindowsLANRemoteVideoEncoder.exe"),
+        Path(sys.executable).resolve().parent / "WindowsLANRemoteVideoEncoder.exe",
+        application_path("build", "native", "WindowsLANRemoteVideoEncoder.exe"),
+    ]
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def video_capabilities() -> list[str]:
+    capabilities = [MJPEG_VIDEO_CAPABILITY]
+    if native_video_encoder_path() is not None:
+        capabilities.insert(0, NATIVE_VIDEO_CAPABILITY)
+    return capabilities
 
 
 def load_embedded_interface() -> str:
@@ -296,6 +458,14 @@ class DiscoveryRegistry:
             "view_only": bool(payload.get("view_only", False)),
             "busy": bool(payload.get("busy", False)),
             "busy_mode": "view" if payload.get("busy_mode") == "view" else "control",
+            "video_capabilities": [
+                capability
+                for capability in payload.get("video_capabilities", [])
+                if capability in {NATIVE_VIDEO_CAPABILITY, MJPEG_VIDEO_CAPABILITY}
+            ]
+            if isinstance(payload.get("video_capabilities"), list)
+            else [],
+            "app_version": str(payload.get("app_version", ""))[:32],
             "last_seen": time.monotonic(),
             "is_self": False,
         }
@@ -1122,6 +1292,8 @@ class DiscoveryService:
                             "view_only": view_only,
                             "busy": bool(remote_status.get("active", False)),
                             "busy_mode": remote_status.get("mode", "control"),
+                            "video_capabilities": video_capabilities(),
+                            "app_version": APP_VERSION,
                         },
                         ensure_ascii=False,
                         separators=(",", ":"),
@@ -3272,6 +3444,14 @@ def normalize_remote_window_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "os": str(raw_device.get("os", "Windows"))[:80],
         "view_only": bool(raw_device.get("view_only", False)),
         "is_self": bool(raw_device.get("is_self", False)),
+        "video_capabilities": [
+            capability
+            for capability in raw_device.get("video_capabilities", [])
+            if capability in {NATIVE_VIDEO_CAPABILITY, MJPEG_VIDEO_CAPABILITY}
+        ]
+        if isinstance(raw_device.get("video_capabilities"), list)
+        else [],
+        "app_version": str(raw_device.get("app_version", ""))[:32],
     }
     return {
         "device": device,
@@ -3320,6 +3500,7 @@ class RemoteHandler(BaseHTTPRequestHandler):
             "/health",
             "/screen",
             "/screen-stream",
+            "/video-stream",
             "/desktop-background",
             "/cursor",
             "/cursor-stream",
@@ -3356,6 +3537,9 @@ class RemoteHandler(BaseHTTPRequestHandler):
         if not self.check_client_allowed():
             return
         parsed = urlparse(self.path)
+        if parsed.path == "/video-stream":
+            self._serve_native_video_stream(parsed)
+            return
         if parsed.path != "/input-stream":
             json_response(self, HTTPStatus.NOT_FOUND, {"ok": False, "error": "not found"})
             return
@@ -3409,6 +3593,256 @@ class RemoteHandler(BaseHTTPRequestHandler):
                 self._write_input_ack(3)
                 continue
             self._write_input_ack(0)
+
+    @staticmethod
+    def _read_pipe_bytes(stream: Any, length: int) -> bytes | None:
+        chunks = bytearray()
+        while len(chunks) < length:
+            chunk = stream.read(length - len(chunks))
+            if not chunk:
+                return None
+            chunks.extend(chunk)
+        return bytes(chunks)
+
+    def _forward_native_video_controls(
+        self,
+        process: subprocess.Popen[bytes],
+    ) -> None:
+        try:
+            while process.poll() is None:
+                try:
+                    header = self._read_stream_bytes(NATIVE_VIDEO_HEADER.size)
+                except TimeoutError:
+                    continue
+                if header is None:
+                    return
+                try:
+                    fields = NATIVE_VIDEO_HEADER.unpack(header)
+                    payload_length = int(fields[7])
+                    message_type = int(fields[2])
+                    payload_limit = (
+                        NATIVE_VIDEO_MAX_ACCESS_UNIT_BYTES
+                        if message_type == NATIVE_VIDEO_MESSAGE_ACCESS_UNIT
+                        else NATIVE_VIDEO_MAX_CONFIG_BYTES
+                    )
+                    if payload_length > payload_limit:
+                        return
+                    payload = self._read_stream_bytes(payload_length)
+                    if payload is None:
+                        return
+                    message = unpack_native_video_message(header + payload)
+                    if message.message_type not in {
+                        NATIVE_VIDEO_MESSAGE_REQUEST_KEYFRAME,
+                        NATIVE_VIDEO_MESSAGE_RECONFIGURE,
+                        NATIVE_VIDEO_MESSAGE_RECEIVER_REPORT,
+                    }:
+                        return
+                    if process.stdin is None:
+                        return
+                    process.stdin.write(pack_native_video_message(message))
+                    process.stdin.flush()
+                except (BrokenPipeError, OSError, ValueError, struct.error):
+                    return
+        except (ConnectionError, OSError):
+            return
+        finally:
+            if process.poll() is None:
+                process.terminate()
+
+    def _serve_native_video_stream(self, parsed: Any) -> None:
+        token = self.headers.get("X-Remote-Token", "")
+        if self.server.state.authenticate(token, self.client_address[0]) is None:
+            json_response(self, HTTPStatus.UNAUTHORIZED, {"ok": False, "error": "bad token"})
+            return
+        if self.headers.get("X-LAN-Video-Protocol", "") != str(NATIVE_VIDEO_PROTOCOL_VERSION):
+            json_response(self, HTTPStatus.UPGRADE_REQUIRED, {"ok": False, "error": "unsupported video protocol"})
+            return
+        query = parse_qs(parsed.query)
+        monitor_id = query.get("monitor", ["all"])[0]
+        try:
+            fps_limit = int(query.get("fps", [str(LOW_LATENCY_STREAM_FPS)])[0])
+        except (TypeError, ValueError):
+            fps_limit = 0
+        if fps_limit not in CONTROL_STREAM_FPS_OPTIONS:
+            json_response(self, HTTPStatus.BAD_REQUEST, {"ok": False, "error": "invalid video FPS ceiling"})
+            return
+        try:
+            screen_rect(monitor_id)
+        except ValueError as exc:
+            json_response(self, HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(exc)})
+            return
+        if secure_desktop_active():
+            json_response(
+                self,
+                HTTPStatus.LOCKED,
+                {"ok": False, "error": "secure desktop requires the MJPEG compatibility path"},
+            )
+            return
+        encoder_path = native_video_encoder_path()
+        if encoder_path is None:
+            json_response(self, HTTPStatus.SERVICE_UNAVAILABLE, {"ok": False, "error": "native H.264 encoder unavailable"})
+            return
+
+        generation = secrets.randbits(32) or 1
+        creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        diagnostics: list[str] = []
+        diagnostics_lock = threading.Lock()
+        try:
+            encoder_command = [
+                str(encoder_path),
+                "--monitor",
+                monitor_id,
+                "--fps",
+                str(fps_limit),
+                "--generation",
+                str(generation),
+            ]
+            if os.environ.get("LAN_REMOTE_NATIVE_VIDEO_TEST_PATTERN") == "1":
+                encoder_command.append("--test-pattern")
+            process = subprocess.Popen(
+                encoder_command,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                bufsize=0,
+                close_fds=True,
+                creationflags=creation_flags,
+            )
+        except OSError as exc:
+            json_response(self, HTTPStatus.SERVICE_UNAVAILABLE, {"ok": False, "error": str(exc)})
+            return
+
+        def read_diagnostics() -> None:
+            if process.stderr is None:
+                return
+            try:
+                for raw_line in iter(process.stderr.readline, b""):
+                    line = raw_line.decode("utf-8", "replace").strip()
+                    if not line:
+                        continue
+                    with diagnostics_lock:
+                        diagnostics.append(line[:512])
+                        del diagnostics[:-8]
+                    if os.environ.get("LAN_REMOTE_NATIVE_VIDEO_DEBUG") == "1" and sys.stderr is not None:
+                        print(f"[native-video] {line[:512]}", file=sys.stderr, flush=True)
+            except OSError:
+                return
+
+        diagnostic_thread = threading.Thread(
+            target=read_diagnostics,
+            name="lan-remote-native-video-diagnostics",
+            daemon=True,
+        )
+        diagnostic_thread.start()
+
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Connection", "keep-alive")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-LAN-Video-Protocol", str(NATIVE_VIDEO_PROTOCOL_VERSION))
+        self.send_header("X-LAN-Video-Capability", NATIVE_VIDEO_CAPABILITY)
+        self.send_header("X-LAN-Video-Generation", str(generation))
+        self.end_headers()
+        self.wfile.flush()
+
+        control_thread = threading.Thread(
+            target=self._forward_native_video_controls,
+            args=(process,),
+            name="lan-remote-native-video-control",
+            daemon=True,
+        )
+        control_thread.start()
+        next_authentication = time.monotonic() + 1.0
+        try:
+            if process.stdout is None:
+                return
+            while True:
+                header = self._read_pipe_bytes(process.stdout, NATIVE_VIDEO_HEADER.size)
+                if header is None:
+                    process.wait(timeout=1)
+                    with diagnostics_lock:
+                        diagnostic_text = " | ".join(diagnostics)
+                    if diagnostic_text:
+                        error_message = NativeVideoMessage(
+                            message_type=NATIVE_VIDEO_MESSAGE_ERROR,
+                            flags=0,
+                            generation=generation,
+                            sequence=0,
+                            timestamp_us=int(time.monotonic_ns() // 1000),
+                            width=0,
+                            height=0,
+                            fps_limit=0,
+                            payload=diagnostic_text.encode("utf-8")[:NATIVE_VIDEO_MAX_CONFIG_BYTES],
+                        )
+                        self.wfile.write(pack_native_video_message(error_message))
+                        self.wfile.flush()
+                    return
+                try:
+                    fields = NATIVE_VIDEO_HEADER.unpack(header)
+                    payload_length = int(fields[7])
+                    message_type = int(fields[2])
+                    payload_limit = (
+                        NATIVE_VIDEO_MAX_ACCESS_UNIT_BYTES
+                        if message_type == NATIVE_VIDEO_MESSAGE_ACCESS_UNIT
+                        else NATIVE_VIDEO_MAX_CONFIG_BYTES
+                    )
+                    if payload_length > payload_limit:
+                        return
+                    payload = self._read_pipe_bytes(process.stdout, payload_length)
+                    if payload is None:
+                        return
+                    packed = header + payload
+                    message = unpack_native_video_message(packed)
+                except (OSError, ValueError, struct.error):
+                    return
+
+                now = time.monotonic()
+                if now >= next_authentication:
+                    if self.server.state.authenticate(token, self.client_address[0]) is None:
+                        return
+                    next_authentication = now + 1.0
+                if secure_desktop_active():
+                    stream_end = NativeVideoMessage(
+                        message_type=NATIVE_VIDEO_MESSAGE_STREAM_END,
+                        flags=0,
+                        generation=generation,
+                        sequence=message.sequence,
+                        timestamp_us=int(time.monotonic_ns() // 1000),
+                        width=0,
+                        height=0,
+                        fps_limit=0,
+                        payload=b'{"reason":"secure_desktop","fallback":"mjpeg_v1"}',
+                    )
+                    self.wfile.write(pack_native_video_message(stream_end))
+                    self.wfile.flush()
+                    return
+                self.wfile.write(packed)
+                self.wfile.flush()
+                if message.message_type in {
+                    NATIVE_VIDEO_MESSAGE_STREAM_END,
+                    NATIVE_VIDEO_MESSAGE_ERROR,
+                }:
+                    return
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, OSError, TimeoutError):
+            return
+        finally:
+            self.close_connection = True
+            if process.stdin is not None:
+                try:
+                    process.stdin.close()
+                except OSError:
+                    pass
+            if process.poll() is None:
+                process.terminate()
+                try:
+                    process.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=2)
+            if process.stderr is not None:
+                try:
+                    process.stderr.close()
+                except OSError:
+                    pass
 
     def _read_stream_bytes(self, length: int) -> bytes | None:
         chunks = bytearray()
@@ -3627,6 +4061,8 @@ class RemoteHandler(BaseHTTPRequestHandler):
                 "online": True,
                 "busy": bool(local_status.get("active", False)),
                 "busy_mode": local_status.get("mode", "control"),
+                "video_capabilities": video_capabilities(),
+                "app_version": APP_VERSION,
             }
             devices = [local_device, *self.server.state.registry.online_devices()]
             json_response(
@@ -3745,6 +4181,8 @@ class RemoteHandler(BaseHTTPRequestHandler):
                     "busy": bool(remote_status.get("active", False)),
                     "busy_mode": remote_status.get("mode", "control"),
                     "uptime_seconds": int(time.time() - self.server.state.started_at),
+                    "video_capabilities": video_capabilities(),
+                    "native_video_available": native_video_encoder_path() is not None,
                 },
             )
             return
