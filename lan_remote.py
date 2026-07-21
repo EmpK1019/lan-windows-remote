@@ -60,7 +60,7 @@ if platform.system() == "Windows":
 
 
 APP_NAME = "Windows LAN Remote"
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.0.1"
 GITHUB_REPOSITORY = "EmpK1019/lan-windows-remote"
 GITHUB_LATEST_RELEASE_API = f"https://api.github.com/repos/{GITHUB_REPOSITORY}/releases/latest"
 DEFAULT_PORT = 8765
@@ -127,6 +127,9 @@ LOCAL_DESKTOP_PATHS = frozenset(
         "/api/local-access-code",
         "/api/remote-window/session",
         "/api/remote-window/open",
+        "/api/outgoing-session/heartbeat",
+        "/api/outgoing-session/release",
+        "/api/outgoing-session/cancel",
         "/api/settings",
         "/api/update",
         "/api/update/install",
@@ -696,6 +699,9 @@ class ServerState:
     session_token_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
     remote_window_sessions: dict[str, tuple[dict[str, Any], float]] = field(default_factory=dict, repr=False)
     remote_window_session_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+    outgoing_sessions: dict[str, dict[str, Any]] = field(default_factory=dict, repr=False)
+    cancelled_outgoing_sessions: dict[str, float] = field(default_factory=dict, repr=False)
+    outgoing_session_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
     active_remote_session: dict[str, Any] | None = field(default=None, repr=False)
     active_remote_session_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
     credential_api: Any = field(default=None, repr=False)
@@ -871,6 +877,72 @@ class ServerState:
         if item is None or item[1] <= time.time():
             return None
         return item[0]
+
+    def register_outgoing_session(self, payload: dict[str, Any], process_id: int) -> None:
+        session_id = str(payload.get("controllerSessionId", ""))
+        device = payload.get("device")
+        if len(session_id) < 16 or not isinstance(device, dict):
+            return
+        now = time.time()
+        with self.outgoing_session_lock:
+            self.outgoing_sessions[session_id] = {
+                "session_id": session_id,
+                "device_id": str(device.get("id", "")),
+                "device_name": str(device.get("name", ""))[:128],
+                "device": dict(device),
+                "token": str(payload.get("token", "")),
+                "mode": "view" if payload.get("viewOnly") else "control",
+                "process_id": int(process_id),
+                "started_at": now,
+                "last_seen": now,
+            }
+            self.cancelled_outgoing_sessions.pop(session_id, None)
+
+    def touch_outgoing_session(self, session_id: str) -> bool:
+        now = time.time()
+        with self.outgoing_session_lock:
+            cancelled_until = self.cancelled_outgoing_sessions.get(session_id, 0.0)
+            if cancelled_until > now:
+                return False
+            self.cancelled_outgoing_sessions = {
+                key: expiry for key, expiry in self.cancelled_outgoing_sessions.items() if expiry > now
+            }
+            session = self.outgoing_sessions.get(session_id)
+            if session is None:
+                return False
+            session["last_seen"] = now
+            return True
+
+    def release_outgoing_session(self, session_id: str) -> bool:
+        with self.outgoing_session_lock:
+            return self.outgoing_sessions.pop(session_id, None) is not None
+
+    def cancel_outgoing_session(self, session_id: str) -> dict[str, Any] | None:
+        with self.outgoing_session_lock:
+            session = self.outgoing_sessions.pop(session_id, None)
+            if session is None:
+                return None
+            self.cancelled_outgoing_sessions[session_id] = time.time() + 30.0
+            return session
+
+    def public_outgoing_sessions(self) -> list[dict[str, Any]]:
+        now = time.time()
+        with self.outgoing_session_lock:
+            self.outgoing_sessions = {
+                key: value
+                for key, value in self.outgoing_sessions.items()
+                if now - float(value.get("last_seen", 0.0)) <= ACTIVE_REMOTE_SESSION_TTL_SECONDS
+            }
+            return [
+                {
+                    "session_id": session["session_id"],
+                    "device_id": session["device_id"],
+                    "device_name": session["device_name"],
+                    "mode": session["mode"],
+                    "started_at": int(float(session["started_at"]) * 1000),
+                }
+                for session in self.outgoing_sessions.values()
+            ]
 
     @staticmethod
     def _public_remote_session(session: dict[str, Any] | None, now: float) -> dict[str, Any]:
@@ -3280,7 +3352,12 @@ class DesktopApi:
             raise ValueError("远端响应无效")
         return result
 
-    def try_auto_unlock(self, device_json: str, access_password: str) -> dict[str, Any]:
+    def try_auto_unlock(
+        self,
+        device_json: str,
+        access_password: str,
+        force: bool = False,
+    ) -> dict[str, Any]:
         try:
             device = self._validated_device(device_json)
             status = self._remote_json(device, "/api/session-status", access_password)
@@ -3293,7 +3370,7 @@ class DesktopApi:
             if not lock_password:
                 return {"ok": True, "status": "no_credential"}
             with self._unlock_lock:
-                if device_id in self._unlock_attempts:
+                if device_id in self._unlock_attempts and not force:
                     return {"ok": True, "status": "already_attempted"}
                 self._unlock_attempts.add(device_id)
             # First dismiss the Windows lock screen. Winlogon's transition to
@@ -4068,7 +4145,12 @@ class RemoteHandler(BaseHTTPRequestHandler):
             json_response(
                 self,
                 HTTPStatus.OK,
-                {"ok": True, "devices": devices, "local_status": local_status},
+                {
+                    "ok": True,
+                    "devices": devices,
+                    "local_status": local_status,
+                    "outgoing_sessions": self.server.state.public_outgoing_sessions(),
+                },
                 allow_cross_origin=False,
             )
             return
@@ -4344,6 +4426,58 @@ class RemoteHandler(BaseHTTPRequestHandler):
             return
 
         parsed = urlparse(self.path)
+        if parsed.path == "/api/outgoing-session/heartbeat":
+            if not self.check_local_desktop():
+                return
+            payload = self.read_json_payload()
+            if payload is None:
+                return
+            session_id = str(payload.get("session_id", ""))
+            active = self.server.state.touch_outgoing_session(session_id)
+            json_response(
+                self,
+                HTTPStatus.OK if active else HTTPStatus.CONFLICT,
+                {"ok": active, "cancelled": not active},
+                allow_cross_origin=False,
+            )
+            return
+        if parsed.path == "/api/outgoing-session/release":
+            if not self.check_local_desktop():
+                return
+            payload = self.read_json_payload()
+            if payload is None:
+                return
+            released = self.server.state.release_outgoing_session(str(payload.get("session_id", "")))
+            json_response(
+                self,
+                HTTPStatus.OK,
+                {"ok": True, "released": released},
+                allow_cross_origin=False,
+            )
+            return
+        if parsed.path == "/api/outgoing-session/cancel":
+            if not self.check_local_desktop():
+                return
+            payload = self.read_json_payload()
+            if payload is None:
+                return
+            session = self.server.state.cancel_outgoing_session(str(payload.get("session_id", "")))
+            if session is None:
+                json_response(
+                    self,
+                    HTTPStatus.NOT_FOUND,
+                    {"ok": False, "error": "远程控制会话已结束"},
+                    allow_cross_origin=False,
+                )
+                return
+            remote_ended = end_outgoing_remote_session(session)
+            json_response(
+                self,
+                HTTPStatus.OK,
+                {"ok": True, "remote_ended": remote_ended},
+                allow_cross_origin=False,
+            )
+            return
         if parsed.path == "/api/remote-window/open":
             if not self.check_local_desktop():
                 return
@@ -4367,6 +4501,7 @@ class RemoteHandler(BaseHTTPRequestHandler):
                     raise ValueError("不能远程控制本机，请选择另一台局域网设备")
                 handoff_id = self.server.state.create_remote_window_session(normalized)
                 process_id = launch_remote_window(self.server.state.port, handoff_id)
+                self.server.state.register_outgoing_session(normalized, process_id)
             except (OSError, ValueError) as exc:
                 if handoff_id:
                     self.server.state.consume_remote_window_session(handoff_id)
@@ -4403,6 +4538,7 @@ class RemoteHandler(BaseHTTPRequestHandler):
             result = self.server.state.get_credential_api().try_auto_unlock(
                 json.dumps(device, ensure_ascii=False),
                 token,
+                force=payload.get("force") is True,
             )
             json_response(self, HTTPStatus.OK, result, allow_cross_origin=False)
             return
@@ -4973,6 +5109,31 @@ def target_url(device: dict[str, Any], path: str) -> str:
     if ":" in host and not host.startswith("["):
         host = f"[{host}]"
     return f"http://{host}:{int(device['port'])}{path}"
+
+
+def end_outgoing_remote_session(session: dict[str, Any]) -> bool:
+    try:
+        data = json.dumps(
+            {
+                "token": str(session["token"]),
+                "session_id": str(session["session_id"]),
+            },
+            separators=(",", ":"),
+        ).encode("utf-8")
+        request = Request(
+            target_url(session["device"], "/api/session/end"),
+            data=data,
+            method="POST",
+            headers={
+                "Content-Type": "application/json",
+                "X-Remote-Token": str(session["token"]),
+            },
+        )
+        with urlopen(request, timeout=2.5) as response:
+            result = json.loads(response.read(64 * 1024).decode("utf-8"))
+        return bool(result.get("ok") and result.get("ended"))
+    except (HTTPError, OSError, ValueError, URLError, TimeoutError):
+        return False
 
 
 def verify_remote_device(device: dict[str, Any], token: str) -> dict[str, Any]:

@@ -537,6 +537,32 @@
     .preview-status.busy .preview-status-dot { box-shadow: 0 0 0 4px rgba(54, 198, 139, .14), 0 0 16px rgba(54, 198, 139, 1); }
     .preview-status.offline { color: #c2c5cc; }
     .preview-status.offline .preview-status-dot { background: #747983; box-shadow: none; }
+    .preview-stop-control {
+      position: absolute;
+      z-index: 5;
+      top: 50%;
+      left: 50%;
+      display: none;
+      height: 38px;
+      align-items: center;
+      justify-content: center;
+      gap: 7px;
+      padding: 0 15px;
+      border: 1px solid rgba(255, 139, 153, .72);
+      border-radius: 9px;
+      background: rgba(133, 36, 51, .82);
+      color: #fff;
+      font-weight: 600;
+      box-shadow: 0 10px 28px rgba(0, 0, 0, .38);
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+      transform: translate(-50%, -50%);
+      cursor: pointer;
+    }
+    .preview-stop-control.show { display: inline-flex; }
+    .preview-stop-control:hover { background: rgba(165, 43, 60, .94); }
+    .preview-stop-control:disabled { opacity: .65; cursor: wait; }
+    .preview-stop-control svg { width: 17px; height: 17px; }
     .control-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 10px; }
     .control-card {
       position: relative;
@@ -955,6 +981,32 @@
     }
     .remote-hint { position: absolute; pointer-events: none; color: #6f7380; }
     .remote-hint.hidden { display: none; }
+    .remote-unlock-action {
+      position: absolute;
+      z-index: 34;
+      bottom: 20px;
+      left: 50%;
+      display: none;
+      min-width: 138px;
+      height: 42px;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      border: 1px solid rgba(160, 211, 255, .55);
+      border-radius: 10px;
+      background: rgba(60, 104, 174, .82);
+      color: #fff;
+      font-weight: 600;
+      box-shadow: 0 10px 32px rgba(0, 0, 0, .36), inset 0 1px rgba(255, 255, 255, .16);
+      backdrop-filter: blur(14px) saturate(130%);
+      -webkit-backdrop-filter: blur(14px) saturate(130%);
+      transform: translateX(-50%);
+      cursor: pointer;
+    }
+    .remote-unlock-action.show { display: inline-flex; }
+    .remote-unlock-action:hover { background: rgba(71, 120, 196, .92); }
+    .remote-unlock-action:disabled { opacity: .72; cursor: wait; }
+    .remote-unlock-action svg { width: 18px; height: 18px; }
 
     .toast {
       position: fixed;
@@ -1060,6 +1112,7 @@
         linear-gradient(145deg, #101613, #0d1012 62%, #111416);
     }
     .control-occupation.show { display: grid; }
+    .app.settings-mode .control-occupation { display: none; }
     .control-occupation::before {
       content: "";
       position: absolute;
@@ -1195,6 +1248,7 @@
     <symbol id="i-chevron-up" viewBox="0 0 24 24"><path d="m6 15 6-6 6 6"/></symbol>
     <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3 6h7l2 2h9v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6Z"/></symbol>
     <symbol id="i-lock" viewBox="0 0 24 24"><rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3M12 14v3"/></symbol>
+    <symbol id="i-unlock" viewBox="0 0 24 24"><rect x="5" y="10" width="14" height="11" rx="2"/><path d="M9 10V7a4 4 0 0 1 7.5-2M12 14v3"/></symbol>
     <symbol id="i-file" viewBox="0 0 24 24"><path d="M6 2h8l4 4v16H6V2Z"/><path d="M14 2v5h5"/></symbol>
     <symbol id="i-clipboard" viewBox="0 0 24 24"><rect x="5" y="4" width="14" height="17" rx="2"/><path d="M9 4.5V3h6v1.5M9 9h6M9 13h6M9 17h4"/></symbol>
     <symbol id="i-upload" viewBox="0 0 24 24"><path d="M12 16V3M7 8l5-5 5 5M4 15v5h16v-5"/></symbol>
@@ -1252,6 +1306,7 @@
             <img class="preview-desktop-image" id="detailPreviewImage" alt="被控端桌面背景" draggable="false">
           </div>
           <div class="preview-status" id="detailPreviewStatus"><span class="preview-status-dot"></span><span id="detailPreviewState">在线</span></div>
+          <button class="preview-stop-control" id="stopOutgoingControl" type="button"><svg><use href="#i-x"/></svg><span>解除控制</span></button>
         </div>
         <div class="control-grid">
           <button class="control-card primary" id="controlButton"><svg><use href="#i-monitor"/></svg><span>桌面控制</span></button>
@@ -1408,6 +1463,7 @@
       </div>
       <div class="remote-hint" id="remoteHint">正在获取远程画面…</div>
     </div>
+    <button class="remote-unlock-action" id="unlockRemoteButton" type="button"><svg><use href="#i-unlock"/></svg><span>解锁被控电脑</span></button>
   </section>
   <div class="remote-popover" id="clipboardPopover">
     <strong>纯文字剪贴板同步</strong>
@@ -1482,6 +1538,8 @@
       cursorOwner: "controller",
       toastTimer: 0,
       autoUnlockChecking: false,
+      remoteLockStatusTimer: 0,
+      remoteSessionLocked: false,
       monitors: [],
       clipboardTimer: 0,
       clipboardBusy: false,
@@ -1507,6 +1565,7 @@
       settingsSaveQueue: Promise.resolve(true),
       settingsSaveRevision: 0,
       settingsSaveTimer: 0,
+      outgoingSessions: [],
       settings: {control_fps_limit: 60, remember_codes: true, close_to_tray: true, lock_remote_on_disconnect: false, auto_check_updates: true, auto_install_updates: true},
       latestUpdate: null,
       autoUpdateStartedForVersion: ""
@@ -1936,6 +1995,7 @@
         const payload = await response.json();
         state.devices = payload.devices || [];
         state.localStatus = payload.local_status || {active: false};
+        state.outgoingSessions = payload.outgoing_sessions || [];
         if (!state.selectedId && state.devices.length) {
           state.selectedId = state.devices.find((device) => !device.is_self)?.id || state.devices[0].id;
         } else if (state.selectedId && !state.devices.some((device) => device.id === state.selectedId)) {
@@ -1991,12 +2051,42 @@
       $("detailId").textContent = device.id;
       $("detailOs").textContent = device.os || "Windows";
       $("detailMode").textContent = device.is_self ? "本机不可远程连接" : (device.busy ? "当前会话占用" : (device.view_only ? "仅允许观看" : "允许控制"));
+      const outgoingControl = state.outgoingSessions.find(
+        (session) => session.device_id === device.id && session.mode === "control"
+      );
+      $("stopOutgoingControl").classList.toggle("show", Boolean(device.busy && outgoingControl));
+      $("stopOutgoingControl").dataset.sessionId = outgoingControl?.session_id || "";
       const blocked = Boolean(device.is_self || device.busy || state.localStatus?.active);
       $("controlButton").disabled = Boolean(device.view_only || blocked);
       $("viewButton").disabled = blocked;
       $("deviceFileButton").disabled = Boolean(device.view_only || blocked);
       $("credentialButton").disabled = Boolean(device.is_self || state.localStatus?.active);
       renderDevicePreview(device);
+    }
+
+    async function cancelOutgoingControl() {
+      const sessionId = $("stopOutgoingControl").dataset.sessionId || "";
+      if (!sessionId) return;
+      const button = $("stopOutgoingControl");
+      button.disabled = true;
+      button.querySelector("span").textContent = "正在解除…";
+      try {
+        const response = await fetch("/api/outgoing-session/cancel", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({session_id: sessionId}),
+          cache: "no-store"
+        });
+        const result = await response.json().catch(() => ({}));
+        if (!response.ok || !result.ok) throw new Error(result.error || `HTTP ${response.status}`);
+        showToast("已解除远程控制");
+        await refreshDevices(false);
+      } catch (error) {
+        showToast(`解除控制失败：${error.message || "未知错误"}`);
+      } finally {
+        button.disabled = false;
+        button.querySelector("span").textContent = "解除控制";
+      }
     }
 
     function selectDevice(id) {
@@ -2205,6 +2295,10 @@
       state.remoteFrameHeight = 0;
       state.keyboardEnabled = false;
       state.autoUnlockChecking = false;
+      state.remoteSessionLocked = false;
+      clearTimeout(state.remoteLockStatusTimer);
+      state.remoteLockStatusTimer = 0;
+      setRemoteUnlockVisible(false);
       state.remoteLockSentForClose = false;
       state.filePath = "";
       state.fileParent = "";
@@ -2235,6 +2329,7 @@
       sendSessionHeartbeat(true).then((ready) => {
         if (!ready || !state.session?.connected) return;
         enableDefaultClipboardSync();
+        startRemoteLockMonitoring(state.session);
         loadMonitors().finally(() => {
           if (!state.session?.connected) return;
           refreshScreen();
@@ -2249,6 +2344,9 @@
       if (endingSession) endingSession.ending = true;
       clearTimeout(state.sessionHeartbeatTimer);
       state.sessionHeartbeatTimer = 0;
+      clearTimeout(state.remoteLockStatusTimer);
+      state.remoteLockStatusTimer = 0;
+      setRemoteUnlockVisible(false);
       if (
         lockOnDisconnect &&
         state.settings.lock_remote_on_disconnect &&
@@ -2266,6 +2364,7 @@
       resetInputTransport();
       if (state.session) state.session.connected = false;
       await endRemoteSession(endingSession);
+      await releaseOutgoingSession(endingSession);
       resetScreenStream();
       stopRemoteCursorTracking();
       resetClipboardSync();
@@ -2297,6 +2396,7 @@
       $("toolbarToggle").title = collapsed ? "展开工具栏" : "收起工具栏";
       $("toolbarToggle").setAttribute("aria-label", collapsed ? "展开工具栏" : "收起工具栏");
       scheduleNativeInputSync(260);
+      requestAnimationFrame(syncNativeVideoLayout);
     }
 
     function scheduleToolbarCollapse(delay = 700) {
@@ -2323,6 +2423,7 @@
       state.remoteTitlebarHideTimer = 0;
       $("remoteSession").classList.toggle("remote-titlebar-visible", Boolean(visible));
       scheduleNativeInputSync(260);
+      requestAnimationFrame(syncNativeVideoLayout);
     }
 
     function revealRemoteTitlebar() {
@@ -2359,6 +2460,32 @@
       return `${deviceOrigin(session.device)}${path}${joiner}token=${encodeURIComponent(session.token)}`;
     }
 
+    async function touchOutgoingSession(session) {
+      if (!remoteWindowMode || !session?.controllerSessionId) return true;
+      try {
+        const response = await fetch("/api/outgoing-session/heartbeat", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({session_id: session.controllerSessionId}),
+          cache: "no-store"
+        });
+        return response.ok;
+      } catch {
+        return true;
+      }
+    }
+
+    async function releaseOutgoingSession(session) {
+      if (!remoteWindowMode || !session?.controllerSessionId) return;
+      await fetch("/api/outgoing-session/release", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({session_id: session.controllerSessionId}),
+        keepalive: true,
+        cache: "no-store"
+      }).catch(() => null);
+    }
+
     async function sendSessionHeartbeat(initial = false) {
       const session = state.session;
       if (!session?.connected || session.ending || state.sessionHeartbeatInFlight) return !initial;
@@ -2366,6 +2493,13 @@
       clearTimeout(state.sessionHeartbeatTimer);
       state.sessionHeartbeatInFlight = true;
       try {
+        if (!await touchOutgoingSession(session)) {
+          session.ending = true;
+          setRemoteStatus("控制端已解除本次远程控制", true);
+          setTimeout(() => stopSession(true, false), 0);
+          return false;
+        }
+        if (session.heartbeatUnsupported) return true;
         const response = await fetch(remoteSessionEndpoint(session, "/api/session/heartbeat"), {
           method: "POST",
           headers: {"Content-Type": "application/json", "X-Remote-Token": session.token},
@@ -2399,7 +2533,12 @@
         return true;
       } finally {
         state.sessionHeartbeatInFlight = false;
-        if (state.session === session && session.connected && !session.ending && !session.heartbeatUnsupported) {
+        if (
+          state.session === session &&
+          session.connected &&
+          !session.ending &&
+          (remoteWindowMode || !session.heartbeatUnsupported)
+        ) {
           state.sessionHeartbeatTimer = setTimeout(() => sendSessionHeartbeat(false), 2000);
         }
       }
@@ -2727,7 +2866,6 @@
         `已连接 · ${monitor?.label || "远端屏幕"} · ${state.remoteFrameWidth} × ${state.remoteFrameHeight} · 最高 ${fpsLimit} FPS`
       );
       scheduleNativeInputSync();
-      maybeAutoUnlock();
       updateRemoteCursorOverlay();
     }
 
@@ -2735,12 +2873,19 @@
       const rect = $("remoteStage").getBoundingClientRect();
       const obscured = $("fileModal").classList.contains("show") ||
         $("clipboardPopover").classList.contains("show") || document.hidden;
+      const exclusions = [
+        {left: 0, top: 0, width: window.innerWidth, height: 7},
+        visibleElementRect(document.querySelector(".remote-toolbar")),
+        visibleElementRect($("remoteTitlebar")),
+        visibleElementRect($("unlockRemoteButton"))
+      ].filter(Boolean);
       return {
         surface_left: rect.left,
         surface_top: rect.top,
         surface_width: rect.width,
         surface_height: rect.height,
-        visible: state.nativeVideoActive && !obscured
+        visible: state.nativeVideoActive && !obscured,
+        exclusions
       };
     }
 
@@ -2809,7 +2954,6 @@
           `原生 H.264 · ${status.hardware_decode ? "硬件解码" : "软件解码"}${actualFpsText} · 最高 ${sessionControlFps(session)} FPS`
         );
         scheduleNativeInputSync();
-        maybeAutoUnlock();
         state.nativeVideoStatusTimer = setTimeout(
           () => pollNativeVideoStatus(session, revision, attempt + 1),
           1000
@@ -3042,26 +3186,92 @@
       }
     }
 
-    async function maybeAutoUnlock() {
+    function setRemoteUnlockVisible(visible) {
+      state.remoteSessionLocked = Boolean(visible);
+      $("unlockRemoteButton").classList.toggle(
+        "show",
+        state.remoteSessionLocked && Boolean(state.session?.connected) && !state.session?.viewOnly
+      );
+      scheduleNativeInputSync(30);
+      requestAnimationFrame(syncNativeVideoLayout);
+    }
+
+    async function requestRemoteUnlock(manual = false) {
       const session = state.session;
       if (
         !session?.connected ||
         session.viewOnly ||
-        !session.initialAutoUnlockPending ||
+        state.autoUnlockChecking ||
         !window.pywebview?.api?.try_auto_unlock
-      ) return;
-      session.initialAutoUnlockPending = false;
-      if (state.autoUnlockChecking) return;
+      ) return false;
       state.autoUnlockChecking = true;
+      $("unlockRemoteButton").disabled = true;
+      $("unlockRemoteButton").querySelector("span").textContent = "正在解锁…";
       try {
-        const result = await window.pywebview.api.try_auto_unlock(JSON.stringify(session.device), session.token);
+        const result = await window.pywebview.api.try_auto_unlock(
+          JSON.stringify(session.device),
+          session.token,
+          Boolean(manual)
+        );
         if (result?.status === "submitted") {
-          setRemoteStatus("已唤醒锁屏界面，逐字输入密码并提交");
-        } else if (result?.status === "access_denied") {
-          setRemoteStatus("访问凭据已失效，请重新连接", true);
+          setRemoteStatus(manual ? "已手动提交远端锁屏密码" : "检测到初始锁屏，已自动提交锁屏密码");
+          return true;
         }
-      } catch {}
-      finally { state.autoUnlockChecking = false; }
+        if (result?.status === "not_locked") {
+          setRemoteUnlockVisible(false);
+          return true;
+        }
+        if (result?.status === "no_credential") {
+          if (manual) showToast("未保存这台设备的锁屏密码，请重新连接并填写锁屏密码");
+          return false;
+        }
+        if (result?.status === "access_denied") {
+          setRemoteStatus("访问凭据已失效，请重新连接", true);
+          return false;
+        }
+        if (manual && result?.error) showToast(`解锁失败：${result.error}`);
+        return false;
+      } catch (error) {
+        if (manual) showToast(`解锁失败：${error.message || "未知错误"}`);
+        return false;
+      } finally {
+        state.autoUnlockChecking = false;
+        $("unlockRemoteButton").disabled = false;
+        $("unlockRemoteButton").querySelector("span").textContent = "解锁被控电脑";
+      }
+    }
+
+    async function pollRemoteLockStatus(session) {
+      if (!session?.connected || session !== state.session || session.viewOnly) return;
+      clearTimeout(state.remoteLockStatusTimer);
+      try {
+        const response = await fetch(endpoint(`/api/session-status?t=${Date.now()}`), {cache: "no-store"});
+        const status = await response.json().catch(() => ({}));
+        if (response.ok && status.ok) {
+          const locked = Boolean(status.session_locked);
+          setRemoteUnlockVisible(locked);
+          if (session.initialAutoUnlockPending) {
+            session.initialAutoUnlockPending = false;
+            if (locked) await requestRemoteUnlock(false);
+          }
+        }
+      } catch {
+        // A transient status failure must not interrupt the active desktop stream.
+      } finally {
+        if (session === state.session && session.connected && !session.viewOnly) {
+          state.remoteLockStatusTimer = setTimeout(() => pollRemoteLockStatus(session), 900);
+        }
+      }
+    }
+
+    function startRemoteLockMonitoring(session) {
+      clearTimeout(state.remoteLockStatusTimer);
+      state.remoteLockStatusTimer = 0;
+      if (!session?.connected || session.viewOnly) {
+        setRemoteUnlockVisible(false);
+        return;
+      }
+      pollRemoteLockStatus(session);
     }
 
     function remotePoint(event) {
@@ -3486,6 +3696,7 @@
     $("viewButton").addEventListener("click", () => openPair("view"));
     $("deviceFileButton").addEventListener("click", () => openPair("files"));
     $("credentialButton").addEventListener("click", () => openPair(selectedDevice()?.view_only ? "view" : "control", true));
+    $("stopOutgoingControl").addEventListener("click", cancelOutgoingControl);
     $("pairForm").addEventListener("submit", verifyAndConnect);
     $("pairCancel").addEventListener("click", closePair);
     $("pairModal").addEventListener("mousedown", (event) => { if (event.target === $("pairModal")) closePair(); });
@@ -3493,6 +3704,7 @@
       if ($("lockPasswordInput").value) $("rememberLockPassword").checked = true;
     });
     $("closeSession").addEventListener("click", () => stopSession(remoteWindowMode, true));
+    $("unlockRemoteButton").addEventListener("click", () => requestRemoteUnlock(true));
     $("monitorSelect").addEventListener("change", () => {
       if (!state.session?.connected) return;
       releaseAllRemoteInput();
@@ -3781,6 +3993,12 @@
           session_id: session.controllerSessionId
         })], {type: "text/plain;charset=UTF-8"});
         navigator.sendBeacon(remoteSessionEndpoint(session, "/api/session/end"), endBody);
+        if (remoteWindowMode) {
+          navigator.sendBeacon(
+            "/api/outgoing-session/release",
+            new Blob([JSON.stringify({session_id: session.controllerSessionId})], {type: "text/plain;charset=UTF-8"})
+          );
+        }
       }
       if (
         !state.remoteLockSentForClose &&

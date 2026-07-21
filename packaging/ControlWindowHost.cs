@@ -167,6 +167,12 @@ namespace WindowsLANRemoteControlHost
             int visible);
 
         [DllImport("WindowsLANRemoteVideo.dll", CallingConvention = CallingConvention.StdCall)]
+        private static extern void LANRemoteVideoSetExclusions(
+            IntPtr handle,
+            [In] int[] rectangles,
+            int count);
+
+        [DllImport("WindowsLANRemoteVideo.dll", CallingConvention = CallingConvention.StdCall)]
         private static extern void LANRemoteVideoSetCursor(
             IntPtr handle,
             int x,
@@ -1162,6 +1168,20 @@ namespace WindowsLANRemoteControlHost
                 surface.Width,
                 surface.Height,
                 ReadBoolean(values, "visible", true) ? 1 : 0);
+            RectangleF[] exclusions = ReadExclusions(values);
+            int[] nativeExclusions = new int[exclusions.Length * 4];
+            for (int index = 0; index < exclusions.Length; index++)
+            {
+                Point topLeft = PointToClient(Point.Round(exclusions[index].Location));
+                Point bottomRight = PointToClient(Point.Round(new PointF(
+                    exclusions[index].Right,
+                    exclusions[index].Bottom)));
+                nativeExclusions[index * 4] = topLeft.X;
+                nativeExclusions[index * 4 + 1] = topLeft.Y;
+                nativeExclusions[index * 4 + 2] = Math.Max(0, bottomRight.X - topLeft.X);
+                nativeExclusions[index * 4 + 3] = Math.Max(0, bottomRight.Y - topLeft.Y);
+            }
+            LANRemoteVideoSetExclusions(nativeVideoHandle, nativeExclusions, exclusions.Length);
             return true;
         }
 
@@ -1743,10 +1763,10 @@ namespace WindowsLANRemoteControlHost
       device_id: String(deviceId || ''), password: String(password || ''), device_name: String(deviceName || '')
     }),
     clear_lock_password: (deviceId) => credentialCall('clear_lock', {device_id: String(deviceId || '')}),
-    try_auto_unlock: (deviceJson, token) => fetch('/api/native/try-auto-unlock', {
+    try_auto_unlock: (deviceJson, token, force) => fetch('/api/native/try-auto-unlock', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({device: JSON.parse(deviceJson), token}),
+      body: JSON.stringify({device: JSON.parse(deviceJson), token, force: Boolean(force)}),
       cache: 'no-store'
     }).then((response) => response.json())
   }};

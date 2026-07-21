@@ -161,6 +161,32 @@ class CoreFunctionTests(unittest.TestCase):
         self.assertEqual(normalized["controllerId"], "local-device")
         self.assertEqual(normalized["controllerName"], "Local controller")
 
+    def test_outgoing_control_session_can_be_listed_cancelled_and_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {"APPDATA": directory}):
+            state = make_state(lan_remote.SettingsStore())
+            payload = {
+                "device": {"id": "remote-device", "name": "Remote", "ip": "192.168.1.30", "port": 8765},
+                "token": "session-token",
+                "viewOnly": False,
+                "controllerSessionId": "session-0000000000000001",
+            }
+            state.register_outgoing_session(payload, 1234)
+            self.assertEqual(
+                state.public_outgoing_sessions()[0],
+                {
+                    "session_id": "session-0000000000000001",
+                    "device_id": "remote-device",
+                    "device_name": "Remote",
+                    "mode": "control",
+                    "started_at": unittest.mock.ANY,
+                },
+            )
+            self.assertTrue(state.touch_outgoing_session("session-0000000000000001"))
+            cancelled = state.cancel_outgoing_session("session-0000000000000001")
+            self.assertIsNotNone(cancelled)
+            self.assertFalse(state.touch_outgoing_session("session-0000000000000001"))
+            self.assertEqual(state.public_outgoing_sessions(), [])
+
     def test_remote_window_payload_rejects_local_device(self) -> None:
         with self.assertRaisesRegex(ValueError, "不能远程控制本机"):
             lan_remote.normalize_remote_window_payload(
@@ -177,6 +203,7 @@ class CoreFunctionTests(unittest.TestCase):
 
     def test_frontend_has_graphical_busy_state_and_authenticated_wallpaper_preview(self) -> None:
         html = (Path(__file__).resolve().parents[1] / "web" / "index.html").read_text(encoding="utf-8")
+        self.assertIn(".app.settings-mode .control-occupation { display: none; }", html)
         for marker in (
             'id="controlOccupation"',
             'id="controlledDuration"',
@@ -192,6 +219,8 @@ class CoreFunctionTests(unittest.TestCase):
             "clearLegacyDevicePreviews",
             "/api/session/heartbeat",
             "本机正在被远程控制",
+            'id="stopOutgoingControl"',
+            "/api/outgoing-session/cancel",
         ):
             self.assertIn(marker, html)
         preview_markup = html.split('<div class="preview" id="detailPreview">', 1)[1].split(
@@ -241,10 +270,16 @@ class CoreFunctionTests(unittest.TestCase):
         self.assertIn('$("clipboardReceive").checked = true;', html)
         self.assertIn("initialAutoUnlockPending: !viewOnly", html)
         self.assertIn("session.initialAutoUnlockPending = false;", html)
+        self.assertIn('id="unlockRemoteButton"', html)
+        self.assertIn("startRemoteLockMonitoring(state.session);", html)
+        self.assertIn("if (locked) await requestRemoteUnlock(false);", html)
+        self.assertIn('requestRemoteUnlock(true)', html)
         self.assertNotIn("autoUnlockLastCheck", html)
 
     def test_remote_window_chrome_is_separate_from_control_toolbar(self) -> None:
-        html = (Path(__file__).resolve().parents[1] / "web" / "index.html").read_text(encoding="utf-8")
+        root = Path(__file__).resolve().parents[1]
+        html = (root / "web" / "index.html").read_text(encoding="utf-8")
+        host = (root / "packaging" / "ControlWindowHost.cs").read_text(encoding="utf-8")
         titlebar = html.split('<header class="remote-titlebar"', 1)[1].split("</header>", 1)[0]
         toolbar = html.split('<div class="remote-toolbar">', 1)[1].split("</div>", 1)[0]
         for control_id in ("remoteWindowMinimize", "remoteWindowMaximize", "closeSession"):
@@ -255,6 +290,9 @@ class CoreFunctionTests(unittest.TestCase):
         self.assertIn("event.clientY <= 6", html)
         self.assertIn("event.clientY > 40", html)
         self.assertIn("remote-titlebar-visible", html)
+        self.assertIn("LANRemoteVideoSetExclusions", host)
+        native = (root / "native" / "WindowsLANRemoteVideo.cpp").read_text(encoding="utf-8")
+        self.assertIn("ApplyExclusionRegion", native)
 
     def test_access_code_has_expected_entropy_friendly_format(self) -> None:
         values = {lan_remote.generate_access_code() for _ in range(64)}
@@ -622,6 +660,31 @@ class SettingsAndAuthenticationTests(unittest.TestCase):
             pause.call_args_list,
             [call(lan_remote.UNLOCK_WAKE_DELAY_SECONDS), call(lan_remote.UNLOCK_SUBMIT_DELAY_SECONDS)],
         )
+
+    def test_manual_unlock_can_retry_after_the_initial_attempt(self) -> None:
+        api = lan_remote.DesktopApi()
+        api.vault = Mock()
+        api.vault.get_secret.return_value = "Lock password"
+        api._unlock_attempts.add("remote-device")
+        device = {"id": "remote-device", "ip": "192.168.1.25", "port": 8765}
+        remote = Mock(
+            side_effect=[
+                {"session_locked": True},
+                {"ok": True},
+                {"session_locked": True},
+                {"ok": True},
+                {"ok": True},
+            ]
+        )
+        with (
+            patch.object(api, "_validated_device", return_value=device),
+            patch.object(api, "_remote_json", remote),
+            patch.object(lan_remote.time, "sleep"),
+        ):
+            result = api.try_auto_unlock("{}", "access-token", force=True)
+
+        self.assertEqual(result, {"ok": True, "status": "submitted"})
+        self.assertEqual(remote.call_count, 5)
 
     def test_saved_settings_and_permanent_password_survive_reload(self) -> None:
         with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {"APPDATA": directory}):
@@ -1105,6 +1168,33 @@ class HttpIntegrationTests(unittest.TestCase):
         self.assertEqual(status, 200, data)
         self.assertEqual(json.loads(data)["status"], "locked")
         lock_workstation.assert_called_once_with()
+
+    def test_main_window_can_cancel_its_outgoing_control_session(self) -> None:
+        session_id = "session-0000000000000001"
+        self.state.register_outgoing_session(
+            {
+                "device": {"id": "remote-device", "name": "Remote", "ip": "192.168.1.25", "port": 8765},
+                "token": "remote-session-token",
+                "viewOnly": False,
+                "controllerSessionId": session_id,
+            },
+            1234,
+        )
+        status, _, data = self.request("GET", "/api/devices")
+        self.assertEqual(status, 200, data)
+        self.assertEqual(json.loads(data)["outgoing_sessions"][0]["session_id"], session_id)
+
+        with patch.object(lan_remote, "end_outgoing_remote_session", return_value=True) as end_remote:
+            status, _, data = self.request(
+                "POST",
+                "/api/outgoing-session/cancel",
+                body=json.dumps({"session_id": session_id}).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+            )
+        self.assertEqual(status, 200, data)
+        self.assertTrue(json.loads(data)["remote_ended"])
+        end_remote.assert_called_once()
+        self.assertFalse(self.state.touch_outgoing_session(session_id))
 
     def test_native_input_stream_is_authenticated_and_ordered(self) -> None:
         received: list[dict[str, object]] = []

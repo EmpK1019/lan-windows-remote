@@ -1111,15 +1111,35 @@ public:
 
     void SetLayout(const int left, const int top, const int width, const int height, const bool visible) {
         if (!window_) return;
+        layout_left_ = left;
+        layout_top_ = top;
+        layout_width_ = (std::max)(1, width);
+        layout_height_ = (std::max)(1, height);
         layout_visible_ = visible;
         SetWindowPos(
-            window_, HWND_TOP, left, top, (std::max)(1, width), (std::max)(1, height),
+            window_, HWND_TOP, left, top, layout_width_, layout_height_,
             SWP_NOACTIVATE | (visible ? SWP_SHOWWINDOW : SWP_HIDEWINDOW));
+        ApplyExclusionRegion();
         if (renderer_) {
             renderer_->SetVisible(visible);
-            renderer_->Resize((std::max)(1, width), (std::max)(1, height));
+            renderer_->Resize(layout_width_, layout_height_);
         }
         UpdateCursorPosition();
+    }
+
+    void SetExclusions(const int* rectangles, const int count) {
+        exclusion_rectangles_.clear();
+        if (rectangles && count > 0) {
+            const int safe_count = (std::min)(count, 16);
+            exclusion_rectangles_.reserve(static_cast<std::size_t>(safe_count));
+            for (int index = 0; index < safe_count; ++index) {
+                const int* value = rectangles + index * 4;
+                if (value[2] <= 0 || value[3] <= 0) continue;
+                exclusion_rectangles_.push_back(RECT{
+                    value[0], value[1], value[0] + value[2], value[1] + value[3]});
+            }
+        }
+        ApplyExclusionRegion();
     }
 
     void SetRemoteCursor(
@@ -1218,6 +1238,28 @@ public:
     }
 
 private:
+    void ApplyExclusionRegion() {
+        if (!window_ || layout_width_ < 1 || layout_height_ < 1) return;
+        if (exclusion_rectangles_.empty()) {
+            SetWindowRgn(window_, nullptr, TRUE);
+            return;
+        }
+        HRGN visible_region = CreateRectRgn(0, 0, layout_width_, layout_height_);
+        if (!visible_region) return;
+        for (const RECT& parent_rectangle : exclusion_rectangles_) {
+            const int left = (std::max)(0, static_cast<int>(parent_rectangle.left) - layout_left_);
+            const int top = (std::max)(0, static_cast<int>(parent_rectangle.top) - layout_top_);
+            const int right = (std::min)(layout_width_, static_cast<int>(parent_rectangle.right) - layout_left_);
+            const int bottom = (std::min)(layout_height_, static_cast<int>(parent_rectangle.bottom) - layout_top_);
+            if (right <= left || bottom <= top) continue;
+            HRGN excluded = CreateRectRgn(left, top, right, bottom);
+            if (!excluded) continue;
+            CombineRgn(visible_region, visible_region, excluded, RGN_DIFF);
+            DeleteObject(excluded);
+        }
+        if (!SetWindowRgn(window_, visible_region, TRUE)) DeleteObject(visible_region);
+    }
+
     static void RegisterWindowClass() {
         static std::once_flag once;
         std::call_once(once, [] {
@@ -1593,6 +1635,11 @@ private:
     std::atomic<bool> stop_{false};
     std::atomic<bool> remote_cursor_active_{false};
     std::atomic<bool> layout_visible_{false};
+    int layout_left_ = 0;
+    int layout_top_ = 0;
+    int layout_width_ = 1;
+    int layout_height_ = 1;
+    std::vector<RECT> exclusion_rectangles_;
     std::atomic<int> cursor_x_{0};
     std::atomic<int> cursor_y_{0};
     std::atomic<int> cursor_remote_width_{0};
@@ -1673,6 +1720,11 @@ extern "C" __declspec(dllexport) int __stdcall LANRemoteVideoConfigure(
 extern "C" __declspec(dllexport) void __stdcall LANRemoteVideoSetLayout(
     void* handle, const int left, const int top, const int width, const int height, const int visible) {
     if (handle) static_cast<VideoClient*>(handle)->SetLayout(left, top, width, height, visible != 0);
+}
+
+extern "C" __declspec(dllexport) void __stdcall LANRemoteVideoSetExclusions(
+    void* handle, const int* rectangles, const int count) {
+    if (handle) static_cast<VideoClient*>(handle)->SetExclusions(rectangles, count);
 }
 
 extern "C" __declspec(dllexport) void __stdcall LANRemoteVideoSetCursor(

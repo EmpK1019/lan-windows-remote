@@ -40,7 +40,7 @@ namespace {
 
 constexpr UINT32 kDefaultBitrate30 = 8'000'000;
 constexpr UINT32 kDefaultBitrate60 = 16'000'000;
-constexpr UINT32 kDefaultBitrate120 = 12'000'000;
+constexpr UINT32 kDefaultBitrate120 = 24'000'000;
 
 void ThrowIfFailed(const HRESULT hr, const char* operation) {
     if (FAILED(hr)) {
@@ -615,9 +615,9 @@ struct EncodedSize {
     UINT height;
 };
 
-EncodedSize SelectEncodedSize(const UINT source_width, const UINT source_height, const UINT fps) {
-    const UINT max_width = fps >= 120 ? 1280 : 1920;
-    const UINT max_height = fps >= 120 ? 720 : 1080;
+EncodedSize SelectEncodedSize(const UINT source_width, const UINT source_height) {
+    constexpr UINT max_width = 1920;
+    constexpr UINT max_height = 1080;
     const double scale = (std::min)(
         1.0,
         (std::min)(
@@ -1377,7 +1377,7 @@ int Run(const Options& options) {
     struct MfGuard { ~MfGuard() { MFShutdown(); } } mf_guard;
 
     DesktopCapture capture(options.monitor);
-    const EncodedSize encoded = SelectEncodedSize(capture.width(), capture.height(), options.fps);
+    const EncodedSize encoded = SelectEncodedSize(capture.width(), capture.height());
     const UINT32 bitrate = BitrateForFps(options.fps);
     std::unique_ptr<GpuFrameConverter> gpu_converter;
     try {
