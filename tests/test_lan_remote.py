@@ -294,6 +294,26 @@ class CoreFunctionTests(unittest.TestCase):
         native = (root / "native" / "WindowsLANRemoteVideo.cpp").read_text(encoding="utf-8")
         self.assertIn("ApplyExclusionRegion", native)
 
+    def test_native_glass_toolbar_and_fill_mode_do_not_cut_video_holes(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        html = (root / "web" / "index.html").read_text(encoding="utf-8")
+        host = (root / "packaging" / "ControlWindowHost.cs").read_text(encoding="utf-8")
+        native = (root / "native" / "WindowsLANRemoteVideo.cpp").read_text(encoding="utf-8")
+        self.assertIn("class NativeGlassToolbar", host)
+        self.assertIn('case "set_native_overlay_state":', host)
+        self.assertIn("LANRemoteVideoSetExclusions(nativeVideoHandle, new int[0], 0);", host)
+        self.assertIn("LANRemoteVideoSetScaleMode", host)
+        self.assertIn("FillMode", host)
+        self.assertIn("window.__lanNativeOverlayAction", html)
+        self.assertIn("set_native_overlay_state", html)
+        self.assertIn('id="scaleModeButton"', html)
+        self.assertIn('scale_mode: sessionScaleMode()', html)
+        self.assertIn("#remoteScreen.scale-fill { object-fit: cover; }", html)
+        self.assertNotIn("{left: 0, top: 0, width: window.innerWidth, height: 7}", html)
+        self.assertIn("VideoProcessorSetStreamSourceRect", native)
+        self.assertIn('"fill" : "fit"', native)
+        self.assertIn("backdrop-filter: blur(20px) saturate(145%)", html)
+
     def test_access_code_has_expected_entropy_friendly_format(self) -> None:
         values = {lan_remote.generate_access_code() for _ in range(64)}
         self.assertEqual(len(values), 64)

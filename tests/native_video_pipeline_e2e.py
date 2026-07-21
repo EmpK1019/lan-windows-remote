@@ -117,6 +117,7 @@ def main() -> int:
             ctypes.c_int,
             ctypes.c_int,
         ]
+        dll.LANRemoteVideoSetScaleMode.argtypes = [ctypes.c_void_p, ctypes.c_int]
         dll.LANRemoteVideoGetStatus.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p, ctypes.c_int]
         dll.LANRemoteVideoGetStatus.restype = ctypes.c_int
         dll.LANRemoteVideoDestroy.argtypes = [ctypes.c_void_p]
@@ -142,6 +143,7 @@ def main() -> int:
             if not started:
                 raise RuntimeError("native video DLL rejected the E2E configuration")
             dll.LANRemoteVideoSetLayout(handle, 40, 50, 820, 460, 1)
+            dll.LANRemoteVideoSetScaleMode(handle, 1)
 
             deadline = time.monotonic() + 20
             first_image = None
@@ -220,6 +222,8 @@ def main() -> int:
                 raise RuntimeError(f"too few native video frames were rendered: {final_status}")
             if final_status.get("transport") != "native_h264_v1":
                 raise RuntimeError(f"unexpected video transport: {final_status}")
+            if final_status.get("scale_mode") != "fill":
+                raise RuntimeError(f"native fill scale mode was not applied: {final_status}")
             measured_seconds = max(0.001, time.monotonic() - measurement_started)
             final_status["measured_seconds"] = round(measured_seconds, 3)
             final_status["measured_decode_fps"] = round(

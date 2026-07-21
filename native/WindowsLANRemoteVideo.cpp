@@ -450,6 +450,10 @@ public:
     IMFDXGIDeviceManager* device_manager() const { return device_manager_.Get(); }
     bool hardware() const { return hardware_; }
     void SetVisible(const bool visible) { visible_ = visible; }
+    void SetScaleMode(const bool fill) {
+        std::lock_guard<std::mutex> guard(lock_);
+        fill_mode_ = fill;
+    }
     double AverageRenderMilliseconds() const {
         const std::uint64_t attempts = render_attempts_.load();
         return attempts ? render_microseconds_.load() / attempts / 1000.0 : 0.0;
@@ -577,17 +581,34 @@ private:
                 back_buffer_.Get(), processor_enumerator_.Get(), &output_description, &output_view),
             "create video processor output view");
 
-        const double scale = (std::min)(
-            static_cast<double>(output_width_) / input_width,
-            static_cast<double>(output_height_) / input_height);
-        const LONG rendered_width = static_cast<LONG>(input_width * scale);
-        const LONG rendered_height = static_cast<LONG>(input_height * scale);
         RECT source{0, 0, static_cast<LONG>(input_width), static_cast<LONG>(input_height)};
-        RECT destination{
-            (static_cast<LONG>(output_width_) - rendered_width) / 2,
-            (static_cast<LONG>(output_height_) - rendered_height) / 2,
-            (static_cast<LONG>(output_width_) + rendered_width) / 2,
-            (static_cast<LONG>(output_height_) + rendered_height) / 2};
+        RECT destination{0, 0, static_cast<LONG>(output_width_), static_cast<LONG>(output_height_)};
+        if (fill_mode_) {
+            const double input_aspect = static_cast<double>(input_width) / input_height;
+            const double output_aspect = static_cast<double>(output_width_) / output_height_;
+            if (input_aspect > output_aspect) {
+                LONG crop_width = static_cast<LONG>(input_height * output_aspect) & ~1L;
+                crop_width = (std::max)(2L, (std::min)(crop_width, static_cast<LONG>(input_width)));
+                source.left = ((static_cast<LONG>(input_width) - crop_width) / 2) & ~1L;
+                source.right = source.left + crop_width;
+            } else if (input_aspect < output_aspect) {
+                LONG crop_height = static_cast<LONG>(input_width / output_aspect) & ~1L;
+                crop_height = (std::max)(2L, (std::min)(crop_height, static_cast<LONG>(input_height)));
+                source.top = ((static_cast<LONG>(input_height) - crop_height) / 2) & ~1L;
+                source.bottom = source.top + crop_height;
+            }
+        } else {
+            const double scale = (std::min)(
+                static_cast<double>(output_width_) / input_width,
+                static_cast<double>(output_height_) / input_height);
+            const LONG rendered_width = static_cast<LONG>(input_width * scale);
+            const LONG rendered_height = static_cast<LONG>(input_height * scale);
+            destination = RECT{
+                (static_cast<LONG>(output_width_) - rendered_width) / 2,
+                (static_cast<LONG>(output_height_) - rendered_height) / 2,
+                (static_cast<LONG>(output_width_) + rendered_width) / 2,
+                (static_cast<LONG>(output_height_) + rendered_height) / 2};
+        }
         D3D11_VIDEO_COLOR black{};
         black.RGBA.A = 1.0f;
         video_context_->VideoProcessorSetOutputBackgroundColor(processor_.Get(), TRUE, &black);
@@ -684,6 +705,7 @@ private:
     std::atomic<std::uint64_t> render_microseconds_{0};
     std::atomic<std::uint64_t> render_attempts_{0};
     std::atomic<bool> visible_{true};
+    bool fill_mode_ = false;
 };
 
 class MfH264Decoder {
@@ -1142,6 +1164,12 @@ public:
         ApplyExclusionRegion();
     }
 
+    void SetScaleMode(const bool fill) {
+        fill_mode_ = fill;
+        if (renderer_) renderer_->SetScaleMode(fill);
+        UpdateCursorPosition();
+    }
+
     void SetRemoteCursor(
         const int x, const int y, const bool visible,
         const int remote_width, const int remote_height, const bool remote_owner) {
@@ -1211,6 +1239,7 @@ public:
                << ",\"presentation_latency_p50_ms\":" << latency.p50_ms
                << ",\"presentation_latency_p95_ms\":" << latency.p95_ms
                << ",\"presentation_latency_samples\":" << latency.samples
+               << ",\"scale_mode\":\"" << (fill_mode_ ? "fill" : "fit") << "\""
                << ",\"encoded_width\":" << encoded_width_
                << ",\"encoded_height\":" << encoded_height_
                << ",\"coordinate_width\":" << coordinate_width_
@@ -1343,9 +1372,13 @@ private:
             ShowWindow(cursor_window_, SW_HIDE);
             return;
         }
-        const double scale = (std::min)(
-            static_cast<double>(video_width) / remote_width,
-            static_cast<double>(video_height) / remote_height);
+        const double scale = fill_mode_
+            ? (std::max)(
+                static_cast<double>(video_width) / remote_width,
+                static_cast<double>(video_height) / remote_height)
+            : (std::min)(
+                static_cast<double>(video_width) / remote_width,
+                static_cast<double>(video_height) / remote_height);
         const int content_width = static_cast<int>(remote_width * scale);
         const int content_height = static_cast<int>(remote_height * scale);
         const int left = video.left + (video_width - content_width) / 2 +
@@ -1506,6 +1539,7 @@ private:
             renderer_ = std::make_unique<D3DRenderer>(
                 window_, &rendered_frames_, &dropped_frames_,
                 &render_microseconds_, &render_attempts_, &presentation_latency_);
+            renderer_->SetScaleMode(fill_mode_);
             renderer_->SetVisible(layout_visible_);
             RECT client{};
             GetClientRect(window_, &client);
@@ -1635,6 +1669,7 @@ private:
     std::atomic<bool> stop_{false};
     std::atomic<bool> remote_cursor_active_{false};
     std::atomic<bool> layout_visible_{false};
+    std::atomic<bool> fill_mode_{false};
     int layout_left_ = 0;
     int layout_top_ = 0;
     int layout_width_ = 1;
@@ -1725,6 +1760,11 @@ extern "C" __declspec(dllexport) void __stdcall LANRemoteVideoSetLayout(
 extern "C" __declspec(dllexport) void __stdcall LANRemoteVideoSetExclusions(
     void* handle, const int* rectangles, const int count) {
     if (handle) static_cast<VideoClient*>(handle)->SetExclusions(rectangles, count);
+}
+
+extern "C" __declspec(dllexport) void __stdcall LANRemoteVideoSetScaleMode(
+    void* handle, const int fill) {
+    if (handle) static_cast<VideoClient*>(handle)->SetScaleMode(fill != 0);
 }
 
 extern "C" __declspec(dllexport) void __stdcall LANRemoteVideoSetCursor(

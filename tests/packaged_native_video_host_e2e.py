@@ -56,6 +56,26 @@ def window_rect(window: int) -> tuple[int, int, int, int]:
     return rect.left, rect.top, rect.right, rect.bottom
 
 
+def visible_owned_windows(owner: int) -> list[tuple[int, int, int, int]]:
+    results: list[tuple[int, int, int, int]] = []
+    get_window = ctypes.windll.user32.GetWindow
+    get_window.argtypes = [ctypes.c_void_p, ctypes.c_uint]
+    get_window.restype = ctypes.c_void_p
+    callback_type = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
+
+    @callback_type
+    def callback(window: int, _: int) -> bool:
+        if get_window(window, 4) != owner:
+            return True
+        if not ctypes.windll.user32.IsWindowVisible(window):
+            return True
+        results.append(window_rect(window))
+        return True
+
+    ctypes.windll.user32.EnumWindows(callback, 0)
+    return results
+
+
 def main() -> int:
     args = parse_args()
     control_host = args.control_host.resolve()
@@ -106,6 +126,7 @@ def main() -> int:
                     "token": "TEST-TEMP-CODE",
                     "monitor": "all",
                     "fps_limit": 60,
+                    "scale_mode": "fill",
                     "surface_left": 40,
                     "surface_top": 80,
                     "surface_width": 800,
@@ -120,6 +141,11 @@ async function startNativeHostTest() {{
   const config = {json.dumps(config)};
   const started = await window.pywebview.api.configure_native_video(config);
   await window.pywebview.api.set_native_video_layout({{...config, visible:true}});
+  await window.pywebview.api.set_native_overlay_state({{
+    visible:true, collapsed:false, unlock_visible:false, view_only:false,
+    fps:60, scale_mode:'fill', keyboard:true, clipboard:true, fullscreen:false,
+    status_error:false, monitors:[{{id:'all',label:'全部显示器'}}]
+  }});
   for (let attempt=0; attempt<300; attempt++) {{
     const status = await window.pywebview.api.native_video_status();
     if (!started || status.state === 'failed') {{
@@ -195,7 +221,15 @@ else window.addEventListener('pywebviewready', startNativeHostTest, {{once:true}
             ctypes.windll.user32.SetForegroundWindow(window)
             left, top, right, bottom = window_rect(window)
             time.sleep(0.25)
+            owned = visible_owned_windows(window)
+            if not any(
+                owned_right - owned_left >= 300 and 30 <= owned_bottom - owned_top <= 120
+                for owned_left, owned_top, owned_right, owned_bottom in owned
+            ):
+                raise RuntimeError(f"native glass toolbar was not visible above the D3D surface: {owned}")
             first = ImageGrab.grab(bbox=(left, top, right, bottom)).convert("RGB")
+            preview_path = Path(__file__).resolve().parents[1] / "build" / "native-glass-toolbar-e2e.png"
+            first.save(preview_path)
             time.sleep(0.35)
             second = ImageGrab.grab(bbox=(left, top, right, bottom)).convert("RGB")
             difference = ImageChops.difference(first, second)

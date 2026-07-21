@@ -30,6 +30,8 @@ internal static class ControlWindowHostTests
             TestCloseToTray(assembly);
             TestKeyboardCaptureSurface(assembly);
             TestMouseCaptureMappings(assembly);
+            TestFillModeMouseMapping(assembly);
+            TestNativeGlassToolbar(assembly);
             TestNativeInputTransport(assembly);
             Console.WriteLine("CONTROL_HOST_STATE_TESTS_OK");
             return 0;
@@ -263,6 +265,77 @@ internal static class ControlWindowHostTests
             null,
             new object[] { 0U, UIntPtr.Zero }))
             throw new InvalidOperationException("Physical mouse input bypassed native capture.");
+    }
+
+    private static void TestFillModeMouseMapping(Assembly assembly)
+    {
+        Type windowType = RequiredType(assembly, "WindowsLANRemoteControlHost.ControlWindow");
+        Type sessionType = windowType.GetNestedType("NativeInputSession", BindingFlags.NonPublic);
+        MethodInfo mapRemotePoint = windowType.GetMethod(
+            "MapRemotePoint",
+            BindingFlags.Static | BindingFlags.NonPublic);
+        if (sessionType == null || mapRemotePoint == null)
+            throw new InvalidOperationException("Fill-mode mouse mapping members were not found.");
+
+        object session = Activator.CreateInstance(sessionType, true);
+        sessionType.GetField("RemoteBounds").SetValue(session, new RectangleF(0, 0, 800, 600));
+        sessionType.GetField("RemoteWidth").SetValue(session, 1920);
+        sessionType.GetField("RemoteHeight").SetValue(session, 1080);
+        sessionType.GetField("FillMode").SetValue(session, true);
+
+        object[] leftEdge = { session, 0, 300, 0, 0 };
+        mapRemotePoint.Invoke(null, leftEdge);
+        if (Math.Abs((int)leftEdge[3] - 240) > 1 || Math.Abs((int)leftEdge[4] - 540) > 1)
+            throw new InvalidOperationException("Fill-mode crop offset was not applied to native mouse input.");
+
+        object[] center = { session, 400, 300, 0, 0 };
+        mapRemotePoint.Invoke(null, center);
+        if (Math.Abs((int)center[3] - 960) > 1 || Math.Abs((int)center[4] - 540) > 1)
+            throw new InvalidOperationException("Fill-mode center did not map to the remote center.");
+    }
+
+    private static void TestNativeGlassToolbar(Assembly assembly)
+    {
+        Type toolbarType = RequiredType(assembly, "WindowsLANRemoteControlHost.NativeGlassToolbar");
+        ConstructorInfo constructor = toolbarType.GetConstructor(new[] { typeof(Action<string, string>) });
+        MethodInfo updateState = toolbarType.GetMethod("UpdateState");
+        FieldInfo scaleField = toolbarType.GetField("scale", BindingFlags.Instance | BindingFlags.NonPublic);
+        if (constructor == null || updateState == null || scaleField == null)
+            throw new InvalidOperationException("Native glass toolbar members were not found.");
+
+        string observedAction = String.Empty;
+        using (Form toolbar = (Form)constructor.Invoke(new object[] {
+            new Action<string, string>(delegate(string action, string value) { observedAction = action + value; })
+        }))
+        {
+            Dictionary<string, object> expanded = new Dictionary<string, object>
+            {
+                { "collapsed", false },
+                { "view_only", false },
+                { "fps", 120 },
+                { "scale_mode", "fill" },
+                { "keyboard", true },
+                { "clipboard", true },
+                { "fullscreen", false },
+                { "status_error", false },
+                { "monitors", new object[] { new Dictionary<string, object> { { "id", "all" }, { "label", "全部显示器" } } } }
+            };
+            updateState.Invoke(toolbar, new object[] { expanded });
+            if (toolbar.FormBorderStyle != FormBorderStyle.None || toolbar.Opacity >= 1.0)
+                throw new InvalidOperationException("Native toolbar is not using the translucent borderless glass shell.");
+            object scaleButton = scaleField.GetValue(toolbar);
+            string caption = Convert.ToString(scaleButton.GetType().GetProperty("Caption").GetValue(scaleButton, null));
+            if (!String.Equals(caption, "填充", StringComparison.Ordinal) || toolbar.Width < 300)
+                throw new InvalidOperationException(
+                    "Native toolbar did not expose the fill mode and full controls: caption=" +
+                    caption + ", width=" + toolbar.Width.ToString());
+
+            expanded["collapsed"] = true;
+            updateState.Invoke(toolbar, new object[] { expanded });
+            if (toolbar.Width > 60 || toolbar.Height > 36)
+                throw new InvalidOperationException("Collapsed native toolbar did not become a compact glass handle.");
+        }
+        GC.KeepAlive(observedAction);
     }
 
     private static void AssertMouseButton(
