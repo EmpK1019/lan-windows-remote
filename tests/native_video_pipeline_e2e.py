@@ -89,6 +89,8 @@ def main() -> int:
         window.attributes("-topmost", True)
         activity = tk.Label(window, text="FRAME 0", bg="#ff264f", fg="white", font=("Segoe UI", 16, "bold"))
         activity.place(x=0, y=0, width=900, height=42)
+        video_backing = tk.Frame(window, bg="#000000")
+        video_backing.place(x=40, y=50, width=820, height=460)
         window.update()
 
         dll = ctypes.WinDLL(str(dll_path))
@@ -297,6 +299,19 @@ def main() -> int:
                     time.sleep(0.02)
                 else:
                     raise RuntimeError("native stream did not enter secure-desktop fallback")
+                window.update()
+                held_frame = ImageGrab.grab(
+                    bbox=(
+                        window.winfo_rootx() + 40,
+                        window.winfo_rooty() + 50,
+                        window.winfo_rootx() + 860,
+                        window.winfo_rooty() + 510,
+                    )
+                ).convert("L").resize((32, 18))
+                held_mean = sum(held_frame.get_flattened_data()) / (32 * 18)
+                if held_mean < 8.0:
+                    raise RuntimeError("native secure transition exposed the black backing surface")
+                final_status["secure_transition_held_frame_mean"] = round(held_mean, 2)
                 secure_state["active"] = False
                 if not dll.LANRemoteVideoConfigure(
                     handle, "127.0.0.1", state.port, "TEST-TEMP-CODE", "all",

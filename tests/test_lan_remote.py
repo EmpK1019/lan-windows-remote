@@ -97,6 +97,16 @@ class CoreFunctionTests(unittest.TestCase):
         self.assertEqual(lan_remote.session_ui_state(True, "Disconnect"), "locked_transition")
         self.assertEqual(lan_remote.session_ui_state(True, None), "unknown")
 
+    def test_dark_transition_frame_detection_is_bounded_to_actual_dark_images(self) -> None:
+        def jpeg(level: int) -> bytes:
+            output = io.BytesIO()
+            lan_remote.Image.new("RGB", (64, 36), (level, level, level)).save(output, format="JPEG")
+            return output.getvalue()
+
+        self.assertTrue(lan_remote.encoded_frame_is_dark(jpeg(0)))
+        self.assertFalse(lan_remote.encoded_frame_is_dark(jpeg(160)))
+        self.assertFalse(lan_remote.encoded_frame_is_dark(b"not-an-image"))
+
     def test_locked_default_desktop_wake_input_is_not_sent_to_winlogon_helper(self) -> None:
         state = Mock()
         state.settings.values = {"secure_desktop_enabled": True}
@@ -123,8 +133,13 @@ class CoreFunctionTests(unittest.TestCase):
         self.assertIn('"decoding"', native)
         self.assertIn("rendered_frames_.load() > first_frame_rendered_count", native)
         self.assertIn("next_first_frame_keyframe", native)
+        self.assertIn("preserve_last_frame", native)
+        self.assertIn("if (!preserve_last_frame) renderer_.reset();", native)
         self.assertIn("function startNativeVideoPreview(session)", html)
         self.assertIn("Number(status.rendered_frames || 0) > 0", html)
+        self.assertIn("nativeFallbackPending", html)
+        self.assertIn("secure_transition=1", html)
+        self.assertIn("preserveNative: true", html)
 
     def test_native_video_protocol_round_trip_and_validation(self) -> None:
         message = lan_remote.NativeVideoMessage(
@@ -1216,6 +1231,22 @@ class HttpIntegrationTests(unittest.TestCase):
         self.assertEqual(status, 423)
         self.assertIn(b"MJPEG", data)
 
+        self.state.begin_lock_transition()
+        try:
+            with (
+                patch.object(lan_remote, "screen_rect", return_value=(0, 0, 100, 80)),
+                patch.object(lan_remote, "native_video_requires_compatibility", return_value=False),
+            ):
+                status, _, data = self.request(
+                    "CONNECT",
+                    "/video-stream?monitor=all&fps=60",
+                    headers={"X-Remote-Token": "TEST-TEMP-CODE", "X-LAN-Video-Protocol": "1"},
+                )
+        finally:
+            self.state.clear_lock_transition()
+        self.assertEqual(status, 423)
+        self.assertIn(b"MJPEG", data)
+
     def test_session_status_reports_wts_lock_even_when_input_desktop_is_default(self) -> None:
         with (
             patch.object(lan_remote, "current_session_locked", return_value=True),
@@ -1233,6 +1264,34 @@ class HttpIntegrationTests(unittest.TestCase):
         self.assertFalse(payload["secure_desktop_active"])
         self.assertEqual(payload["session_ui_state"], "lock_screen")
         self.assertFalse(payload["credential_ui_ready"])
+
+    def test_session_status_uses_winlogon_helper_when_main_desktop_is_unknown(self) -> None:
+        helper_status = json.dumps(
+            {
+                "ok": True,
+                "desktop": "Winlogon",
+                "foreground_process": "LogonUI.exe",
+            }
+        ).encode()
+        with (
+            patch.object(lan_remote, "current_session_locked", return_value=True),
+            patch.object(lan_remote, "input_desktop_name", return_value=None),
+            patch.object(lan_remote, "foreground_process_name", return_value=None),
+            patch.object(lan_remote, "secure_helper_request", return_value=(helper_status, "application/json")),
+        ):
+            status, _, data = self.request(
+                "GET",
+                "/api/session-status",
+                headers={"X-Remote-Token": "TEST-TEMP-CODE"},
+            )
+        self.assertEqual(status, 200, data)
+        payload = json.loads(data)
+        self.assertTrue(payload["session_locked"])
+        self.assertTrue(payload["secure_desktop_active"])
+        self.assertEqual(payload["input_desktop"], "Winlogon")
+        self.assertEqual(payload["foreground_process"], "LogonUI.exe")
+        self.assertEqual(payload["session_ui_state"], "credential_ui")
+        self.assertTrue(payload["credential_ui_ready"])
 
     def test_authentication_session_input_and_monitor_endpoints(self) -> None:
         status, _, _ = self.request("GET", "/monitors")
@@ -1363,6 +1422,7 @@ class HttpIntegrationTests(unittest.TestCase):
         self.assertEqual(status, 200, data)
         self.assertEqual(json.loads(data)["status"], "locked")
         lock_workstation.assert_called_once_with()
+        self.assertTrue(self.state.lock_transition_active())
 
     def test_main_window_can_cancel_its_outgoing_control_session(self) -> None:
         session_id = "session-0000000000000001"
@@ -1508,6 +1568,44 @@ class HttpIntegrationTests(unittest.TestCase):
             headers={"X-Remote-Token": "TEST-TEMP-CODE"},
         )
         self.assertEqual(status, 400)
+
+    def test_secure_transition_stream_waits_for_lock_and_skips_initial_black_frame(self) -> None:
+        def jpeg(level: int) -> bytes:
+            output = io.BytesIO()
+            lan_remote.Image.new("RGB", (100, 80), (level, level, level)).save(output, format="JPEG")
+            return output.getvalue()
+
+        black_frame = jpeg(0)
+        ready_frame = jpeg(160)
+        lock_states = iter((False, False, True, True))
+        frames = iter((black_frame, ready_frame))
+
+        def session_locked() -> bool:
+            return next(lock_states, True)
+
+        def capture(*_args: object) -> tuple[bytes, str]:
+            return next(frames, ready_frame), "image/jpeg"
+
+        connection = socket.create_connection(("127.0.0.1", self.state.port), timeout=3)
+        connection.settimeout(3)
+        try:
+            with (
+                patch.object(lan_remote, "current_session_locked", side_effect=session_locked),
+                patch.object(lan_remote, "secure_desktop_active", return_value=False),
+                patch.object(lan_remote, "capture_screen_image", side_effect=capture) as capture_mock,
+            ):
+                connection.sendall(
+                    b"GET /screen-stream?monitor=all&cursor=0&fps=60&secure_transition=1&token=TEST-TEMP-CODE HTTP/1.1\r\n"
+                    b"Host: 127.0.0.1\r\nConnection: close\r\n\r\n"
+                )
+                response = bytearray()
+                while ready_frame not in response:
+                    response.extend(connection.recv(4096))
+        finally:
+            connection.close()
+        self.assertNotIn(black_frame, response)
+        self.assertIn(ready_frame, response)
+        self.assertGreaterEqual(capture_mock.call_count, 2)
 
     def test_cursor_stream_is_persistent_authenticated_and_source_aware(self) -> None:
         cursor = {"visible": True, "x": 44, "y": 55, "width": 100, "height": 80}

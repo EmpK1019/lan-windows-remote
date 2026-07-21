@@ -1532,6 +1532,7 @@ private:
         HRESULT com = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
         bool com_initialized = SUCCEEDED(com);
         bool mf_initialized = false;
+        bool preserve_last_frame = false;
         try {
             ThrowIfFailed(com, "initialize native video COM");
             ThrowIfFailed(MFStartup(MF_VERSION, MFSTARTUP_FULL), "start Media Foundation");
@@ -1661,7 +1662,8 @@ private:
                 }
                 if (message.type == MessageType::StreamEnd) {
                     const std::string reason(message.payload.begin(), message.payload.end());
-                    throw std::runtime_error(reason.find("secure_desktop") != std::string::npos
+                    preserve_last_frame = reason.find("secure_desktop") != std::string::npos;
+                    throw std::runtime_error(preserve_last_frame
                         ? "secure desktop requires MJPEG fallback"
                         : "native video stream ended");
                 }
@@ -1675,7 +1677,7 @@ private:
         const SOCKET socket = socket_.exchange(INVALID_SOCKET);
         if (socket != INVALID_SOCKET) closesocket(socket);
         decoder_.reset();
-        renderer_.reset();
+        if (!preserve_last_frame) renderer_.reset();
         if (mf_initialized) MFShutdown();
         if (com_initialized) CoUninitialize();
         WSACleanup();

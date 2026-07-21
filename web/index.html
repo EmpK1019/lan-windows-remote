@@ -1533,6 +1533,7 @@
       nativeVideoRetryTimer: 0,
       nativeVideoRevision: 0,
       nativeVideoDiagnostics: null,
+      nativeFallbackPending: false,
       nativeOverlaySyncRevision: 0,
       lastMoveAt: 0,
       refreshTimer: 0,
@@ -2938,6 +2939,7 @@
       state.nativeVideoRetryTimer = 0;
       state.nativeVideoActive = false;
       state.nativeVideoDiagnostics = null;
+      state.nativeFallbackPending = false;
       document.body.classList.remove("native-video-active");
       window.pywebview?.api?.configure_native_video?.({enabled: false}).catch(() => {});
       window.pywebview?.api?.set_native_overlay_state?.({visible: false}).catch(() => {});
@@ -3012,16 +3014,36 @@
       }, delay);
     }
 
-    function startMjpegFallback(session, reason = "") {
+    function finishNativeFallback() {
+      state.nativeFallbackPending = false;
       state.nativeVideoActive = false;
-      state.nativeVideoDiagnostics = {state: "fallback", transport: "mjpeg_v1", error: reason};
       document.body.classList.remove("native-video-active");
       window.pywebview?.api?.configure_native_video?.({enabled: false}).catch(() => {});
       window.pywebview?.api?.set_native_overlay_state?.({visible: false}).catch(() => {});
+    }
+
+    function startMjpegFallback(session, reason = "", options = {}) {
+      const secureTransition = Boolean(options.secureTransition || /secure desktop/i.test(reason));
+      const preserveNative = Boolean(
+        options.preserveNative ?? (secureTransition && state.nativeVideoActive)
+      );
+      if (preserveNative && state.nativeFallbackPending) return;
+      state.nativeVideoDiagnostics = {state: "fallback", transport: "mjpeg_v1", error: reason};
+      if (preserveNative) {
+        state.nativeFallbackPending = true;
+        state.nativeVideoRevision += 1;
+        clearTimeout(state.nativeVideoStatusTimer);
+        state.nativeVideoStatusTimer = 0;
+      } else {
+        finishNativeFallback();
+      }
       if (!session?.connected || session !== state.session) return;
       setRemoteStatus(`MJPEG 兼容模式 · 最高 ${sessionControlFps(session)} FPS${reason ? ` · ${reason}` : ""}`);
-      startDesktopScreenStream(session);
-      if (/secure desktop/i.test(reason)) scheduleNativeVideoRetry(session);
+      startDesktopScreenStream(session, {
+        secureTransition,
+        onFirstFrame: preserveNative ? finishNativeFallback : null
+      });
+      if (secureTransition) scheduleNativeVideoRetry(session);
     }
 
     async function pollNativeVideoStatus(session, revision, attempt = 0) {
@@ -3114,12 +3136,13 @@
       pollNativeVideoStatus(session, revision);
     }
 
-    function startDesktopScreenStream(session) {
+    function startDesktopScreenStream(session, options = {}) {
       const revision = state.frameRequestRevision;
       const monitorId = session.monitorId || "all";
       const fpsLimit = sessionControlFps(session);
       const image = $("remoteScreen");
       let ready = false;
+      let loadObserved = !options.secureTransition;
       state.loadingFrame = true;
 
       const acceptFirstFrame = () => {
@@ -3128,12 +3151,14 @@
           revision !== state.frameRequestRevision ||
           !state.session?.connected ||
           state.session.monitorId !== monitorId ||
+          !loadObserved ||
           !image.naturalWidth
         ) return false;
         ready = true;
         state.loadingFrame = false;
         clearTimeout(state.refreshTimer);
         state.refreshTimer = 0;
+        if (typeof options.onFirstFrame === "function") options.onFirstFrame();
         markScreenReady(session, image);
         return true;
       };
@@ -3147,15 +3172,20 @@
         }
         state.refreshTimer = setTimeout(() => waitForFirstFrame(attempt + 1), 20);
       };
-      image.onload = acceptFirstFrame;
+      image.onload = () => {
+        loadObserved = true;
+        acceptFirstFrame();
+      };
       image.onerror = () => {
         if (revision !== state.frameRequestRevision || !state.session?.connected) return;
         state.loadingFrame = false;
         setRemoteStatus("画面连接中断，正在重试…", true);
         state.refreshTimer = setTimeout(refreshScreen, 350);
       };
+      if (options.secureTransition) image.removeAttribute("src");
+      const transitionQuery = options.secureTransition ? "&secure_transition=1" : "";
       image.src = endpoint(
-        `/screen-stream?monitor=${encodeURIComponent(monitorId)}&cursor=0&fps=${fpsLimit}&t=${Date.now()}`
+        `/screen-stream?monitor=${encodeURIComponent(monitorId)}&cursor=0&fps=${fpsLimit}${transitionQuery}&t=${Date.now()}`
       );
       waitForFirstFrame();
     }
@@ -3671,6 +3701,12 @@
         }
         const result = await response.json().catch(() => ({}));
         if (!response.ok || !result.ok) throw new Error(result.error || `HTTP ${response.status}`);
+        if (state.nativeVideoActive) {
+          startMjpegFallback(session, "secure desktop requested", {
+            secureTransition: true,
+            preserveNative: true
+          });
+        }
         if (notify) {
           setRemoteStatus(result.status === "already_secure" ? "远端已处于锁屏或安全桌面" : "远端电脑已锁定");
           showToast(result.status === "already_secure" ? "远端已处于锁屏或安全桌面" : "已锁定远端电脑");

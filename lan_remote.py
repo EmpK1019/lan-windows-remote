@@ -60,7 +60,7 @@ if platform.system() == "Windows":
 
 
 APP_NAME = "Windows LAN Remote"
-APP_VERSION = "1.0.3"
+APP_VERSION = "1.0.4"
 GITHUB_REPOSITORY = "EmpK1019/lan-windows-remote"
 GITHUB_LATEST_RELEASE_API = f"https://api.github.com/repos/{GITHUB_REPOSITORY}/releases/latest"
 DEFAULT_PORT = 8765
@@ -720,6 +720,20 @@ class ServerState:
     update_install_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
     remote_pointer_target: tuple[str, float, float, float] | None = field(default=None, repr=False)
     remote_pointer_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+    lock_transition_until: float = field(default=0.0, repr=False)
+    lock_transition_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+
+    def begin_lock_transition(self) -> None:
+        with self.lock_transition_lock:
+            self.lock_transition_until = time.monotonic() + LOCK_TRANSITION_NATIVE_HOLD_SECONDS
+
+    def clear_lock_transition(self) -> None:
+        with self.lock_transition_lock:
+            self.lock_transition_until = 0.0
+
+    def lock_transition_active(self) -> bool:
+        with self.lock_transition_lock:
+            return time.monotonic() < self.lock_transition_until
 
     def note_remote_pointer(self, payload: dict[str, Any]) -> None:
         if not str(payload.get("type", "")).startswith("mouse_"):
@@ -1663,6 +1677,9 @@ HIGH_FPS_MAX_HEIGHT = 576
 LOW_LATENCY_JPEG_QUALITY = 55
 HIGH_FPS_JPEG_QUALITY = 48
 SCREEN_STREAM_BOUNDARY = "lan-remote-frame"
+LOCK_TRANSITION_NATIVE_HOLD_SECONDS = 4.0
+LOCK_TRANSITION_DARK_FRAME_MAX_SECONDS = 1.5
+LOCK_TRANSITION_DARK_FRAME_MEAN_THRESHOLD = 8.0
 REMOTE_CURSOR_STREAM_FPS = 120
 MAX_DESKTOP_BACKGROUND_BYTES = 128 * 1024 * 1024
 
@@ -2376,6 +2393,17 @@ def capture_low_latency_screen(
         data, content_type = capture_screen_image(monitor_id, False)
         _, _, width, height = screen_rect(monitor_id)
         return data, content_type, width, height
+
+
+def encoded_frame_is_dark(data: bytes) -> bool:
+    """Cheaply reject transient all-black frames while Windows switches desktops."""
+    try:
+        with Image.open(io.BytesIO(data)) as image:
+            sample = image.convert("L").resize((32, 18))
+            mean = sum(sample.get_flattened_data()) / (32 * 18)
+        return mean < LOCK_TRANSITION_DARK_FRAME_MEAN_THRESHOLD
+    except (OSError, ValueError, TypeError):
+        return False
 
 
 def open_clipboard_with_retry() -> None:
@@ -3972,7 +4000,7 @@ class RemoteHandler(BaseHTTPRequestHandler):
         except ValueError as exc:
             json_response(self, HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(exc)})
             return
-        if native_video_requires_compatibility():
+        if self.server.state.lock_transition_active() or native_video_requires_compatibility():
             json_response(
                 self,
                 HTTPStatus.LOCKED,
@@ -4101,7 +4129,7 @@ class RemoteHandler(BaseHTTPRequestHandler):
                     if self.server.state.authenticate(token, self.client_address[0]) is None:
                         return
                     next_authentication = now + 1.0
-                if native_video_requires_compatibility():
+                if self.server.state.lock_transition_active() or native_video_requires_compatibility():
                     stream_end = NativeVideoMessage(
                         message_type=NATIVE_VIDEO_MESSAGE_STREAM_END,
                         flags=0,
@@ -4165,6 +4193,7 @@ class RemoteHandler(BaseHTTPRequestHandler):
         query = parse_qs(parsed.query)
         monitor_id = query.get("monitor", ["all"])[0]
         include_cursor = query.get("cursor", ["0"])[0] != "0"
+        secure_transition = query.get("secure_transition", ["0"])[0] == "1"
         try:
             fps_limit = int(query.get("fps", [str(LOW_LATENCY_STREAM_FPS)])[0])
         except (TypeError, ValueError):
@@ -4198,15 +4227,40 @@ class RemoteHandler(BaseHTTPRequestHandler):
         interval = 1.0 / fps_limit
         next_frame_at = time.perf_counter()
         frame_number = 0
+        last_session_locked = False
+        locked_frame_started_at = 0.0
+        locked_frame_ready = False
         try:
             while True:
                 if frame_number and frame_number % fps_limit == 0:
                     if self.server.state.authenticate(supplied_token, self.client_address[0]) is None:
                         return
+                session_locked = current_session_locked()
+                if session_locked and not last_session_locked:
+                    locked_frame_started_at = time.monotonic()
+                    locked_frame_ready = False
+                elif not session_locked:
+                    locked_frame_started_at = 0.0
+                    locked_frame_ready = False
+                last_session_locked = session_locked
+
+                # A controller-initiated lock switch starts this stream before
+                # Windows publishes SessionLock. Keep the native last frame on
+                # screen instead of sending the old/black desktop meanwhile.
+                if secure_transition and not session_locked:
+                    time.sleep(0.04)
+                    next_frame_at = time.perf_counter()
+                    continue
                 if secure_desktop_active():
                     if not self.server.state.settings.values["secure_desktop_enabled"]:
                         return
                     data, content_type = capture_secure_desktop(monitor_id, include_cursor)
+                    _, _, source_width, source_height = screen_rect(monitor_id)
+                elif session_locked:
+                    # LockApp can remain on the Default desktop, but DXGI is
+                    # already invalidated by the locked session. Use the old
+                    # GDI path until Winlogon becomes the active input desktop.
+                    data, content_type = capture_screen_image(monitor_id, include_cursor)
                     _, _, source_width, source_height = screen_rect(monitor_id)
                 elif include_cursor:
                     data, content_type = capture_screen_image(monitor_id, True)
@@ -4216,6 +4270,14 @@ class RemoteHandler(BaseHTTPRequestHandler):
                         monitor_id,
                         fps_limit,
                     )
+
+                if session_locked and not locked_frame_ready:
+                    dark_frame_deadline = locked_frame_started_at + LOCK_TRANSITION_DARK_FRAME_MAX_SECONDS
+                    if time.monotonic() < dark_frame_deadline and encoded_frame_is_dark(data):
+                        time.sleep(0.04)
+                        next_frame_at = time.perf_counter()
+                        continue
+                    locked_frame_ready = True
 
                 part_header = (
                     b"--"
@@ -4446,11 +4508,18 @@ class RemoteHandler(BaseHTTPRequestHandler):
             session_locked = current_session_locked()
             desktop_name = input_desktop_name()
             foreground_process = foreground_process_name()
-            if desktop_name and desktop_name.casefold() == "winlogon":
+            if session_locked and (desktop_name is None or desktop_name.casefold() != "default"):
                 try:
                     helper_data, _ = secure_helper_request("/secure/health", timeout=0.35)
                     helper_status = json.loads(helper_data.decode("utf-8"))
+                    helper_desktop = helper_status.get("desktop")
                     helper_foreground = helper_status.get("foreground_process")
+                    if (
+                        desktop_name is None
+                        and isinstance(helper_desktop, str)
+                        and helper_desktop.casefold() != "unknown"
+                    ):
+                        desktop_name = helper_desktop
                     if isinstance(helper_foreground, str) and helper_foreground.casefold() != "unknown":
                         foreground_process = helper_foreground
                 except (RuntimeError, ValueError, UnicodeDecodeError):
@@ -4468,6 +4537,7 @@ class RemoteHandler(BaseHTTPRequestHandler):
                     "credential_ui_ready": ui_state == "credential_ui",
                     "input_desktop": desktop_name or "unknown",
                     "foreground_process": foreground_process or "unknown",
+                    "lock_transition": self.server.state.lock_transition_active(),
                     **authentication,
                 },
             )
@@ -5032,9 +5102,11 @@ class RemoteHandler(BaseHTTPRequestHandler):
             if current_session_locked() or secure_desktop_active():
                 json_response(self, HTTPStatus.OK, {"ok": True, "status": "already_secure"})
                 return
+            self.server.state.begin_lock_transition()
             try:
                 lock_remote_workstation()
             except OSError as exc:
+                self.server.state.clear_lock_transition()
                 json_response(self, HTTPStatus.CONFLICT, {"ok": False, "error": str(exc)})
                 return
             json_response(self, HTTPStatus.OK, {"ok": True, "status": "locked"})
