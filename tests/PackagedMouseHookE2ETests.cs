@@ -250,21 +250,24 @@ internal static class PackagedMouseHookE2ETests
                             0);
                         if (auditHook == IntPtr.Zero)
                             throw new InvalidOperationException("Could not install the audit mouse hook.");
-                        if (!SetCursorPos(target.X, target.Y))
-                            throw new InvalidOperationException("Could not position the audit cursor.");
-                        PumpMessages(150);
-
-                        // mouse_event deliberately produces LLMHF_INJECTED input with
-                        // dwExtraInfo=0, matching precision touchpad/vendor-generated input.
-                        mouse_event(MouseEventLeftDown, 0, 0, 0, UIntPtr.Zero);
-                        mouse_event(MouseEventLeftUp, 0, 0, 0, UIntPtr.Zero);
-                        mouse_event(MouseEventWheel, 0, 0, 120, UIntPtr.Zero);
-
                         DateTime deadline = DateTime.UtcNow.AddSeconds(5);
                         while (!receivedInput.WaitOne(0) && DateTime.UtcNow < deadline)
                         {
-                            Application.DoEvents();
-                            Thread.Sleep(10);
+                            // Desktop runners can reclaim focus asynchronously. Retry
+                            // the real input at a verified foreground boundary instead
+                            // of turning that runner race into a product failure.
+                            ForceForeground(window);
+                            if (GetForegroundWindow() == window.Handle)
+                            {
+                                if (!SetCursorPos(target.X, target.Y))
+                                    throw new InvalidOperationException("Could not position the audit cursor.");
+                                // mouse_event deliberately produces LLMHF_INJECTED input with
+                                // dwExtraInfo=0, matching precision touchpad/vendor-generated input.
+                                mouse_event(MouseEventLeftDown, 0, 0, 0, UIntPtr.Zero);
+                                mouse_event(MouseEventLeftUp, 0, 0, 0, UIntPtr.Zero);
+                                mouse_event(MouseEventWheel, 0, 0, 120, UIntPtr.Zero);
+                            }
+                            PumpMessages(160);
                         }
                         Console.WriteLine(NativeDiagnostics(windowType, window));
                         lock (payloads)

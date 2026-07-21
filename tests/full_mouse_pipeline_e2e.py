@@ -4,6 +4,7 @@ import ctypes
 import io
 import json
 import os
+import statistics
 import sys
 import threading
 import time
@@ -27,6 +28,13 @@ MOUSEEVENTF_WHEEL = 0x0800
 PROCESS_SYNCHRONIZE = 0x00100000
 PROCESS_TERMINATE = 0x0001
 WAIT_TIMEOUT = 0x00000102
+SW_RESTORE = 9
+HWND_TOPMOST = -1
+SWP_NOSIZE = 0x0001
+SWP_NOMOVE = 0x0002
+SWP_SHOWWINDOW = 0x0040
+VK_MENU = 0x12
+KEYEVENTF_KEYUP = 0x0002
 
 
 class AuditState:
@@ -35,6 +43,9 @@ class AuditState:
         self.input_event = threading.Event()
         self.frames: list[tuple[str, dict[str, Any]]] = []
         self.screen_requests = 0
+        self.screen_request_times: list[float] = []
+        self.screen_request_queries: list[str] = []
+        self.cursor_request_times: list[float] = []
 
     def record(self, source: str, payload: dict[str, Any]) -> None:
         with self.lock:
@@ -119,10 +130,26 @@ class AuditHandler(BaseHTTPRequestHandler):
         if path == "/screen":
             with self.server.state.lock:
                 self.server.state.screen_requests += 1
+                self.server.state.screen_request_times.append(time.monotonic())
+                self.server.state.screen_request_queries.append(self.path)
             self.send_response(HTTPStatus.OK)
             self.common_headers("image/png", len(FRAME))
             self.end_headers()
             self.wfile.write(FRAME)
+            return
+        if path == "/cursor":
+            with self.server.state.lock:
+                self.server.state.cursor_request_times.append(time.monotonic())
+            self.json_response(
+                {
+                    "ok": True,
+                    "visible": True,
+                    "x": 640,
+                    "y": 360,
+                    "width": 1280,
+                    "height": 720,
+                }
+            )
             return
         if path == "/clipboard":
             self.json_response(
@@ -258,6 +285,10 @@ user32.GetWindowThreadProcessId.restype = wintypes.DWORD
 user32.IsWindowVisible.argtypes = [wintypes.HWND]
 user32.IsWindowVisible.restype = wintypes.BOOL
 user32.GetForegroundWindow.restype = wintypes.HWND
+user32.GetWindowTextLengthW.argtypes = [wintypes.HWND]
+user32.GetWindowTextLengthW.restype = ctypes.c_int
+user32.GetWindowTextW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+user32.GetWindowTextW.restype = ctypes.c_int
 user32.GetClientRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
 user32.GetClientRect.restype = wintypes.BOOL
 user32.ClientToScreen.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.POINT)]
@@ -280,6 +311,31 @@ user32.SetForegroundWindow.argtypes = [wintypes.HWND]
 user32.SetForegroundWindow.restype = wintypes.BOOL
 user32.BringWindowToTop.argtypes = [wintypes.HWND]
 user32.BringWindowToTop.restype = wintypes.BOOL
+user32.SetActiveWindow.argtypes = [wintypes.HWND]
+user32.SetActiveWindow.restype = wintypes.HWND
+user32.SetFocus.argtypes = [wintypes.HWND]
+user32.SetFocus.restype = wintypes.HWND
+user32.ShowWindowAsync.argtypes = [wintypes.HWND, ctypes.c_int]
+user32.ShowWindowAsync.restype = wintypes.BOOL
+user32.SetWindowPos.argtypes = [
+    wintypes.HWND,
+    wintypes.HWND,
+    ctypes.c_int,
+    ctypes.c_int,
+    ctypes.c_int,
+    ctypes.c_int,
+    wintypes.UINT,
+]
+user32.SetWindowPos.restype = wintypes.BOOL
+user32.SwitchToThisWindow.argtypes = [wintypes.HWND, wintypes.BOOL]
+user32.SwitchToThisWindow.restype = None
+user32.keybd_event.argtypes = [
+    wintypes.BYTE,
+    wintypes.BYTE,
+    wintypes.DWORD,
+    ctypes.c_size_t,
+]
+user32.keybd_event.restype = None
 user32.PostMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
 user32.PostMessageW.restype = wintypes.BOOL
 kernel32.GetCurrentThreadId.restype = wintypes.DWORD
@@ -313,21 +369,64 @@ def window_for_process(process_id: int, timeout: float = 10.0) -> int:
     raise TimeoutError("remote control window did not appear")
 
 
-def force_foreground(window: int) -> None:
-    foreground = user32.GetForegroundWindow()
-    current_thread = kernel32.GetCurrentThreadId()
-    foreground_thread = user32.GetWindowThreadProcessId(foreground, None)
-    attached = bool(
-        foreground_thread
-        and foreground_thread != current_thread
-        and user32.AttachThreadInput(current_thread, foreground_thread, True)
+def window_diagnostics(window: int) -> str:
+    foreground = int(user32.GetForegroundWindow())
+    owner = wintypes.DWORD()
+    foreground_thread = user32.GetWindowThreadProcessId(foreground, ctypes.byref(owner))
+    length = user32.GetWindowTextLengthW(foreground)
+    title = ctypes.create_unicode_buffer(length + 1)
+    user32.GetWindowTextW(foreground, title, len(title))
+    target_owner = wintypes.DWORD()
+    target_thread = user32.GetWindowThreadProcessId(window, ctypes.byref(target_owner))
+    return (
+        f"target={window} target_pid={target_owner.value} target_thread={target_thread} "
+        f"foreground={foreground} foreground_pid={owner.value} "
+        f"foreground_thread={foreground_thread} foreground_title={title.value!r}"
     )
-    try:
-        user32.BringWindowToTop(window)
-        user32.SetForegroundWindow(window)
-    finally:
-        if attached:
-            user32.AttachThreadInput(current_thread, foreground_thread, False)
+
+
+def force_foreground(window: int, timeout: float = 1.0) -> bool:
+    deadline = time.monotonic() + timeout
+    current_thread = kernel32.GetCurrentThreadId()
+    target_thread = user32.GetWindowThreadProcessId(window, None)
+    while time.monotonic() < deadline:
+        foreground = user32.GetForegroundWindow()
+        foreground_thread = user32.GetWindowThreadProcessId(foreground, None)
+        attached_threads: list[int] = []
+        for thread_id in {int(foreground_thread), int(target_thread)}:
+            if (
+                thread_id
+                and thread_id != current_thread
+                and user32.AttachThreadInput(current_thread, thread_id, True)
+            ):
+                attached_threads.append(thread_id)
+        try:
+            user32.ShowWindowAsync(window, SW_RESTORE)
+            user32.SetWindowPos(
+                window,
+                HWND_TOPMOST,
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW,
+            )
+            user32.BringWindowToTop(window)
+            user32.SetActiveWindow(window)
+            user32.SetFocus(window)
+            user32.keybd_event(VK_MENU, 0, 0, 0)
+            try:
+                user32.SetForegroundWindow(window)
+                user32.SwitchToThisWindow(window, True)
+            finally:
+                user32.keybd_event(VK_MENU, 0, KEYEVENTF_KEYUP, 0)
+        finally:
+            for thread_id in reversed(attached_threads):
+                user32.AttachThreadInput(current_thread, thread_id, False)
+        if int(user32.GetForegroundWindow()) == window:
+            return True
+        time.sleep(0.03)
+    return False
 
 
 def close_process(window: int, process_id: int) -> None:
@@ -397,10 +496,11 @@ def main() -> int:
         if state.screen_requests < 1:
             raise TimeoutError("actual remote page never loaded a screen frame")
 
-        force_foreground(window)
-        time.sleep(0.4)
-        if int(user32.GetForegroundWindow()) != window:
-            raise RuntimeError("actual remote control window could not become foreground")
+        if not force_foreground(window, timeout=5.0):
+            raise RuntimeError(
+                "actual remote control window could not become foreground: "
+                + window_diagnostics(window)
+            )
 
         rect = wintypes.RECT()
         if not user32.GetClientRect(window, ctypes.byref(rect)):
@@ -411,19 +511,53 @@ def main() -> int:
         )
         if not user32.ClientToScreen(window, ctypes.byref(point)):
             raise ctypes.WinError()
-        if not user32.SetCursorPos(point.x, point.y):
-            raise ctypes.WinError()
-        time.sleep(0.25)
-        user32.mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
-        user32.mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
-        user32.mouse_event(MOUSEEVENTF_WHEEL, 0, 0, 120, 0)
-
-        if not state.input_event.wait(6):
+        for _ in range(4):
+            if not user32.SetCursorPos(point.x, point.y):
+                raise ctypes.WinError()
+            time.sleep(0.12)
+            if force_foreground(window):
+                user32.mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
+                user32.mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+                user32.mouse_event(MOUSEEVENTF_WHEEL, 0, 0, 120, 0)
+            if state.input_event.wait(1.5):
+                break
+        if not state.input_event.is_set():
             with state.lock:
                 observed = list(state.frames)
             raise TimeoutError(f"actual page/native bridge did not forward click and wheel: {observed}")
+        cadence_deadline = time.monotonic() + 2
+        while time.monotonic() < cadence_deadline:
+            with state.lock:
+                cadence_ready = (
+                    len(state.screen_request_times) >= 5
+                    and len(state.cursor_request_times) >= 5
+                )
+            if cadence_ready:
+                break
+            time.sleep(0.04)
         with state.lock:
             observed = list(state.frames)
+            screen_times = list(state.screen_request_times)
+            screen_queries = list(state.screen_request_queries)
+            cursor_times = list(state.cursor_request_times)
+        if len(screen_times) < 5:
+            raise TimeoutError(f"low-latency screen loop produced only {len(screen_times)} frames")
+        if len(cursor_times) < 5:
+            raise TimeoutError(f"remote cursor channel produced only {len(cursor_times)} updates")
+        if not all("cursor=0" in query for query in screen_queries):
+            raise RuntimeError(f"control frames still include a baked cursor: {screen_queries}")
+        screen_intervals_ms = [
+            (later - earlier) * 1000
+            for earlier, later in zip(screen_times[-5:-1], screen_times[-4:])
+        ]
+        cursor_intervals_ms = [
+            (later - earlier) * 1000
+            for earlier, later in zip(cursor_times[-5:-1], cursor_times[-4:])
+        ]
+        if statistics.median(screen_intervals_ms) > 120:
+            raise RuntimeError(f"screen cadence regressed: {screen_intervals_ms}")
+        if statistics.median(cursor_intervals_ms) > 90:
+            raise RuntimeError(f"cursor cadence regressed: {cursor_intervals_ms}")
         sources = sorted({source for source, _ in observed})
         non_move = [
             (source, payload)
@@ -433,6 +567,8 @@ def main() -> int:
         print(
             "FULL_MOUSE_PIPELINE_E2E_OK "
             f"pid={process_id} point={point.x},{point.y} "
+            f"screen_ms={statistics.median(screen_intervals_ms):.1f} "
+            f"cursor_ms={statistics.median(cursor_intervals_ms):.1f} "
             f"sources={sources} frames={non_move}"
         )
         return 0

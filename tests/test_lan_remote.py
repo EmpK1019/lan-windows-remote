@@ -12,6 +12,7 @@ import threading
 import time
 import unittest
 from pathlib import Path
+from typing import Any
 from unittest.mock import Mock, call, patch
 
 import lan_remote
@@ -121,17 +122,26 @@ class CoreFunctionTests(unittest.TestCase):
                 }
             )
 
-    def test_frontend_has_graphical_busy_state_and_cached_preview(self) -> None:
+    def test_frontend_has_graphical_busy_state_and_static_private_preview(self) -> None:
         html = (Path(__file__).resolve().parents[1] / "web" / "index.html").read_text(encoding="utf-8")
         for marker in (
             'id="controlOccupation"',
             'id="controlledDuration"',
-            'id="detailPreviewImage"',
-            "lan-remote-preview:",
+            'id="detailPreviewDesktop"',
+            "静态桌面示意图",
+            "不含远控画面",
+            "clearLegacyDevicePreviews",
             "/api/session/heartbeat",
             "本机正在被远程控制",
         ):
             self.assertIn(marker, html)
+        for forbidden in (
+            "saveDevicePreview",
+            "canvas.toDataURL",
+            'id="detailPreviewImage"',
+            "上次控制画面",
+        ):
+            self.assertNotIn(forbidden, html)
 
     def test_frontend_blocks_remote_control_of_local_device(self) -> None:
         html = (Path(__file__).resolve().parents[1] / "web" / "index.html").read_text(encoding="utf-8")
@@ -354,6 +364,29 @@ class CoreFunctionTests(unittest.TestCase):
         user32.DrawIconEx.assert_called_once_with(7, 216, 184, 99, 0, 0, 0, None, 3)
         self.assertEqual([call(101), call(102)], gdi32.DeleteObject.call_args_list)
 
+    def test_desktop_cursor_payload_is_relative_to_selected_monitor(self) -> None:
+        user32 = Mock()
+
+        def populate_cursor(pointer: Any) -> bool:
+            cursor = pointer._obj
+            cursor.flags = 1
+            cursor.hCursor = 99
+            cursor.ptScreenPos.x = 320
+            cursor.ptScreenPos.y = 240
+            return True
+
+        user32.GetCursorInfo.side_effect = populate_cursor
+        with (
+            patch.object(lan_remote.ctypes.windll, "user32", user32),
+            patch.object(lan_remote, "screen_rect", return_value=(100, 50, 800, 600)),
+        ):
+            payload = lan_remote.desktop_cursor_payload("monitor-1")
+
+        self.assertEqual(
+            payload,
+            {"visible": True, "x": 220, "y": 190, "width": 800, "height": 600},
+        )
+
     def test_remote_frontend_serializes_input_and_suppresses_local_shortcuts(self) -> None:
         html = (Path(__file__).resolve().parents[1] / "web" / "index.html").read_text(encoding="utf-8")
         self.assertIn("state.inputQueue = state.inputQueue.catch", html)
@@ -387,6 +420,12 @@ class CoreFunctionTests(unittest.TestCase):
             html,
         )
         self.assertIn("state.remoteFrameWidth = frame.naturalWidth", html)
+        self.assertIn("CONTROL_FRAME_INTERVAL_MS = 50", html)
+        self.assertIn("frameIntervalMs(session) - (performance.now() - startedAt)", html)
+        self.assertIn('cursor=${session.viewOnly ? "1" : "0"}', html)
+        self.assertIn('endpoint(`/cursor?monitor=', html)
+        self.assertIn(".remote-stage.controlling #remoteScreen { cursor: none !important; }", html)
+        self.assertIn('id="remotePointer"', html)
         self.assertIn(
             "const remoteWidth = image.naturalWidth || state.remoteFrameWidth || 0",
             html,
@@ -534,7 +573,7 @@ class SettingsAndAuthenticationTests(unittest.TestCase):
             settings = lan_remote.SettingsStore()
             self.assertEqual(settings.values["device_name"], "")
             self.assertIs(settings.values["view_only"], False)
-            self.assertEqual(settings.values["frame_delay_ms"], 120)
+            self.assertEqual(settings.values["frame_delay_ms"], 80)
             self.assertIs(settings.values["auto_check_updates"], True)
             self.assertIs(settings.values["auto_install_updates"], True)
             self.assertIs(settings.values["close_to_tray"], True)
@@ -813,6 +852,19 @@ class HttpIntegrationTests(unittest.TestCase):
         self.assertEqual(json.loads(data)["monitors"], monitors)
         self.assertEqual(headers.get("access-control-allow-origin"), "*")
 
+        cursor = {"visible": True, "x": 44, "y": 55, "width": 100, "height": 80}
+        with (
+            patch.object(lan_remote, "secure_desktop_active", return_value=False),
+            patch.object(lan_remote, "desktop_cursor_payload", return_value=cursor),
+        ):
+            status, _, data = self.request(
+                "GET",
+                "/cursor?monitor=all",
+                headers={"X-Remote-Token": session_token},
+            )
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(data), {"ok": True, **cursor})
+
         received: list[dict[str, object]] = []
         with (
             patch.object(lan_remote, "secure_desktop_active", return_value=False),
@@ -967,6 +1019,16 @@ class HttpIntegrationTests(unittest.TestCase):
             headers=headers,
         )
         self.assertEqual(status, 400)
+
+        capture = Mock(return_value=(b"jpeg", "image/jpeg"))
+        with (
+            patch.object(lan_remote, "secure_desktop_active", return_value=False),
+            patch.object(lan_remote, "capture_screen_image", capture),
+        ):
+            status, _, data = self.request("GET", "/screen?monitor=all&cursor=0", headers=headers)
+        self.assertEqual(status, 200)
+        self.assertEqual(data, b"jpeg")
+        capture.assert_called_once_with("all", False)
 
         with (
             patch.object(lan_remote, "secure_desktop_active", return_value=False),

@@ -383,66 +383,131 @@
         linear-gradient(145deg, #17231f, #14181a 58%, #0e1114);
       box-shadow: inset 0 1px 0 rgba(255, 255, 255, .035), 0 12px 34px rgba(0, 0, 0, .22);
     }
-    .preview-image {
+    .preview-desktop {
       position: absolute;
       inset: 0;
-      background-position: center;
-      background-size: cover;
-      opacity: 0;
-      filter: saturate(.86) contrast(1.04);
-      transform: scale(1.015);
-      transition: opacity .35s ease;
+      overflow: hidden;
+      background:
+        radial-gradient(circle at 72% 22%, rgba(99, 232, 176, .3), transparent 22%),
+        radial-gradient(circle at 24% 76%, rgba(27, 116, 84, .32), transparent 34%),
+        linear-gradient(145deg, #132923 0%, #0c1716 58%, #07100f 100%);
     }
-    .preview.has-image .preview-image { opacity: .78; }
+    .preview-desktop::before {
+      content: "";
+      position: absolute;
+      width: 230px;
+      height: 230px;
+      top: -112px;
+      right: -52px;
+      border: 1px solid rgba(127, 238, 194, .18);
+      border-radius: 45% 55% 61% 39%;
+      background: linear-gradient(145deg, rgba(78, 221, 161, .13), rgba(7, 26, 20, .02));
+      transform: rotate(22deg);
+      box-shadow: 0 0 65px rgba(44, 192, 132, .1);
+    }
+    .preview-desktop::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+      opacity: .11;
+      background-image:
+        linear-gradient(rgba(116, 229, 184, .17) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(116, 229, 184, .17) 1px, transparent 1px);
+      background-size: 24px 24px;
+      mask-image: linear-gradient(135deg, #000, transparent 74%);
+    }
+    .preview-desktop-icons {
+      position: absolute;
+      z-index: 1;
+      top: 18px;
+      left: 16px;
+      display: grid;
+      gap: 12px;
+    }
+    .preview-desktop-icon {
+      display: flex;
+      width: 62px;
+      align-items: center;
+      gap: 7px;
+      color: rgba(225, 245, 237, .82);
+      font-size: 8px;
+      line-height: 1.1;
+      text-shadow: 0 1px 4px #000;
+    }
+    .preview-desktop-icon span {
+      display: grid;
+      flex: 0 0 auto;
+      width: 23px;
+      height: 23px;
+      place-items: center;
+      border: 1px solid rgba(129, 230, 189, .28);
+      border-radius: 6px;
+      background: rgba(9, 30, 23, .68);
+      color: #70d9af;
+      box-shadow: inset 0 1px rgba(255,255,255,.04);
+    }
+    .preview-desktop-icon svg { width: 13px; height: 13px; }
+    .preview-desktop-mark {
+      position: absolute;
+      top: 48px;
+      right: 45px;
+      display: grid;
+      width: 74px;
+      height: 74px;
+      grid-template-columns: 1fr 1fr;
+      gap: 4px;
+      opacity: .2;
+      transform: perspective(130px) rotateY(-16deg) rotateZ(-4deg);
+      filter: drop-shadow(0 0 18px rgba(71, 220, 157, .55));
+    }
+    .preview-desktop-mark i {
+      display: block;
+      border: 1px solid rgba(124, 241, 194, .62);
+      background: rgba(71, 207, 150, .16);
+    }
+    .preview-taskbar {
+      position: absolute;
+      z-index: 2;
+      right: 0;
+      bottom: 0;
+      left: 0;
+      display: flex;
+      height: 31px;
+      align-items: center;
+      padding: 0 10px;
+      border-top: 1px solid rgba(164, 237, 207, .1);
+      background: rgba(5, 12, 10, .82);
+      box-shadow: 0 -8px 25px rgba(0,0,0,.12);
+      backdrop-filter: blur(12px);
+    }
+    .preview-taskbar-logo {
+      display: grid;
+      width: 18px;
+      height: 18px;
+      place-items: center;
+      color: #72dcae;
+    }
+    .preview-taskbar-logo svg { width: 12px; height: 12px; fill: currentColor; stroke: none; }
+    .preview-taskbar-apps { display: flex; gap: 5px; margin-left: 9px; }
+    .preview-taskbar-apps i {
+      width: 12px;
+      height: 12px;
+      border: 1px solid rgba(128, 222, 184, .2);
+      border-radius: 3px;
+      background: rgba(87, 190, 147, .16);
+    }
+    .preview-taskbar-clock { display: grid; gap: 3px; margin-left: auto; }
+    .preview-taskbar-clock i { width: 20px; height: 2px; border-radius: 2px; background: rgba(192, 227, 213, .38); }
+    .preview-taskbar-clock i:last-child { width: 13px; margin-left: auto; opacity: .6; }
     .preview-shade {
       position: absolute;
+      z-index: 3;
       inset: 0;
-      background: linear-gradient(180deg, rgba(5, 8, 8, .05), rgba(5, 9, 8, .08) 42%, rgba(5, 9, 8, .9));
+      background: linear-gradient(180deg, rgba(5, 8, 8, .02), rgba(5, 9, 8, .08) 48%, rgba(5, 9, 8, .72));
     }
-    .preview-grid {
-      position: absolute;
-      inset: 0;
-      opacity: .18;
-      background-image:
-        linear-gradient(rgba(82, 217, 162, .16) 1px, transparent 1px),
-        linear-gradient(90deg, rgba(82, 217, 162, .16) 1px, transparent 1px);
-      background-size: 24px 24px;
-      mask-image: linear-gradient(to bottom, #000, transparent 82%);
-    }
-    .preview-scan {
-      position: absolute;
-      left: 0;
-      right: 0;
-      top: -20%;
-      height: 32%;
-      background: linear-gradient(transparent, rgba(73, 220, 158, .1), transparent);
-      animation: previewScan 4.5s linear infinite;
-    }
-    @keyframes previewScan { to { transform: translateY(430%); } }
-    .preview-placeholder {
-      position: absolute;
-      inset: 24px 0 47px;
-      display: grid;
-      place-items: center;
-      color: rgba(141, 231, 194, .68);
-      transition: opacity .25s;
-    }
-    .preview.has-image .preview-placeholder { opacity: 0; }
-    .preview-monitor {
-      position: relative;
-      display: grid;
-      width: 102px;
-      height: 62px;
-      place-items: center;
-      border: 1px solid rgba(91, 223, 169, .4);
-      border-radius: 8px;
-      background: linear-gradient(145deg, rgba(35, 110, 81, .24), rgba(10, 17, 15, .68));
-      box-shadow: 0 0 35px rgba(40, 194, 132, .14), inset 0 0 24px rgba(40, 194, 132, .08);
-    }
-    .preview-monitor::before { content: ""; position: absolute; bottom: -10px; width: 35px; height: 1px; background: rgba(117, 224, 181, .55); box-shadow: 0 -5px 0 -0.2px rgba(117, 224, 181, .45); }
-    .preview-monitor svg { width: 27px; height: 27px; }
     .preview-status {
       position: absolute;
+      z-index: 4;
       top: 12px;
       left: 12px;
       display: inline-flex;
@@ -457,12 +522,13 @@
       backdrop-filter: blur(10px);
     }
     .preview-status-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--green); box-shadow: 0 0 9px rgba(54,198,139,.85); }
-    .preview-status.busy .preview-status-dot { animation: statusPulse 1.4s ease-in-out infinite; }
+    .preview-status.busy .preview-status-dot { box-shadow: 0 0 0 4px rgba(54,198,139,.1), 0 0 13px rgba(54,198,139,.8); }
     .preview-footer {
       position: absolute;
+      z-index: 4;
       left: 13px;
       right: 13px;
-      bottom: 11px;
+      bottom: 39px;
       display: flex;
       align-items: flex-end;
       justify-content: space-between;
@@ -470,7 +536,7 @@
       color: #eef6f3;
       text-shadow: 0 1px 7px #000;
     }
-    .preview-caption { overflow: hidden; font-size: 12px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+    .preview-caption { min-width: 0; flex: 1; overflow: hidden; font-size: 12px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
     .preview-time { flex: 0 0 auto; color: #a9bab3; font-size: 10px; }
 
     .control-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 10px; }
@@ -835,7 +901,28 @@
       cursor: default !important;
     }
     .remote-stage.controlling,
-    .remote-stage.controlling #remoteScreen { cursor: default !important; }
+    .remote-stage.controlling #remoteScreen { cursor: none !important; }
+    .remote-pointer {
+      position: absolute;
+      z-index: 3;
+      display: none;
+      width: 25px;
+      height: 31px;
+      pointer-events: none;
+      transform: translate3d(-100px, -100px, 0);
+      will-change: transform;
+      filter: drop-shadow(0 2px 4px rgba(0, 0, 0, .72));
+    }
+    .remote-pointer.visible { display: block; }
+    .remote-pointer svg {
+      display: block;
+      width: 24px;
+      height: 29px;
+      overflow: visible;
+      fill: #48e6ae;
+      stroke: #07110d;
+      stroke-width: 1.6;
+    }
     .remote-hint { position: absolute; pointer-events: none; color: #6f7380; }
     .remote-hint.hidden { display: none; }
 
@@ -1131,13 +1218,21 @@
           <div class="detail-name"><strong id="detailName"></strong><span id="detailState"></span></div>
         </div>
         <div class="preview" id="detailPreview">
-          <div class="preview-image" id="detailPreviewImage"></div>
-          <div class="preview-grid"></div>
-          <div class="preview-scan"></div>
+          <div class="preview-desktop" id="detailPreviewDesktop" aria-label="静态桌面示意图，不包含远程控制画面">
+            <div class="preview-desktop-icons">
+              <div class="preview-desktop-icon"><span><svg><use href="#i-monitor"/></svg></span>此电脑</div>
+              <div class="preview-desktop-icon"><span><svg><use href="#i-folder"/></svg></span>文件</div>
+            </div>
+            <div class="preview-desktop-mark"><i></i><i></i><i></i><i></i></div>
+            <div class="preview-taskbar">
+              <span class="preview-taskbar-logo"><svg><use href="#i-windows"/></svg></span>
+              <span class="preview-taskbar-apps"><i></i><i></i><i></i></span>
+              <span class="preview-taskbar-clock"><i></i><i></i></span>
+            </div>
+          </div>
           <div class="preview-shade"></div>
-          <div class="preview-placeholder"><div class="preview-monitor"><svg><use href="#i-monitor"/></svg></div></div>
           <div class="preview-status" id="detailPreviewStatus"><span class="preview-status-dot"></span><span id="detailPreviewState">在线可连接</span></div>
-          <div class="preview-footer"><span class="preview-caption" id="detailPreviewCaption">连接后显示最近画面</span><time class="preview-time" id="detailPreviewTime"></time></div>
+          <div class="preview-footer"><span class="preview-caption" id="detailPreviewCaption">静态桌面</span><time class="preview-time" id="detailPreviewTime">不含远控画面</time></div>
         </div>
         <div class="control-grid">
           <button class="control-card primary wide" id="controlButton"><svg><use href="#i-monitor"/></svg><span>桌面控制</span></button>
@@ -1214,7 +1309,7 @@
         <section class="settings-section">
           <h4 class="settings-section-title"><svg><use href="#i-eye"/></svg>远程体验</h4>
           <div class="settings-card">
-            <div class="setting-row"><div class="setting-copy"><strong>画面刷新速度</strong></div><select class="setting-select" id="settingFrameDelay" aria-label="画面刷新速度"><option value="80">快速（约 12 帧/秒）</option><option value="120">平衡（约 8 帧/秒）</option><option value="220">省流量（约 4 帧/秒）</option></select></div>
+            <div class="setting-row"><div class="setting-copy"><strong>画面刷新速度</strong><small>桌面控制会自动启用低延迟模式</small></div><select class="setting-select" id="settingFrameDelay" aria-label="画面刷新速度"><option value="80">快速（约 12 帧/秒）</option><option value="120">平衡（约 8 帧/秒）</option><option value="220">省流量（约 4 帧/秒）</option></select></div>
             <div class="setting-row"><div class="setting-copy"><strong>断开远控时自动锁定远端电脑</strong></div><label class="switch"><input id="settingLockRemoteOnDisconnect" type="checkbox" aria-label="断开远控时自动锁定远端电脑"><span></span></label></div>
             <div class="setting-row"><div class="setting-copy"><strong>减少界面动效</strong></div><label class="switch"><input id="settingReduceMotion" type="checkbox" aria-label="减少界面动效"><span></span></label></div>
           </div>
@@ -1285,6 +1380,9 @@
     </div>
     <div class="remote-stage" id="remoteStage" tabindex="0">
       <img id="remoteScreen" alt="远程屏幕" draggable="false">
+      <div class="remote-pointer" id="remotePointer" aria-hidden="true">
+        <svg viewBox="0 0 24 30"><path d="M2 1.6v21.8l5.5-5.2 4.1 9.6 4.1-1.8-4.1-9.4h7.7L2 1.6Z"/></svg>
+      </div>
       <div class="remote-hint" id="remoteHint">正在获取远程画面…</div>
     </div>
   </section>
@@ -1326,7 +1424,6 @@
       session: null,
       sessionHeartbeatTimer: 0,
       sessionHeartbeatInFlight: false,
-      lastPreviewSavedAt: 0,
       loadingFrame: false,
       keyboardEnabled: false,
       remotePressedKeys: new Map(),
@@ -1344,8 +1441,16 @@
       nativeInputSyncTimer: 0,
       lastMoveAt: 0,
       refreshTimer: 0,
+      frameRequestRevision: 0,
+      screenAbortController: null,
+      frameObjectUrl: "",
       remoteFrameWidth: 0,
       remoteFrameHeight: 0,
+      cursorTimer: 0,
+      cursorRequestInFlight: false,
+      cursorRequestRevision: 0,
+      cursorAbortController: null,
+      remoteCursor: null,
       toastTimer: 0,
       autoUnlockChecking: false,
       monitors: [],
@@ -1370,7 +1475,7 @@
       settingsSaveQueue: Promise.resolve(true),
       settingsSaveRevision: 0,
       settingsSaveTimer: 0,
-      settings: {frame_delay_ms: 120, remember_codes: true, close_to_tray: true, lock_remote_on_disconnect: false, auto_check_updates: true, auto_install_updates: true},
+      settings: {frame_delay_ms: 80, remember_codes: true, close_to_tray: true, lock_remote_on_disconnect: false, auto_check_updates: true, auto_install_updates: true},
       latestUpdate: null,
       autoUpdateStartedForVersion: ""
     };
@@ -1430,61 +1535,27 @@
       updateControlledDuration();
     }
 
-    function previewStorageKey(deviceId) {
-      return `lan-remote-preview:${deviceId}`;
-    }
-
-    function loadDevicePreview(deviceId) {
+    function clearLegacyDevicePreviews() {
       try {
-        const value = JSON.parse(localStorage.getItem(previewStorageKey(deviceId)) || "null");
-        if (!value || typeof value.dataUrl !== "string" || !value.dataUrl.startsWith("data:image/jpeg;base64,")) return null;
-        return value;
+        const keys = [];
+        for (let index = 0; index < localStorage.length; index += 1) {
+          const key = localStorage.key(index);
+          if (key?.startsWith("lan-remote-preview:")) keys.push(key);
+        }
+        keys.forEach((key) => localStorage.removeItem(key));
       } catch {
-        return null;
+        // Legacy preview cleanup is best-effort and never blocks the desktop UI.
       }
     }
 
-    function relativePreviewTime(timestamp) {
-      const elapsed = Math.max(0, Date.now() - Number(timestamp || 0));
-      if (elapsed < 60_000) return "刚刚";
-      if (elapsed < 3_600_000) return `${Math.floor(elapsed / 60_000)} 分钟前`;
-      if (elapsed < 86_400_000) return `${Math.floor(elapsed / 3_600_000)} 小时前`;
-      return `${Math.floor(elapsed / 86_400_000)} 天前`;
-    }
-
     function renderDevicePreview(device) {
-      const preview = loadDevicePreview(device.id);
       const busy = Boolean(device.busy);
-      $("detailPreview").classList.toggle("has-image", Boolean(preview));
-      $("detailPreviewImage").style.backgroundImage = preview ? `url("${preview.dataUrl}")` : "";
       $("detailPreviewStatus").classList.toggle("busy", busy);
       $("detailPreviewState").textContent = busy
         ? (device.busy_mode === "view" ? "正在被观看" : "远程会话中")
         : "在线可连接";
-      $("detailPreviewCaption").textContent = preview
-        ? `${device.name} · 上次控制画面`
-        : `${device.name} · 等待首次连接`;
-      $("detailPreviewTime").textContent = preview ? relativePreviewTime(preview.timestamp) : "局域网在线";
-    }
-
-    function saveDevicePreview(device, frame) {
-      if (!device?.id || Date.now() - state.lastPreviewSavedAt < 12_000) return;
-      state.lastPreviewSavedAt = Date.now();
-      try {
-        const maxWidth = 640;
-        const scale = Math.min(1, maxWidth / frame.naturalWidth);
-        const canvas = document.createElement("canvas");
-        canvas.width = Math.max(1, Math.round(frame.naturalWidth * scale));
-        canvas.height = Math.max(1, Math.round(frame.naturalHeight * scale));
-        canvas.getContext("2d", {alpha: false}).drawImage(frame, 0, 0, canvas.width, canvas.height);
-        localStorage.setItem(previewStorageKey(device.id), JSON.stringify({
-          dataUrl: canvas.toDataURL("image/jpeg", .68),
-          timestamp: Date.now(),
-          name: device.name
-        }));
-      } catch {
-        // A cached preview is optional; remote control must continue if storage is unavailable.
-      }
+      $("detailPreviewCaption").textContent = "静态桌面";
+      $("detailPreviewTime").textContent = "不含远控画面";
     }
 
     function showToast(message) {
@@ -1520,7 +1591,7 @@
         : "服务未安装";
       $("secureDesktopStatus").classList.toggle("warning", !state.settings.secure_desktop_available);
       $("settingRememberCodes").checked = Boolean(state.settings.remember_codes);
-      $("settingFrameDelay").value = String(state.settings.frame_delay_ms || 120);
+      $("settingFrameDelay").value = String(state.settings.frame_delay_ms || 80);
       $("settingLockRemoteOnDisconnect").checked = Boolean(state.settings.lock_remote_on_disconnect);
       $("settingReduceMotion").checked = Boolean(state.settings.reduce_motion);
       $("settingLaunchAtLogin").checked = Boolean(state.settings.launch_at_login);
@@ -1998,6 +2069,8 @@
       controllerId = "",
       controllerName = ""
     ) {
+      resetScreenStream();
+      stopRemoteCursorTracking();
       resetInputTransport();
       state.remotePressedKeys.clear();
       state.remotePressedNativeKeys.clear();
@@ -2021,7 +2094,6 @@
       state.keyboardEnabled = false;
       state.autoUnlockChecking = false;
       state.remoteLockSentForClose = false;
-      state.lastPreviewSavedAt = 0;
       state.filePath = "";
       state.fileParent = "";
       state.fileEntries = [];
@@ -2050,6 +2122,7 @@
         enableDefaultClipboardSync();
         loadMonitors();
         refreshScreen();
+        refreshRemoteCursor();
       });
       if (state.keyboardEnabled) requestAnimationFrame(() => $("remoteStage").focus());
     }
@@ -2076,7 +2149,8 @@
       resetInputTransport();
       if (state.session) state.session.connected = false;
       await endRemoteSession(endingSession);
-      clearTimeout(state.refreshTimer);
+      resetScreenStream();
+      stopRemoteCursorTracking();
       resetClipboardSync();
       if (state.fileTransfer) state.fileTransfer.abort();
       closeRemoteFiles(false);
@@ -2461,7 +2535,31 @@
       xhr.send(file);
     }
 
-    function refreshScreen() {
+    const CONTROL_FRAME_INTERVAL_MS = 50;
+    const REMOTE_CURSOR_INTERVAL_MS = 40;
+
+    function frameIntervalMs(session) {
+      if (!session?.viewOnly) return CONTROL_FRAME_INTERVAL_MS;
+      return Number(state.settings.frame_delay_ms) || 80;
+    }
+
+    function releaseFrameObjectUrl() {
+      if (!state.frameObjectUrl) return;
+      URL.revokeObjectURL(state.frameObjectUrl);
+      state.frameObjectUrl = "";
+    }
+
+    function resetScreenStream() {
+      state.frameRequestRevision += 1;
+      clearTimeout(state.refreshTimer);
+      state.refreshTimer = 0;
+      state.screenAbortController?.abort();
+      state.screenAbortController = null;
+      state.loadingFrame = false;
+      releaseFrameObjectUrl();
+    }
+
+    async function refreshScreen() {
       const session = state.session;
       if (!session?.connected || state.loadingFrame) return;
       if (session.authMethod === "temporary" && Number(session.credentialExpiresAt || 0) <= Date.now()) {
@@ -2479,29 +2577,143 @@
         openPair(mode);
         return;
       }
+      const revision = state.frameRequestRevision;
+      const monitorId = session.monitorId || "all";
+      const startedAt = performance.now();
+      const abortController = new AbortController();
+      state.screenAbortController = abortController;
       state.loadingFrame = true;
-      const frame = new Image();
-      frame.crossOrigin = "anonymous";
-      frame.onload = () => {
-        if (!state.session?.connected) return;
+      let nextDelay = 850;
+      try {
+        const response = await fetch(
+          endpoint(`/screen?monitor=${encodeURIComponent(monitorId)}&cursor=${session.viewOnly ? "1" : "0"}&t=${Date.now()}`),
+          {cache: "no-store", signal: abortController.signal}
+        );
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const blob = await response.blob();
+        if (
+          revision !== state.frameRequestRevision ||
+          !state.session?.connected ||
+          state.session.monitorId !== monitorId
+        ) return;
+        const objectUrl = URL.createObjectURL(blob);
+        const frame = new Image();
+        try {
+          await new Promise((resolve, reject) => {
+            frame.onload = resolve;
+            frame.onerror = () => reject(new Error("远端画面解码失败"));
+            frame.src = objectUrl;
+          });
+        } catch (error) {
+          URL.revokeObjectURL(objectUrl);
+          throw error;
+        }
+        if (
+          revision !== state.frameRequestRevision ||
+          !state.session?.connected ||
+          state.session.monitorId !== monitorId
+        ) {
+          URL.revokeObjectURL(objectUrl);
+          return;
+        }
         state.remoteFrameWidth = frame.naturalWidth;
         state.remoteFrameHeight = frame.naturalHeight;
-        $("remoteScreen").src = frame.src;
-        saveDevicePreview(session.device, frame);
+        const previousObjectUrl = state.frameObjectUrl;
+        state.frameObjectUrl = objectUrl;
+        $("remoteScreen").src = objectUrl;
+        if (previousObjectUrl) URL.revokeObjectURL(previousObjectUrl);
         $("remoteHint").classList.add("hidden");
-        state.loadingFrame = false;
         const monitor = state.monitors.find((item) => item.id === state.session?.monitorId);
         setRemoteStatus(`已连接 · ${monitor?.label || "远端屏幕"} · ${frame.naturalWidth} × ${frame.naturalHeight}`);
         scheduleNativeInputSync();
         maybeAutoUnlock();
-        state.refreshTimer = setTimeout(refreshScreen, Number(state.settings.frame_delay_ms) || 120);
-      };
-      frame.onerror = () => {
-        state.loadingFrame = false;
+        updateRemoteCursorOverlay();
+        nextDelay = Math.max(0, frameIntervalMs(session) - (performance.now() - startedAt));
+      } catch (error) {
+        if (error.name === "AbortError" || revision !== state.frameRequestRevision) return;
         setRemoteStatus("画面连接中断，正在重试…", true);
-        if (state.session?.connected) state.refreshTimer = setTimeout(refreshScreen, 850);
-      };
-      frame.src = endpoint(`/screen?monitor=${encodeURIComponent(session.monitorId || "all")}&t=${Date.now()}`);
+      } finally {
+        if (revision !== state.frameRequestRevision) return;
+        if (state.screenAbortController === abortController) state.screenAbortController = null;
+        state.loadingFrame = false;
+        if (state.session?.connected && state.session.monitorId === monitorId) {
+          state.refreshTimer = setTimeout(refreshScreen, nextDelay);
+        }
+      }
+    }
+
+    function updateRemoteCursorOverlay() {
+      const cursor = state.remoteCursor;
+      const pointer = $("remotePointer");
+      const image = $("remoteScreen");
+      if (!cursor?.visible || !image.naturalWidth) {
+        pointer.classList.remove("visible");
+        return;
+      }
+      const imageRect = image.getBoundingClientRect();
+      const stageRect = $("remoteStage").getBoundingClientRect();
+      const remoteWidth = Number(cursor.width) || image.naturalWidth;
+      const remoteHeight = Number(cursor.height) || image.naturalHeight;
+      const scale = Math.min(imageRect.width / remoteWidth, imageRect.height / remoteHeight);
+      const contentWidth = remoteWidth * scale;
+      const contentHeight = remoteHeight * scale;
+      const left = imageRect.left - stageRect.left + (imageRect.width - contentWidth) / 2 + cursor.x * scale;
+      const top = imageRect.top - stageRect.top + (imageRect.height - contentHeight) / 2 + cursor.y * scale;
+      pointer.style.transform = `translate3d(${left}px, ${top}px, 0)`;
+      pointer.classList.add("visible");
+    }
+
+    function stopRemoteCursorTracking() {
+      state.cursorRequestRevision += 1;
+      clearTimeout(state.cursorTimer);
+      state.cursorTimer = 0;
+      state.cursorAbortController?.abort();
+      state.cursorAbortController = null;
+      state.cursorRequestInFlight = false;
+      state.remoteCursor = null;
+      $("remotePointer").classList.remove("visible");
+    }
+
+    async function refreshRemoteCursor() {
+      const session = state.session;
+      if (!session?.connected || session.viewOnly || state.cursorRequestInFlight) return;
+      const revision = state.cursorRequestRevision;
+      const monitorId = session.monitorId || "all";
+      const startedAt = performance.now();
+      const abortController = new AbortController();
+      state.cursorAbortController = abortController;
+      state.cursorRequestInFlight = true;
+      let nextDelay = REMOTE_CURSOR_INTERVAL_MS;
+      try {
+        const response = await fetch(
+          endpoint(`/cursor?monitor=${encodeURIComponent(monitorId)}&t=${Date.now()}`),
+          {cache: "no-store", signal: abortController.signal}
+        );
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const result = await response.json();
+        if (!result.ok) throw new Error(result.error || "光标状态不可用");
+        if (
+          revision !== state.cursorRequestRevision ||
+          !state.session?.connected ||
+          state.session.monitorId !== monitorId
+        ) return;
+        state.remoteCursor = result;
+        updateRemoteCursorOverlay();
+        nextDelay = Math.max(0, REMOTE_CURSOR_INTERVAL_MS - (performance.now() - startedAt));
+      } catch (error) {
+        if (error.name !== "AbortError") {
+          state.remoteCursor = null;
+          $("remotePointer").classList.remove("visible");
+          nextDelay = 240;
+        }
+      } finally {
+        if (revision !== state.cursorRequestRevision) return;
+        if (state.cursorAbortController === abortController) state.cursorAbortController = null;
+        state.cursorRequestInFlight = false;
+        if (state.session?.connected && !state.session.viewOnly && state.session.monitorId === monitorId) {
+          state.cursorTimer = setTimeout(refreshRemoteCursor, nextDelay);
+        }
+      }
     }
 
     async function maybeAutoUnlock() {
@@ -2953,13 +3165,14 @@
       if (!state.session?.connected) return;
       releaseAllRemoteInput();
       state.session.monitorId = $("monitorSelect").value || "all";
-      clearTimeout(state.refreshTimer);
-      state.loadingFrame = false;
+      resetScreenStream();
+      stopRemoteCursorTracking();
       $("remoteScreen").removeAttribute("src");
       $("remoteHint").classList.remove("hidden");
       $("remoteHint").textContent = "正在切换远端显示器…";
       scheduleNativeInputSync();
       refreshScreen();
+      refreshRemoteCursor();
     });
     $("clipboardButton").addEventListener("click", (event) => {
       const popover = $("clipboardPopover");
@@ -3042,7 +3255,10 @@
         Math.abs(event.clientX - window.innerWidth / 2) <= 90
       ) revealToolbar(1500);
     }, {capture: true, passive: true});
-    window.addEventListener("resize", () => scheduleNativeInputSync(40));
+    window.addEventListener("resize", () => {
+      scheduleNativeInputSync(40);
+      updateRemoteCursorOverlay();
+    });
 
     async function toggleWindowMaximize() {
       if (!window.pywebview?.api?.toggle_maximize_window) return;
@@ -3262,6 +3478,7 @@
     }
 
     (async function initialize() {
+      clearLegacyDevicePreviews();
       await loadSettings();
       if (remoteWindowMode) {
         document.body.classList.add("remote-window-mode");

@@ -53,7 +53,7 @@ if platform.system() == "Windows":
 
 
 APP_NAME = "Windows LAN Remote"
-APP_VERSION = "0.6.20"
+APP_VERSION = "0.6.21"
 GITHUB_REPOSITORY = "EmpK1019/lan-windows-remote"
 GITHUB_LATEST_RELEASE_API = f"https://api.github.com/repos/{GITHUB_REPOSITORY}/releases/latest"
 DEFAULT_PORT = 8765
@@ -315,7 +315,7 @@ class SettingsStore:
         "device_id": "",
         "view_only": False,
         "discovery_enabled": True,
-        "frame_delay_ms": 120,
+        "frame_delay_ms": 80,
         "remember_codes": True,
         "launch_at_login": False,
         "start_maximized": False,
@@ -378,7 +378,7 @@ class SettingsStore:
             frame_delay = int(self.values.get("frame_delay_ms"))
         except (TypeError, ValueError):
             frame_delay = int(self.DEFAULTS["frame_delay_ms"])
-        self.values["frame_delay_ms"] = frame_delay if frame_delay in {80, 120, 220} else 120
+        self.values["frame_delay_ms"] = frame_delay if frame_delay in {80, 120, 220} else 80
         for key in ("permanent_password_salt", "permanent_password_hash"):
             if not isinstance(self.values.get(key), str):
                 self.values[key] = ""
@@ -1254,6 +1254,22 @@ class GUID(ctypes.Structure):
     ]
 
 
+class ENCODER_PARAMETER(ctypes.Structure):
+    _fields_ = [
+        ("Guid", GUID),
+        ("NumberOfValues", wintypes.ULONG),
+        ("Type", wintypes.ULONG),
+        ("Value", ctypes.c_void_p),
+    ]
+
+
+class ENCODER_PARAMETERS(ctypes.Structure):
+    _fields_ = [
+        ("Count", wintypes.UINT),
+        ("Parameter", ENCODER_PARAMETER * 1),
+    ]
+
+
 class MOUSEINPUT(ctypes.Structure):
     _fields_ = [
         ("dx", wintypes.LONG),
@@ -1333,6 +1349,14 @@ JPEG_CLSID = GUID(
     0x11D3,
     (ctypes.c_ubyte * 8)(0x9A, 0x73, 0x00, 0x00, 0xF8, 0x1E, 0xF3, 0x2E),
 )
+JPEG_QUALITY_GUID = GUID(
+    0x1D5BE4B5,
+    0xFA4A,
+    0x452D,
+    (ctypes.c_ubyte * 8)(0x9C, 0xDD, 0x5D, 0xB3, 0x51, 0x05, 0xE7, 0xEB),
+)
+JPEG_QUALITY = 65
+ENCODER_PARAMETER_VALUE_TYPE_LONG = 4
 
 
 def configure_win32_signatures() -> None:
@@ -1578,6 +1602,29 @@ def monitor_payload() -> list[dict[str, Any]]:
     ]
 
 
+def desktop_cursor_payload(monitor_id: str = "all") -> dict[str, Any]:
+    left, top, width, height = screen_rect(monitor_id)
+    cursor = CURSORINFO()
+    cursor.cbSize = ctypes.sizeof(CURSORINFO)
+    available = bool(ctypes.windll.user32.GetCursorInfo(ctypes.byref(cursor)))
+    x = int(cursor.ptScreenPos.x) - left if available else -1
+    y = int(cursor.ptScreenPos.y) - top if available else -1
+    visible = bool(
+        available
+        and cursor.flags & 0x00000001
+        and cursor.hCursor
+        and 0 <= x < width
+        and 0 <= y < height
+    )
+    return {
+        "visible": visible,
+        "x": x,
+        "y": y,
+        "width": width,
+        "height": height,
+    }
+
+
 def draw_desktop_cursor(target_dc: int, capture_left: int, capture_top: int) -> None:
     user32 = ctypes.windll.user32
     gdi32 = ctypes.windll.gdi32
@@ -1613,7 +1660,7 @@ def draw_desktop_cursor(target_dc: int, capture_left: int, capture_top: int) -> 
                 gdi32.DeleteObject(icon.hbmColor)
 
 
-def capture_screen_bmp(monitor_id: str = "all") -> bytes:
+def capture_screen_bmp(monitor_id: str = "all", include_cursor: bool = True) -> bytes:
     user32 = ctypes.windll.user32
     gdi32 = ctypes.windll.gdi32
     left, top, width, height = screen_rect(monitor_id)
@@ -1642,7 +1689,8 @@ def capture_screen_bmp(monitor_id: str = "all") -> bytes:
 
             if not gdi32.BitBlt(mem_dc, 0, 0, width, height, screen_dc, left, top, 0x00CC0020 | 0x40000000):
                 raise ctypes.WinError()
-            draw_desktop_cursor(mem_dc, left, top)
+            if include_cursor:
+                draw_desktop_cursor(mem_dc, left, top)
 
             info = BITMAPINFO()
             info.bmiHeader.biSize = ctypes.sizeof(BITMAPINFOHEADER)
@@ -1719,7 +1767,21 @@ def encode_hbitmap_jpeg(bitmap: int) -> bytes:
         if hresult_failed(hr):
             raise OSError(f"CreateStreamOnHGlobal failed with HRESULT 0x{hr & 0xFFFFFFFF:08x}")
 
-        status = gdiplus.GdipSaveImageToStream(image, stream, ctypes.byref(JPEG_CLSID), None)
+        quality = wintypes.ULONG(JPEG_QUALITY)
+        encoder_parameters = ENCODER_PARAMETERS()
+        encoder_parameters.Count = 1
+        encoder_parameters.Parameter[0] = ENCODER_PARAMETER(
+            JPEG_QUALITY_GUID,
+            1,
+            ENCODER_PARAMETER_VALUE_TYPE_LONG,
+            ctypes.cast(ctypes.byref(quality), ctypes.c_void_p),
+        )
+        status = gdiplus.GdipSaveImageToStream(
+            image,
+            stream,
+            ctypes.byref(JPEG_CLSID),
+            ctypes.byref(encoder_parameters),
+        )
         if status != 0:
             raise RuntimeError(f"GDI+ JPEG encode failed with status {status}")
 
@@ -1743,7 +1805,7 @@ def encode_hbitmap_jpeg(bitmap: int) -> bytes:
             release_com_object(stream)
 
 
-def capture_screen_jpeg(monitor_id: str = "all") -> bytes:
+def capture_screen_jpeg(monitor_id: str = "all", include_cursor: bool = True) -> bytes:
     user32 = ctypes.windll.user32
     gdi32 = ctypes.windll.gdi32
     left, top, width, height = screen_rect(monitor_id)
@@ -1771,7 +1833,8 @@ def capture_screen_jpeg(monitor_id: str = "all") -> bytes:
 
             if not gdi32.BitBlt(mem_dc, 0, 0, width, height, screen_dc, left, top, 0x00CC0020 | 0x40000000):
                 raise ctypes.WinError()
-            draw_desktop_cursor(mem_dc, left, top)
+            if include_cursor:
+                draw_desktop_cursor(mem_dc, left, top)
 
             return encode_hbitmap_jpeg(bitmap)
         finally:
@@ -1784,11 +1847,11 @@ def capture_screen_jpeg(monitor_id: str = "all") -> bytes:
             user32.ReleaseDC(None, screen_dc)
 
 
-def capture_screen_image(monitor_id: str = "all") -> tuple[bytes, str]:
+def capture_screen_image(monitor_id: str = "all", include_cursor: bool = True) -> tuple[bytes, str]:
     try:
-        return capture_screen_jpeg(monitor_id), "image/jpeg"
+        return capture_screen_jpeg(monitor_id, include_cursor), "image/jpeg"
     except Exception:
-        return capture_screen_bmp(monitor_id), "image/bmp"
+        return capture_screen_bmp(monitor_id, include_cursor), "image/bmp"
 
 
 def open_clipboard_with_retry() -> None:
@@ -2092,8 +2155,28 @@ def secure_helper_available() -> bool:
         return False
 
 
-def capture_secure_desktop(monitor_id: str = "all") -> tuple[bytes, str]:
-    return secure_helper_request(f"/secure/screen?monitor={quote(monitor_id, safe='')}")
+def capture_secure_desktop(monitor_id: str = "all", include_cursor: bool = True) -> tuple[bytes, str]:
+    cursor_value = "1" if include_cursor else "0"
+    return secure_helper_request(
+        f"/secure/screen?monitor={quote(monitor_id, safe='')}&cursor={cursor_value}"
+    )
+
+
+def secure_desktop_cursor_payload(monitor_id: str = "all") -> dict[str, Any]:
+    data, _ = secure_helper_request(
+        f"/secure/cursor?monitor={quote(monitor_id, safe='')}",
+        timeout=1.0,
+    )
+    payload = json.loads(data.decode("utf-8"))
+    if not isinstance(payload, dict) or not payload.get("ok"):
+        raise RuntimeError("安全桌面光标状态不可用")
+    return {
+        "visible": bool(payload.get("visible")),
+        "x": int(payload.get("x", -1)),
+        "y": int(payload.get("y", -1)),
+        "width": int(payload.get("width", 0)),
+        "height": int(payload.get("height", 0)),
+    }
 
 
 def send_secure_input(payload: dict[str, Any]) -> None:
@@ -2527,12 +2610,23 @@ class SecureDesktopHandler(BaseHTTPRequestHandler):
                 False,
             )
             return
+        if path == "/secure/cursor":
+            try:
+                monitor_id = parse_qs(parsed.query).get("monitor", ["all"])[0]
+                payload = desktop_cursor_payload(monitor_id)
+            except (OSError, ValueError) as exc:
+                json_response(self, HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(exc)}, False)
+                return
+            json_response(self, HTTPStatus.OK, {"ok": True, **payload}, False)
+            return
         if path != "/secure/screen":
             json_response(self, HTTPStatus.NOT_FOUND, {"ok": False, "error": "not found"}, False)
             return
         try:
-            monitor_id = parse_qs(parsed.query).get("monitor", ["all"])[0]
-            data, content_type = capture_screen_image(monitor_id)
+            query = parse_qs(parsed.query)
+            monitor_id = query.get("monitor", ["all"])[0]
+            include_cursor = query.get("cursor", ["1"])[0] != "0"
+            data, content_type = capture_screen_image(monitor_id, include_cursor)
         except Exception as exc:
             json_response(self, HTTPStatus.INTERNAL_SERVER_ERROR, {"ok": False, "error": str(exc)}, False)
             return
@@ -2952,6 +3046,7 @@ class RemoteHandler(BaseHTTPRequestHandler):
         if urlparse(self.path).path in {
             "/health",
             "/screen",
+            "/cursor",
             "/input",
             "/input-stream",
             "/lock",
@@ -3225,6 +3320,26 @@ class RemoteHandler(BaseHTTPRequestHandler):
                 return
             json_response(self, HTTPStatus.OK, {"ok": True, "monitors": monitors})
             return
+        if parsed.path == "/cursor":
+            if self.authenticate_request(parsed) is None:
+                return
+            try:
+                monitor_id = parse_qs(parsed.query).get("monitor", ["all"])[0]
+                if secure_desktop_active():
+                    if not self.server.state.settings.values["secure_desktop_enabled"]:
+                        json_response(self, HTTPStatus.LOCKED, {"ok": False, "error": "secure desktop control disabled"})
+                        return
+                    payload = secure_desktop_cursor_payload(monitor_id)
+                else:
+                    payload = desktop_cursor_payload(monitor_id)
+            except ValueError as exc:
+                json_response(self, HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(exc)})
+                return
+            except Exception as exc:
+                json_response(self, HTTPStatus.INTERNAL_SERVER_ERROR, {"ok": False, "error": str(exc)})
+                return
+            json_response(self, HTTPStatus.OK, {"ok": True, **payload})
+            return
         if parsed.path == "/clipboard":
             if self.authenticate_request(parsed) is None:
                 return
@@ -3291,14 +3406,16 @@ class RemoteHandler(BaseHTTPRequestHandler):
             if self.authenticate_request(parsed) is None:
                 return
             try:
-                monitor_id = parse_qs(parsed.query).get("monitor", ["all"])[0]
+                query = parse_qs(parsed.query)
+                monitor_id = query.get("monitor", ["all"])[0]
+                include_cursor = query.get("cursor", ["1"])[0] != "0"
                 if secure_desktop_active():
                     if not self.server.state.settings.values["secure_desktop_enabled"]:
                         json_response(self, HTTPStatus.LOCKED, {"ok": False, "error": "secure desktop control disabled"})
                         return
-                    data, content_type = capture_secure_desktop(monitor_id)
+                    data, content_type = capture_secure_desktop(monitor_id, include_cursor)
                 else:
-                    data, content_type = capture_screen_image(monitor_id)
+                    data, content_type = capture_screen_image(monitor_id, include_cursor)
             except ValueError as exc:
                 json_response(self, HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(exc)})
                 return
