@@ -47,13 +47,20 @@ from tkinter import messagebox, simpledialog, ttk
 from PIL import Image, ImageTk
 import webview
 
+try:
+    import dxcam
+    import numpy as np
+except ImportError:  # Source checkouts retain the GDI fallback until dependencies are installed.
+    dxcam = None
+    np = None
+
 if platform.system() == "Windows":
     from ctypes import wintypes
     import winreg
 
 
 APP_NAME = "Windows LAN Remote"
-APP_VERSION = "0.6.21"
+APP_VERSION = "0.6.22"
 GITHUB_REPOSITORY = "EmpK1019/lan-windows-remote"
 GITHUB_LATEST_RELEASE_API = f"https://api.github.com/repos/{GITHUB_REPOSITORY}/releases/latest"
 DEFAULT_PORT = 8765
@@ -1357,6 +1364,12 @@ JPEG_QUALITY_GUID = GUID(
 )
 JPEG_QUALITY = 65
 ENCODER_PARAMETER_VALUE_TYPE_LONG = 4
+LOW_LATENCY_CAPTURE_FPS = 90
+LOW_LATENCY_STREAM_FPS = 60
+LOW_LATENCY_MAX_WIDTH = 1920
+LOW_LATENCY_MAX_HEIGHT = 1080
+LOW_LATENCY_JPEG_QUALITY = 55
+SCREEN_STREAM_BOUNDARY = "lan-remote-frame"
 
 
 def configure_win32_signatures() -> None:
@@ -1600,6 +1613,145 @@ def monitor_payload() -> list[dict[str, Any]]:
         },
         *monitors,
     ]
+
+
+class LowLatencyDesktopCapture:
+    """DXGI-backed latest-frame capture for the real-time control stream."""
+
+    def __init__(self) -> None:
+        self.lock = threading.RLock()
+        self.cameras: dict[str, Any] = {}
+        self.layout_signature: tuple[tuple[Any, ...], ...] = ()
+        self.retry_after = 0.0
+
+    @staticmethod
+    def _signature(monitors: list[dict[str, Any]]) -> tuple[tuple[Any, ...], ...]:
+        return tuple(
+            (
+                monitor["id"],
+                monitor["left"],
+                monitor["top"],
+                monitor["width"],
+                monitor["height"],
+            )
+            for monitor in monitors
+        )
+
+    def _release_locked(self) -> None:
+        cameras = list(self.cameras.values())
+        self.cameras.clear()
+        self.layout_signature = ()
+        for camera in cameras:
+            try:
+                camera.release()
+            except Exception:
+                pass
+
+    def close(self) -> None:
+        with self.lock:
+            self._release_locked()
+
+    def _initialize_locked(self, monitors: list[dict[str, Any]]) -> None:
+        if dxcam is None or np is None:
+            raise RuntimeError("DXGI capture dependencies are unavailable")
+        if time.monotonic() < self.retry_after:
+            raise RuntimeError("DXGI capture is temporarily unavailable")
+
+        signature = self._signature(monitors)
+        if self.cameras and self.layout_signature == signature:
+            return
+        self._release_locked()
+
+        monitor_ids = {str(monitor["id"]).upper() for monitor in monitors}
+        factory = dxcam.__dict__.get("__factory")
+        output_groups = getattr(factory, "outputs", ())
+        try:
+            for device_index, outputs in enumerate(output_groups):
+                for output_index, _output in enumerate(outputs):
+                    camera = dxcam.create(
+                        device_idx=device_index,
+                        output_idx=output_index,
+                        output_color="RGB",
+                        processor_backend="numpy",
+                        max_buffer_len=4,
+                    )
+                    device_name = str(camera._output.desc.DeviceName)
+                    if device_name.upper() not in monitor_ids:
+                        camera.release()
+                        continue
+                    camera.start(target_fps=LOW_LATENCY_CAPTURE_FPS, video_mode=False)
+                    self.cameras[device_name] = camera
+            if not self.cameras:
+                raise RuntimeError("DXGI did not expose an active display")
+            self.layout_signature = signature
+        except Exception:
+            self._release_locked()
+            self.retry_after = time.monotonic() + 2.0
+            raise
+
+    @staticmethod
+    def _downsample_divisor(width: int, height: int) -> int:
+        width_divisor = max(1, (width + LOW_LATENCY_MAX_WIDTH - 1) // LOW_LATENCY_MAX_WIDTH)
+        height_divisor = max(1, (height + LOW_LATENCY_MAX_HEIGHT - 1) // LOW_LATENCY_MAX_HEIGHT)
+        return max(width_divisor, height_divisor)
+
+    def capture(self, monitor_id: str = "all") -> tuple[bytes, str, int, int]:
+        monitors = enumerate_monitors()
+        source_left, source_top, source_width, source_height = screen_rect(monitor_id)
+        selected = (
+            monitors
+            if not monitor_id or monitor_id == "all"
+            else [monitor for monitor in monitors if monitor["id"] == monitor_id]
+        )
+        if not selected:
+            raise ValueError("显示器不存在或已经断开")
+
+        with self.lock:
+            self._initialize_locked(monitors)
+            frames: list[tuple[dict[str, Any], Any]] = []
+            for monitor in selected:
+                camera = self.cameras.get(str(monitor["id"]))
+                if camera is None:
+                    raise RuntimeError(f"DXGI display is unavailable: {monitor['id']}")
+                frame = camera.grab(copy=False)
+                if frame is None:
+                    deadline = time.monotonic() + 0.25
+                    while frame is None and time.monotonic() < deadline:
+                        time.sleep(0.004)
+                        frame = camera.grab(copy=False)
+                if frame is None:
+                    raise RuntimeError(f"DXGI display produced no frame: {monitor['id']}")
+                frames.append((monitor, frame))
+
+            divisor = self._downsample_divisor(source_width, source_height)
+            output_width = max(1, (source_width + divisor - 1) // divisor)
+            output_height = max(1, (source_height + divisor - 1) // divisor)
+            if len(frames) == 1:
+                pixels = frames[0][1][::divisor, ::divisor]
+            else:
+                pixels = np.zeros((output_height, output_width, 3), dtype=np.uint8)
+                for monitor, frame in frames:
+                    scaled = frame[::divisor, ::divisor]
+                    x = max(0, round((int(monitor["left"]) - source_left) / divisor))
+                    y = max(0, round((int(monitor["top"]) - source_top) / divisor))
+                    height = min(int(scaled.shape[0]), output_height - y)
+                    width = min(int(scaled.shape[1]), output_width - x)
+                    if width > 0 and height > 0:
+                        pixels[y : y + height, x : x + width] = scaled[:height, :width]
+
+            output = io.BytesIO()
+            Image.fromarray(pixels, "RGB").save(
+                output,
+                format="JPEG",
+                quality=LOW_LATENCY_JPEG_QUALITY,
+                optimize=False,
+                subsampling=2,
+            )
+            return output.getvalue(), "image/jpeg", source_width, source_height
+
+
+LOW_LATENCY_CAPTURE = LowLatencyDesktopCapture()
+atexit.register(LOW_LATENCY_CAPTURE.close)
 
 
 def desktop_cursor_payload(monitor_id: str = "all") -> dict[str, Any]:
@@ -1852,6 +2004,17 @@ def capture_screen_image(monitor_id: str = "all", include_cursor: bool = True) -
         return capture_screen_jpeg(monitor_id, include_cursor), "image/jpeg"
     except Exception:
         return capture_screen_bmp(monitor_id, include_cursor), "image/bmp"
+
+
+def capture_low_latency_screen(monitor_id: str = "all") -> tuple[bytes, str, int, int]:
+    try:
+        return LOW_LATENCY_CAPTURE.capture(monitor_id)
+    except ValueError:
+        raise
+    except Exception:
+        data, content_type = capture_screen_image(monitor_id, False)
+        _, _, width, height = screen_rect(monitor_id)
+        return data, content_type, width, height
 
 
 def open_clipboard_with_retry() -> None:
@@ -3039,6 +3202,7 @@ class RemoteHandler(BaseHTTPRequestHandler):
     def setup(self) -> None:
         super().setup()
         self.connection.settimeout(CLIENT_SOCKET_TIMEOUT_SECONDS)
+        self.connection.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
 
     def log_message(self, format: str, *args: Any) -> None:
         # Screen polling and input are both high-frequency. Screen URLs also
@@ -3046,6 +3210,7 @@ class RemoteHandler(BaseHTTPRequestHandler):
         if urlparse(self.path).path in {
             "/health",
             "/screen",
+            "/screen-stream",
             "/cursor",
             "/input",
             "/input-stream",
@@ -3146,6 +3311,84 @@ class RemoteHandler(BaseHTTPRequestHandler):
     def _write_input_ack(self, status: int) -> None:
         self.wfile.write(bytes((status,)))
         self.wfile.flush()
+
+    def _serve_screen_stream(self, parsed: Any) -> None:
+        authentication = self.authenticate_request(parsed)
+        if authentication is None:
+            return
+        query = parse_qs(parsed.query)
+        monitor_id = query.get("monitor", ["all"])[0]
+        include_cursor = query.get("cursor", ["0"])[0] != "0"
+        try:
+            _, _, source_width, source_height = screen_rect(monitor_id)
+        except ValueError as exc:
+            json_response(self, HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(exc)})
+            return
+
+        supplied_token = (
+            query.get("token", [""])[0]
+            or self.headers.get("X-Remote-Token", "")
+        )
+        boundary = SCREEN_STREAM_BOUNDARY.encode("ascii")
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", f"multipart/x-mixed-replace; boundary={SCREEN_STREAM_BOUNDARY}")
+        self.send_header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
+        self.send_header("Connection", "keep-alive")
+        self.send_header("X-Remote-Width", str(source_width))
+        self.send_header("X-Remote-Height", str(source_height))
+        self.send_header("X-Remote-FPS", str(LOW_LATENCY_STREAM_FPS))
+        send_common_headers(self)
+        self.end_headers()
+        self.wfile.flush()
+
+        interval = 1.0 / LOW_LATENCY_STREAM_FPS
+        next_frame_at = time.perf_counter()
+        frame_number = 0
+        try:
+            while True:
+                if frame_number and frame_number % LOW_LATENCY_STREAM_FPS == 0:
+                    if self.server.state.authenticate(supplied_token, self.client_address[0]) is None:
+                        return
+                if secure_desktop_active():
+                    if not self.server.state.settings.values["secure_desktop_enabled"]:
+                        return
+                    data, content_type = capture_secure_desktop(monitor_id, include_cursor)
+                    _, _, source_width, source_height = screen_rect(monitor_id)
+                elif include_cursor:
+                    data, content_type = capture_screen_image(monitor_id, True)
+                    _, _, source_width, source_height = screen_rect(monitor_id)
+                else:
+                    data, content_type, source_width, source_height = capture_low_latency_screen(monitor_id)
+
+                part_header = (
+                    b"--"
+                    + boundary
+                    + b"\r\nContent-Type: "
+                    + content_type.encode("ascii")
+                    + b"\r\nContent-Length: "
+                    + str(len(data)).encode("ascii")
+                    + b"\r\nX-Remote-Width: "
+                    + str(source_width).encode("ascii")
+                    + b"\r\nX-Remote-Height: "
+                    + str(source_height).encode("ascii")
+                    + b"\r\n\r\n"
+                )
+                self.wfile.write(part_header)
+                self.wfile.write(data)
+                self.wfile.write(b"\r\n")
+                self.wfile.flush()
+
+                frame_number += 1
+                next_frame_at += interval
+                delay = next_frame_at - time.perf_counter()
+                if delay > 0:
+                    time.sleep(delay)
+                elif delay < -interval:
+                    next_frame_at = time.perf_counter()
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, OSError, TimeoutError):
+            return
+        finally:
+            self.close_connection = True
 
     def do_GET(self) -> None:
         if not self.check_client_allowed():
@@ -3402,6 +3645,9 @@ class RemoteHandler(BaseHTTPRequestHandler):
             except (OSError, ValueError) as exc:
                 json_response(self, HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(exc)})
                 return
+        if parsed.path == "/screen-stream":
+            self._serve_screen_stream(parsed)
+            return
         if parsed.path == "/screen":
             if self.authenticate_request(parsed) is None:
                 return

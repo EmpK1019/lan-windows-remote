@@ -55,18 +55,20 @@ class AuditState:
                 self.input_event.set()
 
 
-def png_frame() -> bytes:
-    image = Image.new("RGB", (1280, 720), (17, 27, 42))
+def png_frame(red: int = 17) -> bytes:
+    image = Image.new("RGB", (1280, 720), (red, 27, 42))
     output = io.BytesIO()
     image.save(output, format="PNG")
     return output.getvalue()
 
 
 FRAME = png_frame()
+FRAME_SEQUENCE = tuple(png_frame(32 + index * 12) for index in range(8))
 
 
 class AuditHandler(BaseHTTPRequestHandler):
     server: "AuditServer"
+    protocol_version = "HTTP/1.1"
 
     def log_message(self, format: str, *args: Any) -> None:
         return
@@ -127,6 +129,32 @@ class AuditHandler(BaseHTTPRequestHandler):
                 }
             )
             return
+        if path == "/screen-stream":
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=audit-frame")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Connection", "keep-alive")
+            self.end_headers()
+            try:
+                while True:
+                    with self.server.state.lock:
+                        frame_index = self.server.state.screen_requests
+                        self.server.state.screen_requests += 1
+                        self.server.state.screen_request_times.append(time.monotonic())
+                        self.server.state.screen_request_queries.append(self.path)
+                    frame = FRAME_SEQUENCE[frame_index % len(FRAME_SEQUENCE)]
+                    self.wfile.write(
+                        b"--audit-frame\r\nContent-Type: image/png\r\nContent-Length: "
+                        + str(len(frame)).encode("ascii")
+                        + b"\r\n\r\n"
+                        + frame
+                        + b"\r\n"
+                    )
+                    self.wfile.flush()
+                    time.sleep(1 / 60)
+            except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, OSError):
+                self.close_connection = True
+                return
         if path == "/screen":
             with self.server.state.lock:
                 self.server.state.screen_requests += 1
@@ -276,6 +304,7 @@ def start_embedded_controller() -> ThreadingHTTPServer:
 
 
 user32 = ctypes.windll.user32
+gdi32 = ctypes.windll.gdi32
 kernel32 = ctypes.windll.kernel32
 
 user32.EnumWindows.argtypes = [ctypes.c_void_p, wintypes.LPARAM]
@@ -297,6 +326,10 @@ user32.SetCursorPos.argtypes = [ctypes.c_int, ctypes.c_int]
 user32.SetCursorPos.restype = wintypes.BOOL
 user32.GetCursorPos.argtypes = [ctypes.POINTER(wintypes.POINT)]
 user32.GetCursorPos.restype = wintypes.BOOL
+user32.GetDC.argtypes = [wintypes.HWND]
+user32.GetDC.restype = wintypes.HDC
+user32.ReleaseDC.argtypes = [wintypes.HWND, wintypes.HDC]
+user32.ReleaseDC.restype = ctypes.c_int
 user32.mouse_event.argtypes = [
     wintypes.DWORD,
     wintypes.DWORD,
@@ -346,6 +379,8 @@ kernel32.WaitForSingleObject.restype = wintypes.DWORD
 kernel32.TerminateProcess.argtypes = [wintypes.HANDLE, wintypes.UINT]
 kernel32.TerminateProcess.restype = wintypes.BOOL
 kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+gdi32.GetPixel.argtypes = [wintypes.HDC, ctypes.c_int, ctypes.c_int]
+gdi32.GetPixel.restype = wintypes.DWORD
 
 
 def window_for_process(process_id: int, timeout: float = 10.0) -> int:
@@ -383,6 +418,19 @@ def window_diagnostics(window: int) -> str:
         f"foreground={foreground} foreground_pid={owner.value} "
         f"foreground_thread={foreground_thread} foreground_title={title.value!r}"
     )
+
+
+def screen_pixel(point: wintypes.POINT) -> tuple[int, int, int]:
+    desktop_dc = user32.GetDC(None)
+    if not desktop_dc:
+        raise ctypes.WinError()
+    try:
+        color = int(gdi32.GetPixel(desktop_dc, point.x, point.y))
+    finally:
+        user32.ReleaseDC(None, desktop_dc)
+    if color == 0xFFFFFFFF:
+        raise ctypes.WinError()
+    return color & 0xFF, (color >> 8) & 0xFF, (color >> 16) & 0xFF
 
 
 def force_foreground(window: int, timeout: float = 1.0) -> bool:
@@ -511,6 +559,25 @@ def main() -> int:
         )
         if not user32.ClientToScreen(window, ctypes.byref(point)):
             raise ctypes.WinError()
+        sample_point = wintypes.POINT(
+            max(1, (rect.right - rect.left) // 4),
+            max(1, int((rect.bottom - rect.top) * 0.68)),
+        )
+        if not user32.ClientToScreen(window, ctypes.byref(sample_point)):
+            raise ctypes.WinError()
+        display_started = time.perf_counter()
+        display_colors: list[tuple[int, int, int]] = []
+        while time.perf_counter() - display_started < 1.25:
+            color = screen_pixel(sample_point)
+            if not display_colors or color != display_colors[-1]:
+                display_colors.append(color)
+            time.sleep(0.004)
+        display_duration = time.perf_counter() - display_started
+        displayed_fps = max(0, len(display_colors) - 1) / display_duration
+        if displayed_fps < 33:
+            raise RuntimeError(
+                f"WebView displayed only {displayed_fps:.1f} changing frames/s: {display_colors}"
+            )
         for _ in range(4):
             if not user32.SetCursorPos(point.x, point.y):
                 raise ctypes.WinError()
@@ -554,9 +621,9 @@ def main() -> int:
             (later - earlier) * 1000
             for earlier, later in zip(cursor_times[-5:-1], cursor_times[-4:])
         ]
-        if statistics.median(screen_intervals_ms) > 120:
+        if statistics.median(screen_intervals_ms) > 25:
             raise RuntimeError(f"screen cadence regressed: {screen_intervals_ms}")
-        if statistics.median(cursor_intervals_ms) > 90:
+        if statistics.median(cursor_intervals_ms) > 30:
             raise RuntimeError(f"cursor cadence regressed: {cursor_intervals_ms}")
         sources = sorted({source for source, _ in observed})
         non_move = [
@@ -569,6 +636,7 @@ def main() -> int:
             f"pid={process_id} point={point.x},{point.y} "
             f"screen_ms={statistics.median(screen_intervals_ms):.1f} "
             f"cursor_ms={statistics.median(cursor_intervals_ms):.1f} "
+            f"display_fps={displayed_fps:.1f} "
             f"sources={sources} frames={non_move}"
         )
         return 0

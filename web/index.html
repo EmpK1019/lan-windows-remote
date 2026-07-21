@@ -2120,9 +2120,11 @@
       sendSessionHeartbeat(true).then((ready) => {
         if (!ready || !state.session?.connected) return;
         enableDefaultClipboardSync();
-        loadMonitors();
-        refreshScreen();
-        refreshRemoteCursor();
+        loadMonitors().finally(() => {
+          if (!state.session?.connected) return;
+          refreshScreen();
+          refreshRemoteCursor();
+        });
       });
       if (state.keyboardEnabled) requestAnimationFrame(() => $("remoteStage").focus());
     }
@@ -2308,10 +2310,16 @@
         ).join("");
         session.monitorId = result.monitors.some((monitor) => monitor.id === current) ? current : "all";
         $("monitorSelect").value = session.monitorId;
+        const selected = result.monitors.find((monitor) => monitor.id === session.monitorId);
+        state.remoteFrameWidth = Number(selected?.width) || 0;
+        state.remoteFrameHeight = Number(selected?.height) || 0;
+        scheduleNativeInputSync();
       } catch (error) {
         state.monitors = [{id: "all", label: "全部显示器"}];
         $("monitorSelect").innerHTML = '<option value="all">全部显示器</option>';
         session.monitorId = "all";
+        state.remoteFrameWidth = 0;
+        state.remoteFrameHeight = 0;
         showToast(error.message || "无法读取远端显示器");
       }
     }
@@ -2535,11 +2543,10 @@
       xhr.send(file);
     }
 
-    const CONTROL_FRAME_INTERVAL_MS = 50;
-    const REMOTE_CURSOR_INTERVAL_MS = 40;
+    const CONTROL_STREAM_FPS = 60;
+    const REMOTE_CURSOR_INTERVAL_MS = 8;
 
     function frameIntervalMs(session) {
-      if (!session?.viewOnly) return CONTROL_FRAME_INTERVAL_MS;
       return Number(state.settings.frame_delay_ms) || 80;
     }
 
@@ -2557,26 +2564,75 @@
       state.screenAbortController = null;
       state.loadingFrame = false;
       releaseFrameObjectUrl();
+      const image = $("remoteScreen");
+      image.onload = null;
+      image.onerror = null;
+      image.removeAttribute("src");
     }
 
-    async function refreshScreen() {
-      const session = state.session;
-      if (!session?.connected || state.loadingFrame) return;
-      if (session.authMethod === "temporary" && Number(session.credentialExpiresAt || 0) <= Date.now()) {
-        if (remoteWindowMode) {
-          session.connected = false;
-          setRemoteStatus("临时访问码已失效，控制窗口即将关闭", true);
-          setTimeout(() => window.pywebview?.api?.close_window?.(), 1200);
+    function selectedMonitorGeometry(session) {
+      return state.monitors.find((monitor) => monitor.id === (session?.monitorId || "all")) || null;
+    }
+
+    function markScreenReady(session, image) {
+      const monitor = selectedMonitorGeometry(session);
+      state.remoteFrameWidth = Number(monitor?.width) || image.naturalWidth;
+      state.remoteFrameHeight = Number(monitor?.height) || image.naturalHeight;
+      $("remoteHint").classList.add("hidden");
+      setRemoteStatus(
+        `已连接 · ${monitor?.label || "远端屏幕"} · ${state.remoteFrameWidth} × ${state.remoteFrameHeight} · ${CONTROL_STREAM_FPS} FPS`
+      );
+      scheduleNativeInputSync();
+      maybeAutoUnlock();
+      updateRemoteCursorOverlay();
+    }
+
+    function startControlScreenStream(session) {
+      const revision = state.frameRequestRevision;
+      const monitorId = session.monitorId || "all";
+      const image = $("remoteScreen");
+      let ready = false;
+      state.loadingFrame = true;
+
+      const acceptFirstFrame = () => {
+        if (
+          ready ||
+          revision !== state.frameRequestRevision ||
+          !state.session?.connected ||
+          state.session.monitorId !== monitorId ||
+          !image.naturalWidth
+        ) return false;
+        ready = true;
+        state.loadingFrame = false;
+        clearTimeout(state.refreshTimer);
+        state.refreshTimer = 0;
+        markScreenReady(session, image);
+        return true;
+      };
+      const waitForFirstFrame = (attempt = 0) => {
+        if (acceptFirstFrame() || revision !== state.frameRequestRevision) return;
+        if (attempt >= 250) {
+          state.loadingFrame = false;
+          setRemoteStatus("画面连接超时，正在重试…", true);
+          state.refreshTimer = setTimeout(refreshScreen, 350);
           return;
         }
-        const deviceId = session.device.id;
-        const mode = session.viewOnly ? "view" : "control";
-        sessionStorage.removeItem(`lan-remote-token:${deviceId}`);
-        stopSession();
-        showToast("目标端临时访问码已刷新，请重新连接");
-        openPair(mode);
-        return;
-      }
+        state.refreshTimer = setTimeout(() => waitForFirstFrame(attempt + 1), 20);
+      };
+      image.onload = acceptFirstFrame;
+      image.onerror = () => {
+        if (revision !== state.frameRequestRevision || !state.session?.connected) return;
+        state.loadingFrame = false;
+        setRemoteStatus("画面连接中断，正在重试…", true);
+        state.refreshTimer = setTimeout(refreshScreen, 350);
+      };
+      image.src = endpoint(
+        `/screen-stream?monitor=${encodeURIComponent(monitorId)}&cursor=0&fps=${CONTROL_STREAM_FPS}&t=${Date.now()}`
+      );
+      waitForFirstFrame();
+    }
+
+    async function refreshPollingScreen(session) {
       const revision = state.frameRequestRevision;
       const monitorId = session.monitorId || "all";
       const startedAt = performance.now();
@@ -2586,7 +2642,7 @@
       let nextDelay = 850;
       try {
         const response = await fetch(
-          endpoint(`/screen?monitor=${encodeURIComponent(monitorId)}&cursor=${session.viewOnly ? "1" : "0"}&t=${Date.now()}`),
+          endpoint(`/screen?monitor=${encodeURIComponent(monitorId)}&cursor=1&t=${Date.now()}`),
           {cache: "no-store", signal: abortController.signal}
         );
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
@@ -2623,7 +2679,7 @@
         $("remoteScreen").src = objectUrl;
         if (previousObjectUrl) URL.revokeObjectURL(previousObjectUrl);
         $("remoteHint").classList.add("hidden");
-        const monitor = state.monitors.find((item) => item.id === state.session?.monitorId);
+        const monitor = selectedMonitorGeometry(session);
         setRemoteStatus(`已连接 · ${monitor?.label || "远端屏幕"} · ${frame.naturalWidth} × ${frame.naturalHeight}`);
         scheduleNativeInputSync();
         maybeAutoUnlock();
@@ -2640,6 +2696,31 @@
           state.refreshTimer = setTimeout(refreshScreen, nextDelay);
         }
       }
+    }
+
+    function refreshScreen() {
+      const session = state.session;
+      if (!session?.connected || state.loadingFrame) return;
+      if (session.authMethod === "temporary" && Number(session.credentialExpiresAt || 0) <= Date.now()) {
+        if (remoteWindowMode) {
+          session.connected = false;
+          setRemoteStatus("临时访问码已失效，控制窗口即将关闭", true);
+          setTimeout(() => window.pywebview?.api?.close_window?.(), 1200);
+          return;
+        }
+        const deviceId = session.device.id;
+        const mode = session.viewOnly ? "view" : "control";
+        sessionStorage.removeItem(`lan-remote-token:${deviceId}`);
+        stopSession();
+        showToast("目标端临时访问码已刷新，请重新连接");
+        openPair(mode);
+        return;
+      }
+      if (session.viewOnly) {
+        refreshPollingScreen(session);
+        return;
+      }
+      startControlScreenStream(session);
     }
 
     function updateRemoteCursorOverlay() {
@@ -2740,14 +2821,16 @@
 
     function remotePoint(event) {
       const image = $("remoteScreen");
-      if (!image.naturalWidth || !image.naturalHeight) return null;
+      const remoteWidth = state.remoteFrameWidth || image.naturalWidth;
+      const remoteHeight = state.remoteFrameHeight || image.naturalHeight;
+      if (!remoteWidth || !remoteHeight) return null;
       const rect = image.getBoundingClientRect();
-      const scale = Math.min(rect.width / image.naturalWidth, rect.height / image.naturalHeight);
-      const width = image.naturalWidth * scale;
-      const height = image.naturalHeight * scale;
+      const scale = Math.min(rect.width / remoteWidth, rect.height / remoteHeight);
+      const width = remoteWidth * scale;
+      const height = remoteHeight * scale;
       const x = (event.clientX - rect.left - (rect.width - width) / 2) / scale;
       const y = (event.clientY - rect.top - (rect.height - height) / 2) / scale;
-      if (x < 0 || y < 0 || x > image.naturalWidth || y > image.naturalHeight) return null;
+      if (x < 0 || y < 0 || x > remoteWidth || y > remoteHeight) return null;
       return {x: Math.round(x), y: Math.round(y)};
     }
 
@@ -2764,8 +2847,8 @@
     function nativeInputLayout() {
       const image = $("remoteScreen");
       const rect = image.getBoundingClientRect();
-      const remoteWidth = image.naturalWidth || state.remoteFrameWidth || 0;
-      const remoteHeight = image.naturalHeight || state.remoteFrameHeight || 0;
+      const remoteWidth = state.remoteFrameWidth || image.naturalWidth || 0;
+      const remoteHeight = state.remoteFrameHeight || image.naturalHeight || 0;
       let contentLeft = rect.left;
       let contentTop = rect.top;
       let contentWidth = 0;
@@ -3165,6 +3248,9 @@
       if (!state.session?.connected) return;
       releaseAllRemoteInput();
       state.session.monitorId = $("monitorSelect").value || "all";
+      const selected = selectedMonitorGeometry(state.session);
+      state.remoteFrameWidth = Number(selected?.width) || 0;
+      state.remoteFrameHeight = Number(selected?.height) || 0;
       resetScreenStream();
       stopRemoteCursorTracking();
       $("remoteScreen").removeAttribute("src");

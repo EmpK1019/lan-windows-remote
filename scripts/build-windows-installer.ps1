@@ -1,5 +1,5 @@
 param(
-    [string]$Version = "0.6.21",
+    [string]$Version = "0.6.22",
     [switch]$SkipDependencyInstall
 )
 
@@ -66,6 +66,11 @@ if ($LASTEXITCODE -ne 0) {
     throw "Automated tests failed with exit code $LASTEXITCODE."
 }
 
+& $VenvPython (Join-Path $Root "tests\low_latency_screen_stream_e2e.py")
+if ($LASTEXITCODE -ne 0) {
+    throw "Low-latency screen stream failed the 33 FPS release gate with exit code $LASTEXITCODE."
+}
+
 & powershell.exe `
     -NoProfile `
     -NonInteractive `
@@ -119,6 +124,7 @@ finally {
     --name $PortableBaseName `
     --add-data "$((Join-Path $Root 'web'));web" `
     --add-data "$((Join-Path $Root 'assets'));assets" `
+    --collect-all dxcam `
     --icon $IconPath `
     --distpath $DistDir `
     --workpath (Join-Path $BuildDir "pyinstaller") `

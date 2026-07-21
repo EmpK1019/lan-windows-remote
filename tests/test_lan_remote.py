@@ -419,15 +419,16 @@ class CoreFunctionTests(unittest.TestCase):
             "      if (state.nativeInputActive) {",
             html,
         )
-        self.assertIn("state.remoteFrameWidth = frame.naturalWidth", html)
-        self.assertIn("CONTROL_FRAME_INTERVAL_MS = 50", html)
-        self.assertIn("frameIntervalMs(session) - (performance.now() - startedAt)", html)
-        self.assertIn('cursor=${session.viewOnly ? "1" : "0"}', html)
+        self.assertIn("state.remoteFrameWidth = Number(monitor?.width) || image.naturalWidth", html)
+        self.assertIn("CONTROL_STREAM_FPS = 60", html)
+        self.assertIn('endpoint(\n        `/screen-stream?monitor=', html)
+        self.assertIn("REMOTE_CURSOR_INTERVAL_MS = 8", html)
+        self.assertIn('endpoint(`/screen?monitor=${encodeURIComponent(monitorId)}&cursor=1', html)
         self.assertIn('endpoint(`/cursor?monitor=', html)
         self.assertIn(".remote-stage.controlling #remoteScreen { cursor: none !important; }", html)
         self.assertIn('id="remotePointer"', html)
         self.assertIn(
-            "const remoteWidth = image.naturalWidth || state.remoteFrameWidth || 0",
+            "const remoteWidth = state.remoteFrameWidth || image.naturalWidth || 0",
             html,
         )
         host = (Path(__file__).resolve().parents[1] / "packaging" / "ControlWindowHost.cs").read_text(encoding="utf-8")
@@ -1047,6 +1048,30 @@ class HttpIntegrationTests(unittest.TestCase):
         self.assertEqual(status, 403)
         status, _, _ = self.request("POST", "/lock", body=b"{}", headers=headers)
         self.assertEqual(status, 403)
+
+    def test_low_latency_screen_stream_is_multipart_and_authenticated(self) -> None:
+        capture = Mock(return_value=(b"jpeg-frame", "image/jpeg", 1920, 1080))
+        connection = socket.create_connection(("127.0.0.1", self.state.port), timeout=3)
+        connection.settimeout(3)
+        try:
+            with (
+                patch.object(lan_remote, "secure_desktop_active", return_value=False),
+                patch.object(lan_remote, "capture_low_latency_screen", capture),
+            ):
+                connection.sendall(
+                    b"GET /screen-stream?monitor=all&cursor=0&token=TEST-TEMP-CODE HTTP/1.1\r\n"
+                    b"Host: 127.0.0.1\r\nConnection: close\r\n\r\n"
+                )
+                response = bytearray()
+                while b"jpeg-frame" not in response:
+                    response.extend(connection.recv(4096))
+        finally:
+            connection.close()
+        self.assertIn(b" 200 ", response.split(b"\r\n", 1)[0])
+        self.assertIn(b"multipart/x-mixed-replace; boundary=lan-remote-frame", response)
+        self.assertIn(b"X-Remote-FPS: 60", response)
+        self.assertIn(b"Content-Length: 10", response)
+        capture.assert_called_with("all")
 
     def test_concurrent_upload_to_same_destination_is_rejected(self) -> None:
         root = Path(self.temp_directory.name) / "files"
