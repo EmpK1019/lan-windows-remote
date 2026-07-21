@@ -181,7 +181,10 @@ internal static class PackagedMouseHookE2ETests
 
             using (Form window = (Form)constructor.Invoke(new object[]
             {
-                new Uri("http://127.0.0.1:8765/?remote=1&handoff=abcdefghijklmnop")
+                // This test drives the native host directly. Keep its WebView away
+                // from a running LAN Remote instance, which could asynchronously
+                // reconfigure the same input session while the hook is audited.
+                new Uri("http://127.0.0.1:1/?remote=1&handoff=abcdefghijklmnop")
             }))
             {
                 SuppressShownHandler(window);

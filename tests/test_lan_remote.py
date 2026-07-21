@@ -122,26 +122,58 @@ class CoreFunctionTests(unittest.TestCase):
                 }
             )
 
-    def test_frontend_has_graphical_busy_state_and_static_private_preview(self) -> None:
+    def test_frontend_has_graphical_busy_state_and_authenticated_wallpaper_preview(self) -> None:
         html = (Path(__file__).resolve().parents[1] / "web" / "index.html").read_text(encoding="utf-8")
         for marker in (
             'id="controlOccupation"',
             'id="controlledDuration"',
             'id="detailPreviewDesktop"',
-            "静态桌面示意图",
-            "不含远控画面",
+            'id="detailPreviewImage"',
+            'id="detailPreviewStatus"',
+            'id="detailPreviewState">在线</span>',
+            'id="deviceFileButton"',
+            '<span>远程文件</span>',
+            "被控端原始桌面背景图片",
+            "/desktop-background",
+            'headers["X-Remote-Token"] = token',
             "clearLegacyDevicePreviews",
             "/api/session/heartbeat",
             "本机正在被远程控制",
         ):
             self.assertIn(marker, html)
+        preview_markup = html.split('<div class="preview" id="detailPreview">', 1)[1].split(
+            '<div class="control-grid">', 1
+        )[0]
+        self.assertNotIn("preview-desktop-icons", preview_markup)
+        self.assertNotIn("preview-taskbar", preview_markup)
+        self.assertNotIn("preview-shade", preview_markup)
+        self.assertNotIn("preview-footer", preview_markup)
+        control_markup = html.split('<div class="control-grid">', 1)[1].split(
+            '<div class="info-card">', 1
+        )[0]
+        self.assertEqual(control_markup.count('class="control-card'), 4)
+        self.assertNotIn("wide", control_markup)
+        self.assertIn('openPair("files")', html)
         for forbidden in (
             "saveDevicePreview",
             "canvas.toDataURL",
-            'id="detailPreviewImage"',
             "上次控制画面",
+            "detailPreviewCaption",
+            "detailPreviewTime",
         ):
             self.assertNotIn(forbidden, html)
+
+    def test_desktop_background_reads_the_wallpaper_file_not_the_desktop(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "wallpaper.png"
+            output = io.BytesIO()
+            lan_remote.Image.new("RGB", (8, 5), (12, 34, 56)).save(output, format="PNG")
+            expected = output.getvalue()
+            path.write_bytes(expected)
+            with patch.object(lan_remote, "current_desktop_wallpaper_path", return_value=path):
+                data, content_type = lan_remote.desktop_background_image()
+        self.assertEqual(data, expected)
+        self.assertEqual(content_type, "image/png")
 
     def test_frontend_blocks_remote_control_of_local_device(self) -> None:
         html = (Path(__file__).resolve().parents[1] / "web" / "index.html").read_text(encoding="utf-8")
@@ -387,6 +419,15 @@ class CoreFunctionTests(unittest.TestCase):
             {"visible": True, "x": 220, "y": 190, "width": 800, "height": 600},
         )
 
+    def test_remote_pointer_source_distinguishes_controller_echo_from_controlled_mouse(self) -> None:
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {"APPDATA": directory}):
+            state = make_state(lan_remote.SettingsStore())
+            self.assertEqual(state.remote_pointer_source("all", 400, 300), "controlled")
+            state.note_remote_pointer({"type": "mouse_move", "monitor": "all", "x": 400, "y": 300})
+            self.assertEqual(state.remote_pointer_source("all", 401, 298), "controller")
+            self.assertEqual(state.remote_pointer_source("all", 430, 300), "controlled")
+            self.assertEqual(state.remote_pointer_source("monitor-1", 400, 300), "controlled")
+
     def test_remote_frontend_serializes_input_and_suppresses_local_shortcuts(self) -> None:
         html = (Path(__file__).resolve().parents[1] / "web" / "index.html").read_text(encoding="utf-8")
         self.assertIn("state.inputQueue = state.inputQueue.catch", html)
@@ -411,6 +452,7 @@ class CoreFunctionTests(unittest.TestCase):
         self.assertIn("state.nativeInputActive", html)
         self.assertIn(
             '$("remoteStage").addEventListener("pointermove", (event) => {\n'
+            '      if (state.session?.connected && !state.session.viewOnly) setRemoteCursorOwner("controller");\n'
             "      if (state.nativeInputActive) return;",
             html,
         )
@@ -420,12 +462,22 @@ class CoreFunctionTests(unittest.TestCase):
             html,
         )
         self.assertIn("state.remoteFrameWidth = Number(monitor?.width) || image.naturalWidth", html)
-        self.assertIn("CONTROL_STREAM_FPS = 60", html)
+        self.assertIn("CONTROL_STREAM_FPS_OPTIONS = new Set([30, 60, 120])", html)
+        self.assertIn('id="settingControlFps"', html)
+        self.assertIn('id="fpsLimitSelect"', html)
+        self.assertIn("实际帧率会随网络与设备性能自动降低", html)
+        self.assertIn("session.fpsLimit = fpsLimit", html)
         self.assertIn('endpoint(\n        `/screen-stream?monitor=', html)
-        self.assertIn("REMOTE_CURSOR_INTERVAL_MS = 8", html)
-        self.assertIn('endpoint(`/screen?monitor=${encodeURIComponent(monitorId)}&cursor=1', html)
-        self.assertIn('endpoint(`/cursor?monitor=', html)
-        self.assertIn(".remote-stage.controlling #remoteScreen { cursor: none !important; }", html)
+        self.assertIn("REMOTE_CURSOR_STREAM_FPS = 120", html)
+        self.assertIn("REMOTE_CURSOR_RECONNECT_MS = 80", html)
+        self.assertIn("桌面控制与桌面观看统一使用 30 / 60 / 120 FPS 上限", html)
+        self.assertNotIn('id="settingFrameDelay"', html)
+        self.assertNotIn("refreshPollingScreen", html)
+        self.assertNotIn('endpoint(`/screen?monitor=${encodeURIComponent(monitorId)}&cursor=1', html)
+        self.assertIn('endpoint(`/cursor-stream?monitor=', html)
+        self.assertIn('if (state.session?.viewOnly) {\n        setRemoteCursorOwner("remote");', html)
+        self.assertIn('result.input_source === "controller"', html)
+        self.assertIn(".remote-stage.controlling.remote-cursor-active #remoteScreen { cursor: none !important; }", html)
         self.assertIn('id="remotePointer"', html)
         self.assertIn(
             "const remoteWidth = state.remoteFrameWidth || image.naturalWidth || 0",
@@ -562,6 +614,7 @@ class SettingsAndAuthenticationTests(unittest.TestCase):
                         "device_name": ["not", "a", "string"],
                         "view_only": "yes",
                         "frame_delay_ms": 999,
+                        "control_fps_limit": 144,
                         "auto_check_updates": 1,
                         "auto_install_updates": "yes",
                         "close_to_tray": "yes",
@@ -575,6 +628,7 @@ class SettingsAndAuthenticationTests(unittest.TestCase):
             self.assertEqual(settings.values["device_name"], "")
             self.assertIs(settings.values["view_only"], False)
             self.assertEqual(settings.values["frame_delay_ms"], 80)
+            self.assertEqual(settings.values["control_fps_limit"], 60)
             self.assertIs(settings.values["auto_check_updates"], True)
             self.assertIs(settings.values["auto_install_updates"], True)
             self.assertIs(settings.values["close_to_tray"], True)
@@ -864,7 +918,7 @@ class HttpIntegrationTests(unittest.TestCase):
                 headers={"X-Remote-Token": session_token},
             )
         self.assertEqual(status, 200)
-        self.assertEqual(json.loads(data), {"ok": True, **cursor})
+        self.assertEqual(json.loads(data), {"ok": True, **cursor, "input_source": "controlled"})
 
         received: list[dict[str, object]] = []
         with (
@@ -926,6 +980,7 @@ class HttpIntegrationTests(unittest.TestCase):
         devices_payload = json.loads(data)
         self.assertTrue(devices_payload["local_status"]["active"])
         self.assertTrue(devices_payload["devices"][0]["busy"])
+        self.assertTrue(devices_payload["devices"][0]["online"])
 
         occupied = {
             **heartbeat,
@@ -1059,7 +1114,7 @@ class HttpIntegrationTests(unittest.TestCase):
                 patch.object(lan_remote, "capture_low_latency_screen", capture),
             ):
                 connection.sendall(
-                    b"GET /screen-stream?monitor=all&cursor=0&token=TEST-TEMP-CODE HTTP/1.1\r\n"
+                    b"GET /screen-stream?monitor=all&cursor=0&fps=120&token=TEST-TEMP-CODE HTTP/1.1\r\n"
                     b"Host: 127.0.0.1\r\nConnection: close\r\n\r\n"
                 )
                 response = bytearray()
@@ -1069,9 +1124,55 @@ class HttpIntegrationTests(unittest.TestCase):
             connection.close()
         self.assertIn(b" 200 ", response.split(b"\r\n", 1)[0])
         self.assertIn(b"multipart/x-mixed-replace; boundary=lan-remote-frame", response)
-        self.assertIn(b"X-Remote-FPS: 60", response)
+        self.assertIn(b"X-Remote-FPS: 120", response)
+        self.assertIn(b"X-Remote-FPS-Limit: 120", response)
         self.assertIn(b"Content-Length: 10", response)
-        capture.assert_called_with("all")
+        capture.assert_called_with("all", 120)
+
+        status, _, _ = self.request(
+            "GET",
+            "/screen-stream?monitor=all&fps=144",
+            headers={"X-Remote-Token": "TEST-TEMP-CODE"},
+        )
+        self.assertEqual(status, 400)
+
+    def test_cursor_stream_is_persistent_authenticated_and_source_aware(self) -> None:
+        cursor = {"visible": True, "x": 44, "y": 55, "width": 100, "height": 80}
+        connection = socket.create_connection(("127.0.0.1", self.state.port), timeout=3)
+        connection.settimeout(3)
+        try:
+            with (
+                patch.object(lan_remote, "secure_desktop_active", return_value=False),
+                patch.object(lan_remote, "desktop_cursor_payload", return_value=cursor),
+            ):
+                connection.sendall(
+                    b"GET /cursor-stream?monitor=all&token=TEST-TEMP-CODE HTTP/1.1\r\n"
+                    b"Host: 127.0.0.1\r\nConnection: close\r\n\r\n"
+                )
+                response = bytearray()
+                while response.count(b'"input_source":"controlled"') < 2:
+                    response.extend(connection.recv(4096))
+        finally:
+            connection.close()
+        self.assertIn(b" 200 ", response.split(b"\r\n", 1)[0])
+        self.assertIn(b"application/x-ndjson", response)
+        self.assertIn(b"X-Remote-Cursor-FPS: 120", response)
+        self.assertGreaterEqual(response.count(b'"ok":true'), 2)
+
+    def test_desktop_background_is_authenticated_and_contains_only_wallpaper_bytes(self) -> None:
+        status, _, _ = self.request("GET", "/desktop-background")
+        self.assertEqual(status, 401)
+
+        with patch.object(lan_remote, "desktop_background_image", return_value=(b"wallpaper", "image/png")):
+            status, headers, data = self.request(
+                "GET",
+                "/desktop-background",
+                headers={"X-Remote-Token": "TEST-TEMP-CODE"},
+            )
+        self.assertEqual(status, 200)
+        self.assertEqual(headers["content-type"], "image/png")
+        self.assertEqual(headers["cache-control"], "private, no-store")
+        self.assertEqual(data, b"wallpaper")
 
     def test_concurrent_upload_to_same_destination_is_rejected(self) -> None:
         root = Path(self.temp_directory.name) / "files"
@@ -1150,6 +1251,7 @@ class HttpIntegrationTests(unittest.TestCase):
             {
                 "device_name": "Renamed",
                 "frame_delay_ms": 80,
+                "control_fps_limit": 120,
                 "auto_install_updates": False,
                 "close_to_tray": False,
                 "lock_remote_on_disconnect": True,
@@ -1170,7 +1272,18 @@ class HttpIntegrationTests(unittest.TestCase):
         self.assertIs(self.settings.values["auto_install_updates"], False)
         self.assertIs(self.settings.values["close_to_tray"], False)
         self.assertIs(self.settings.values["lock_remote_on_disconnect"], True)
+        self.assertEqual(self.settings.values["control_fps_limit"], 120)
         set_startup.assert_called_once_with(False)
+
+        invalid_fps = json.dumps({"device_name": "Rejected", "control_fps_limit": 144}).encode("utf-8")
+        status, _, _ = self.request(
+            "POST",
+            "/api/settings",
+            body=invalid_fps,
+            headers={"Origin": same_origin, "Content-Type": "application/json"},
+        )
+        self.assertEqual(status, 400)
+        self.assertEqual(self.settings.values["control_fps_limit"], 120)
 
         bad_payload = json.dumps({"device_name": "Rejected"}).encode("utf-8")
         status, _, _ = self.request(

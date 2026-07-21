@@ -60,7 +60,7 @@ if platform.system() == "Windows":
 
 
 APP_NAME = "Windows LAN Remote"
-APP_VERSION = "0.6.22"
+APP_VERSION = "0.7.0"
 GITHUB_REPOSITORY = "EmpK1019/lan-windows-remote"
 GITHUB_LATEST_RELEASE_API = f"https://api.github.com/repos/{GITHUB_REPOSITORY}/releases/latest"
 DEFAULT_PORT = 8765
@@ -312,6 +312,7 @@ class DiscoveryRegistry:
             for value in self._devices.values():
                 item = dict(value)
                 item.pop("last_seen", None)
+                item["online"] = True
                 devices.append(item)
         return sorted(devices, key=lambda item: item["name"].casefold())
 
@@ -323,6 +324,7 @@ class SettingsStore:
         "view_only": False,
         "discovery_enabled": True,
         "frame_delay_ms": 80,
+        "control_fps_limit": 60,
         "remember_codes": True,
         "launch_at_login": False,
         "start_maximized": False,
@@ -386,6 +388,11 @@ class SettingsStore:
         except (TypeError, ValueError):
             frame_delay = int(self.DEFAULTS["frame_delay_ms"])
         self.values["frame_delay_ms"] = frame_delay if frame_delay in {80, 120, 220} else 80
+        try:
+            control_fps_limit = int(self.values.get("control_fps_limit"))
+        except (TypeError, ValueError):
+            control_fps_limit = int(self.DEFAULTS["control_fps_limit"])
+        self.values["control_fps_limit"] = control_fps_limit if control_fps_limit in {30, 60, 120} else 60
         for key in ("permanent_password_salt", "permanent_password_hash"):
             if not isinstance(self.values.get(key), str):
                 self.values[key] = ""
@@ -452,6 +459,7 @@ class SettingsStore:
             "view_only": state.view_only,
             "discovery_enabled": bool(self.values["discovery_enabled"]),
             "frame_delay_ms": int(self.values["frame_delay_ms"]),
+            "control_fps_limit": int(self.values["control_fps_limit"]),
             "remember_codes": bool(self.values["remember_codes"]),
             "launch_at_login": startup_enabled(),
             "start_maximized": bool(self.values["start_maximized"]),
@@ -525,6 +533,34 @@ class ServerState:
     update_install_started: bool = field(default=False, repr=False)
     update_install_started_at: float = field(default=0.0, repr=False)
     update_install_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+    remote_pointer_target: tuple[str, float, float, float] | None = field(default=None, repr=False)
+    remote_pointer_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+
+    def note_remote_pointer(self, payload: dict[str, Any]) -> None:
+        if not str(payload.get("type", "")).startswith("mouse_"):
+            return
+        target = (
+            str(payload.get("monitor", "all")),
+            float(payload.get("x", 0)),
+            float(payload.get("y", 0)),
+            time.monotonic(),
+        )
+        with self.remote_pointer_lock:
+            self.remote_pointer_target = target
+
+    def remote_pointer_source(self, monitor_id: str, x: int, y: int) -> str:
+        with self.remote_pointer_lock:
+            target = self.remote_pointer_target
+        if target is None:
+            return "controlled"
+        target_monitor, target_x, target_y, target_at = target
+        controller_echo = (
+            target_monitor == monitor_id
+            and time.monotonic() - target_at <= 1.5
+            and abs(target_x - x) <= 3
+            and abs(target_y - y) <= 3
+        )
+        return "controller" if controller_echo else "controlled"
 
     def get_credential_api(self) -> Any:
         with self.credential_api_lock:
@@ -1364,12 +1400,18 @@ JPEG_QUALITY_GUID = GUID(
 )
 JPEG_QUALITY = 65
 ENCODER_PARAMETER_VALUE_TYPE_LONG = 4
-LOW_LATENCY_CAPTURE_FPS = 90
+LOW_LATENCY_CAPTURE_FPS = 120
 LOW_LATENCY_STREAM_FPS = 60
+CONTROL_STREAM_FPS_OPTIONS = frozenset({30, 60, 120})
 LOW_LATENCY_MAX_WIDTH = 1920
 LOW_LATENCY_MAX_HEIGHT = 1080
+HIGH_FPS_MAX_WIDTH = 1024
+HIGH_FPS_MAX_HEIGHT = 576
 LOW_LATENCY_JPEG_QUALITY = 55
+HIGH_FPS_JPEG_QUALITY = 48
 SCREEN_STREAM_BOUNDARY = "lan-remote-frame"
+REMOTE_CURSOR_STREAM_FPS = 120
+MAX_DESKTOP_BACKGROUND_BYTES = 128 * 1024 * 1024
 
 
 def configure_win32_signatures() -> None:
@@ -1615,6 +1657,63 @@ def monitor_payload() -> list[dict[str, Any]]:
     ]
 
 
+def current_desktop_wallpaper_path() -> Path | None:
+    """Return the active wallpaper file, never a screenshot of the desktop."""
+    buffer = ctypes.create_unicode_buffer(32768)
+    if ctypes.windll.user32.SystemParametersInfoW(0x0073, len(buffer), buffer, 0) and buffer.value:
+        candidate = Path(os.path.expandvars(buffer.value)).expanduser()
+        if candidate.is_file():
+            return candidate
+
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Control Panel\Desktop") as key:
+            value, _ = winreg.QueryValueEx(key, "WallPaper")
+        if isinstance(value, str) and value.strip():
+            candidate = Path(os.path.expandvars(value.strip())).expanduser()
+            if candidate.is_file():
+                return candidate
+    except OSError:
+        pass
+
+    transcoded = Path(os.environ.get("APPDATA", Path.home())) / "Microsoft" / "Windows" / "Themes" / "TranscodedWallpaper"
+    return transcoded if transcoded.is_file() else None
+
+
+def desktop_background_image() -> tuple[bytes, str]:
+    """Read the wallpaper image itself so desktop icons, windows and the pointer never appear."""
+    wallpaper_path = current_desktop_wallpaper_path()
+    if wallpaper_path is not None:
+        file_size = wallpaper_path.stat().st_size
+        if file_size <= 0 or file_size > MAX_DESKTOP_BACKGROUND_BYTES:
+            raise ValueError("桌面背景图片大小无效")
+        data = wallpaper_path.read_bytes()
+        try:
+            with Image.open(io.BytesIO(data)) as wallpaper:
+                image_format = str(wallpaper.format or "").upper()
+                content_type = Image.MIME.get(image_format, "")
+                wallpaper.verify()
+            if content_type in {"image/jpeg", "image/png", "image/gif", "image/webp", "image/bmp"}:
+                return data, content_type
+        except (OSError, ValueError):
+            pass
+
+        try:
+            with Image.open(wallpaper_path) as wallpaper:
+                wallpaper.load()
+                converted = wallpaper.convert("RGB")
+                output = io.BytesIO()
+                converted.save(output, format="JPEG", quality=88, optimize=False, subsampling=2)
+                return output.getvalue(), "image/jpeg"
+        except (OSError, ValueError) as exc:
+            raise ValueError("当前桌面背景图片无法读取") from exc
+
+    color = int(ctypes.windll.user32.GetSysColor(1))
+    red, green, blue = color & 0xFF, (color >> 8) & 0xFF, (color >> 16) & 0xFF
+    output = io.BytesIO()
+    Image.new("RGB", (16, 9), (red, green, blue)).save(output, format="PNG")
+    return output.getvalue(), "image/png"
+
+
 class LowLatencyDesktopCapture:
     """DXGI-backed latest-frame capture for the real-time control stream."""
 
@@ -1690,12 +1789,12 @@ class LowLatencyDesktopCapture:
             raise
 
     @staticmethod
-    def _downsample_divisor(width: int, height: int) -> int:
-        width_divisor = max(1, (width + LOW_LATENCY_MAX_WIDTH - 1) // LOW_LATENCY_MAX_WIDTH)
-        height_divisor = max(1, (height + LOW_LATENCY_MAX_HEIGHT - 1) // LOW_LATENCY_MAX_HEIGHT)
+    def _downsample_divisor(width: int, height: int, max_width: int, max_height: int) -> int:
+        width_divisor = max(1, (width + max_width - 1) // max_width)
+        height_divisor = max(1, (height + max_height - 1) // max_height)
         return max(width_divisor, height_divisor)
 
-    def capture(self, monitor_id: str = "all") -> tuple[bytes, str, int, int]:
+    def capture(self, monitor_id: str = "all", fps_limit: int = LOW_LATENCY_STREAM_FPS) -> tuple[bytes, str, int, int]:
         monitors = enumerate_monitors()
         source_left, source_top, source_width, source_height = screen_rect(monitor_id)
         selected = (
@@ -1723,7 +1822,10 @@ class LowLatencyDesktopCapture:
                     raise RuntimeError(f"DXGI display produced no frame: {monitor['id']}")
                 frames.append((monitor, frame))
 
-            divisor = self._downsample_divisor(source_width, source_height)
+            high_fps = fps_limit > LOW_LATENCY_STREAM_FPS
+            max_width = HIGH_FPS_MAX_WIDTH if high_fps else LOW_LATENCY_MAX_WIDTH
+            max_height = HIGH_FPS_MAX_HEIGHT if high_fps else LOW_LATENCY_MAX_HEIGHT
+            divisor = self._downsample_divisor(source_width, source_height, max_width, max_height)
             output_width = max(1, (source_width + divisor - 1) // divisor)
             output_height = max(1, (source_height + divisor - 1) // divisor)
             if len(frames) == 1:
@@ -1743,7 +1845,7 @@ class LowLatencyDesktopCapture:
             Image.fromarray(pixels, "RGB").save(
                 output,
                 format="JPEG",
-                quality=LOW_LATENCY_JPEG_QUALITY,
+                quality=HIGH_FPS_JPEG_QUALITY if high_fps else LOW_LATENCY_JPEG_QUALITY,
                 optimize=False,
                 subsampling=2,
             )
@@ -1754,8 +1856,11 @@ LOW_LATENCY_CAPTURE = LowLatencyDesktopCapture()
 atexit.register(LOW_LATENCY_CAPTURE.close)
 
 
-def desktop_cursor_payload(monitor_id: str = "all") -> dict[str, Any]:
-    left, top, width, height = screen_rect(monitor_id)
+def desktop_cursor_payload(
+    monitor_id: str = "all",
+    bounds: tuple[int, int, int, int] | None = None,
+) -> dict[str, Any]:
+    left, top, width, height = bounds or screen_rect(monitor_id)
     cursor = CURSORINFO()
     cursor.cbSize = ctypes.sizeof(CURSORINFO)
     available = bool(ctypes.windll.user32.GetCursorInfo(ctypes.byref(cursor)))
@@ -2006,9 +2111,12 @@ def capture_screen_image(monitor_id: str = "all", include_cursor: bool = True) -
         return capture_screen_bmp(monitor_id, include_cursor), "image/bmp"
 
 
-def capture_low_latency_screen(monitor_id: str = "all") -> tuple[bytes, str, int, int]:
+def capture_low_latency_screen(
+    monitor_id: str = "all",
+    fps_limit: int = LOW_LATENCY_STREAM_FPS,
+) -> tuple[bytes, str, int, int]:
     try:
-        return LOW_LATENCY_CAPTURE.capture(monitor_id)
+        return LOW_LATENCY_CAPTURE.capture(monitor_id, fps_limit)
     except ValueError:
         raise
     except Exception:
@@ -2708,6 +2816,7 @@ def dispatch_remote_input(state: Any, payload: dict[str, Any]) -> None:
             send_secure_input(payload)
         elif not try_send_elevated_input(payload):
             handle_remote_input(payload)
+        state.note_remote_pointer(payload)
 
 
 def lock_remote_workstation() -> None:
@@ -3211,7 +3320,9 @@ class RemoteHandler(BaseHTTPRequestHandler):
             "/health",
             "/screen",
             "/screen-stream",
+            "/desktop-background",
             "/cursor",
+            "/cursor-stream",
             "/input",
             "/input-stream",
             "/lock",
@@ -3320,6 +3431,13 @@ class RemoteHandler(BaseHTTPRequestHandler):
         monitor_id = query.get("monitor", ["all"])[0]
         include_cursor = query.get("cursor", ["0"])[0] != "0"
         try:
+            fps_limit = int(query.get("fps", [str(LOW_LATENCY_STREAM_FPS)])[0])
+        except (TypeError, ValueError):
+            fps_limit = 0
+        if fps_limit not in CONTROL_STREAM_FPS_OPTIONS:
+            json_response(self, HTTPStatus.BAD_REQUEST, {"ok": False, "error": "画面帧率上限无效"})
+            return
+        try:
             _, _, source_width, source_height = screen_rect(monitor_id)
         except ValueError as exc:
             json_response(self, HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(exc)})
@@ -3336,17 +3454,18 @@ class RemoteHandler(BaseHTTPRequestHandler):
         self.send_header("Connection", "keep-alive")
         self.send_header("X-Remote-Width", str(source_width))
         self.send_header("X-Remote-Height", str(source_height))
-        self.send_header("X-Remote-FPS", str(LOW_LATENCY_STREAM_FPS))
+        self.send_header("X-Remote-FPS", str(fps_limit))
+        self.send_header("X-Remote-FPS-Limit", str(fps_limit))
         send_common_headers(self)
         self.end_headers()
         self.wfile.flush()
 
-        interval = 1.0 / LOW_LATENCY_STREAM_FPS
+        interval = 1.0 / fps_limit
         next_frame_at = time.perf_counter()
         frame_number = 0
         try:
             while True:
-                if frame_number and frame_number % LOW_LATENCY_STREAM_FPS == 0:
+                if frame_number and frame_number % fps_limit == 0:
                     if self.server.state.authenticate(supplied_token, self.client_address[0]) is None:
                         return
                 if secure_desktop_active():
@@ -3358,7 +3477,10 @@ class RemoteHandler(BaseHTTPRequestHandler):
                     data, content_type = capture_screen_image(monitor_id, True)
                     _, _, source_width, source_height = screen_rect(monitor_id)
                 else:
-                    data, content_type, source_width, source_height = capture_low_latency_screen(monitor_id)
+                    data, content_type, source_width, source_height = capture_low_latency_screen(
+                        monitor_id,
+                        fps_limit,
+                    )
 
                 part_header = (
                     b"--"
@@ -3385,6 +3507,78 @@ class RemoteHandler(BaseHTTPRequestHandler):
                     time.sleep(delay)
                 elif delay < -interval:
                     next_frame_at = time.perf_counter()
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, OSError, TimeoutError):
+            return
+        finally:
+            self.close_connection = True
+
+    def _remote_cursor_payload(
+        self,
+        monitor_id: str,
+        bounds: tuple[int, int, int, int] | None = None,
+    ) -> dict[str, Any]:
+        if secure_desktop_active():
+            if not self.server.state.settings.values["secure_desktop_enabled"]:
+                raise SecureDesktopControlDisabled("secure desktop control disabled")
+            payload = secure_desktop_cursor_payload(monitor_id)
+        else:
+            payload = desktop_cursor_payload(monitor_id, bounds)
+        payload["input_source"] = self.server.state.remote_pointer_source(
+            monitor_id,
+            int(payload.get("x", -1)),
+            int(payload.get("y", -1)),
+        )
+        return payload
+
+    def _serve_cursor_stream(self, parsed: Any) -> None:
+        if self.authenticate_request(parsed) is None:
+            return
+        query = parse_qs(parsed.query)
+        monitor_id = query.get("monitor", ["all"])[0]
+        supplied_token = query.get("token", [""])[0] or self.headers.get("X-Remote-Token", "")
+        try:
+            bounds = screen_rect(monitor_id)
+            payload = self._remote_cursor_payload(monitor_id, bounds)
+        except SecureDesktopControlDisabled as exc:
+            json_response(self, HTTPStatus.LOCKED, {"ok": False, "error": str(exc)})
+            return
+        except ValueError as exc:
+            json_response(self, HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(exc)})
+            return
+        except Exception as exc:
+            json_response(self, HTTPStatus.INTERNAL_SERVER_ERROR, {"ok": False, "error": str(exc)})
+            return
+
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "application/x-ndjson; charset=utf-8")
+        self.send_header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
+        self.send_header("Connection", "keep-alive")
+        self.send_header("X-Remote-Cursor-FPS", str(REMOTE_CURSOR_STREAM_FPS))
+        send_common_headers(self)
+        self.end_headers()
+        self.wfile.flush()
+
+        interval = 1.0 / REMOTE_CURSOR_STREAM_FPS
+        next_sample_at = time.perf_counter()
+        sample_number = 0
+        try:
+            while True:
+                if sample_number:
+                    if sample_number % REMOTE_CURSOR_STREAM_FPS == 0:
+                        if self.server.state.authenticate(supplied_token, self.client_address[0]) is None:
+                            return
+                        bounds = screen_rect(monitor_id)
+                    payload = self._remote_cursor_payload(monitor_id, bounds)
+                line = json.dumps({"ok": True, **payload}, separators=(",", ":")).encode("utf-8") + b"\n"
+                self.wfile.write(line)
+                self.wfile.flush()
+                sample_number += 1
+                next_sample_at += interval
+                delay = next_sample_at - time.perf_counter()
+                if delay > 0:
+                    time.sleep(delay)
+                elif delay < -interval:
+                    next_sample_at = time.perf_counter()
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, OSError, TimeoutError):
             return
         finally:
@@ -3430,6 +3624,7 @@ class RemoteHandler(BaseHTTPRequestHandler):
                 "os": f"Windows {platform.release()}",
                 "view_only": self.server.state.view_only,
                 "is_self": True,
+                "online": True,
                 "busy": bool(local_status.get("active", False)),
                 "busy_mode": local_status.get("mode", "control"),
             }
@@ -3553,6 +3748,34 @@ class RemoteHandler(BaseHTTPRequestHandler):
                 },
             )
             return
+        if parsed.path == "/desktop-background":
+            local_preview = (
+                parse_qs(parsed.query).get("local", ["0"])[0] == "1"
+                and is_local_machine_client(self.client_address[0])
+            )
+            if local_preview:
+                if not self.check_local_desktop():
+                    return
+            elif self.authenticate_request(parsed) is None:
+                return
+            try:
+                data, content_type = desktop_background_image()
+            except (OSError, ValueError) as exc:
+                json_response(
+                    self,
+                    HTTPStatus.NOT_FOUND,
+                    {"ok": False, "error": str(exc)},
+                    allow_cross_origin=not local_preview,
+                )
+                return
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Cache-Control", "private, no-store")
+            send_common_headers(self, allow_cross_origin=not local_preview)
+            self.end_headers()
+            self.wfile.write(data)
+            return
         if parsed.path == "/monitors":
             if self.authenticate_request(parsed) is None:
                 return
@@ -3563,18 +3786,18 @@ class RemoteHandler(BaseHTTPRequestHandler):
                 return
             json_response(self, HTTPStatus.OK, {"ok": True, "monitors": monitors})
             return
+        if parsed.path == "/cursor-stream":
+            self._serve_cursor_stream(parsed)
+            return
         if parsed.path == "/cursor":
             if self.authenticate_request(parsed) is None:
                 return
             try:
                 monitor_id = parse_qs(parsed.query).get("monitor", ["all"])[0]
-                if secure_desktop_active():
-                    if not self.server.state.settings.values["secure_desktop_enabled"]:
-                        json_response(self, HTTPStatus.LOCKED, {"ok": False, "error": "secure desktop control disabled"})
-                        return
-                    payload = secure_desktop_cursor_payload(monitor_id)
-                else:
-                    payload = desktop_cursor_payload(monitor_id)
+                payload = self._remote_cursor_payload(monitor_id)
+            except SecureDesktopControlDisabled as exc:
+                json_response(self, HTTPStatus.LOCKED, {"ok": False, "error": str(exc)})
+                return
             except ValueError as exc:
                 json_response(self, HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(exc)})
                 return
@@ -4153,6 +4376,20 @@ class RemoteHandler(BaseHTTPRequestHandler):
             )
             return
 
+        control_fps_limit = payload.get("control_fps_limit", values["control_fps_limit"])
+        try:
+            control_fps_limit = int(control_fps_limit)
+        except (TypeError, ValueError):
+            control_fps_limit = 0
+        if control_fps_limit not in CONTROL_STREAM_FPS_OPTIONS:
+            json_response(
+                self,
+                HTTPStatus.BAD_REQUEST,
+                {"ok": False, "error": "远程画面最高帧率无效"},
+                allow_cross_origin=False,
+            )
+            return
+
         boolean_keys = {
             "view_only",
             "discovery_enabled",
@@ -4222,6 +4459,7 @@ class RemoteHandler(BaseHTTPRequestHandler):
             values["device_name"] = device_name
             values["view_only"] = state.view_only
             values["frame_delay_ms"] = frame_delay
+            values["control_fps_limit"] = control_fps_limit
             for key in boolean_keys - {"view_only", "launch_at_login"}:
                 if key in payload:
                     values[key] = payload[key]

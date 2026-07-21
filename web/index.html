@@ -392,6 +392,17 @@
         radial-gradient(circle at 24% 76%, rgba(27, 116, 84, .32), transparent 34%),
         linear-gradient(145deg, #132923 0%, #0c1716 58%, #07100f 100%);
     }
+    .preview-desktop-image {
+      position: absolute;
+      z-index: 2;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      opacity: 0;
+      transition: opacity .2s ease;
+    }
+    .preview.wallpaper-loaded .preview-desktop-image { opacity: 1; }
     .preview-desktop::before {
       content: "";
       position: absolute;
@@ -499,12 +510,6 @@
     .preview-taskbar-clock { display: grid; gap: 3px; margin-left: auto; }
     .preview-taskbar-clock i { width: 20px; height: 2px; border-radius: 2px; background: rgba(192, 227, 213, .38); }
     .preview-taskbar-clock i:last-child { width: 13px; margin-left: auto; opacity: .6; }
-    .preview-shade {
-      position: absolute;
-      z-index: 3;
-      inset: 0;
-      background: linear-gradient(180deg, rgba(5, 8, 8, .02), rgba(5, 9, 8, .08) 48%, rgba(5, 9, 8, .72));
-    }
     .preview-status {
       position: absolute;
       z-index: 4;
@@ -512,33 +517,26 @@
       left: 12px;
       display: inline-flex;
       align-items: center;
-      gap: 7px;
+      gap: 6px;
       padding: 5px 9px;
-      border: 1px solid rgba(255,255,255,.08);
-      border-radius: 16px;
-      background: rgba(8, 12, 11, .62);
-      color: #d7e7e0;
+      border: 1px solid rgba(255, 255, 255, .1);
+      border-radius: 999px;
+      background: rgba(8, 12, 11, .64);
+      color: #e5f3ed;
       font-size: 10px;
+      line-height: 1;
       backdrop-filter: blur(10px);
     }
-    .preview-status-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--green); box-shadow: 0 0 9px rgba(54,198,139,.85); }
-    .preview-status.busy .preview-status-dot { box-shadow: 0 0 0 4px rgba(54,198,139,.1), 0 0 13px rgba(54,198,139,.8); }
-    .preview-footer {
-      position: absolute;
-      z-index: 4;
-      left: 13px;
-      right: 13px;
-      bottom: 39px;
-      display: flex;
-      align-items: flex-end;
-      justify-content: space-between;
-      gap: 10px;
-      color: #eef6f3;
-      text-shadow: 0 1px 7px #000;
+    .preview-status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--green);
+      box-shadow: 0 0 0 3px rgba(54, 198, 139, .12), 0 0 12px rgba(54, 198, 139, .92);
     }
-    .preview-caption { min-width: 0; flex: 1; overflow: hidden; font-size: 12px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
-    .preview-time { flex: 0 0 auto; color: #a9bab3; font-size: 10px; }
-
+    .preview-status.busy .preview-status-dot { box-shadow: 0 0 0 4px rgba(54, 198, 139, .14), 0 0 16px rgba(54, 198, 139, 1); }
+    .preview-status.offline { color: #c2c5cc; }
+    .preview-status.offline .preview-status-dot { background: #747983; box-shadow: none; }
     .control-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 10px; }
     .control-card {
       position: relative;
@@ -560,7 +558,6 @@
     .control-card svg { width: 24px; height: 24px; }
     .control-card span { font-size: 12px; }
     .control-card.primary { border-color: #2d775a; background: linear-gradient(145deg, #245b46, #1d392f); }
-    .control-card.wide { grid-column: 1 / 3; }
     .info-card {
       margin-top: 14px;
       padding: 13px;
@@ -809,6 +806,37 @@
       opacity: 0;
     }
     .remote-monitor-control option { background: #202228; color: #e7e8ec; }
+    .remote-fps-control {
+      position: relative;
+      display: inline-flex;
+      flex: 0 0 58px;
+      width: 58px;
+      min-width: 58px;
+      height: 31px;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+      border: 1px solid transparent;
+      border-radius: 9px;
+      background: rgba(255,255,255,.055);
+      color: #e5e8eb;
+      font-size: 10px;
+      font-weight: 650;
+      letter-spacing: .2px;
+    }
+    .remote-fps-control:hover { border-color: rgba(255,255,255,.16); background: rgba(255,255,255,.13); }
+    .remote-fps-control span { pointer-events: none; }
+    .remote-fps-control select {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      border: 0;
+      outline: 0;
+      cursor: pointer;
+      opacity: 0;
+    }
+    .remote-fps-control option { background: #202228; color: #e7e8ec; }
     .remote-popover {
       position: fixed;
       z-index: 36;
@@ -901,7 +929,9 @@
       cursor: default !important;
     }
     .remote-stage.controlling,
-    .remote-stage.controlling #remoteScreen { cursor: none !important; }
+    .remote-stage.controlling #remoteScreen { cursor: default !important; }
+    .remote-stage.controlling.remote-cursor-active,
+    .remote-stage.controlling.remote-cursor-active #remoteScreen { cursor: none !important; }
     .remote-pointer {
       position: absolute;
       z-index: 3;
@@ -1218,26 +1248,16 @@
           <div class="detail-name"><strong id="detailName"></strong><span id="detailState"></span></div>
         </div>
         <div class="preview" id="detailPreview">
-          <div class="preview-desktop" id="detailPreviewDesktop" aria-label="静态桌面示意图，不包含远程控制画面">
-            <div class="preview-desktop-icons">
-              <div class="preview-desktop-icon"><span><svg><use href="#i-monitor"/></svg></span>此电脑</div>
-              <div class="preview-desktop-icon"><span><svg><use href="#i-folder"/></svg></span>文件</div>
-            </div>
-            <div class="preview-desktop-mark"><i></i><i></i><i></i><i></i></div>
-            <div class="preview-taskbar">
-              <span class="preview-taskbar-logo"><svg><use href="#i-windows"/></svg></span>
-              <span class="preview-taskbar-apps"><i></i><i></i><i></i></span>
-              <span class="preview-taskbar-clock"><i></i><i></i></span>
-            </div>
+          <div class="preview-desktop" id="detailPreviewDesktop" aria-label="被控端原始桌面背景图片，不包含图标、窗口或光标">
+            <img class="preview-desktop-image" id="detailPreviewImage" alt="被控端桌面背景" draggable="false">
           </div>
-          <div class="preview-shade"></div>
-          <div class="preview-status" id="detailPreviewStatus"><span class="preview-status-dot"></span><span id="detailPreviewState">在线可连接</span></div>
-          <div class="preview-footer"><span class="preview-caption" id="detailPreviewCaption">静态桌面</span><time class="preview-time" id="detailPreviewTime">不含远控画面</time></div>
+          <div class="preview-status" id="detailPreviewStatus"><span class="preview-status-dot"></span><span id="detailPreviewState">在线</span></div>
         </div>
         <div class="control-grid">
-          <button class="control-card primary wide" id="controlButton"><svg><use href="#i-monitor"/></svg><span>桌面控制</span></button>
-          <button class="control-card wide" id="viewButton"><svg><use href="#i-eye"/></svg><span>桌面观看</span></button>
-          <button class="control-card wide" id="credentialButton"><svg><use href="#i-shield"/></svg><span>连接凭据与锁屏自动输入</span></button>
+          <button class="control-card primary" id="controlButton"><svg><use href="#i-monitor"/></svg><span>桌面控制</span></button>
+          <button class="control-card" id="viewButton"><svg><use href="#i-eye"/></svg><span>桌面观看</span></button>
+          <button class="control-card" id="deviceFileButton"><svg><use href="#i-folder"/></svg><span>远程文件</span></button>
+          <button class="control-card" id="credentialButton"><svg><use href="#i-shield"/></svg><span>连接凭据</span></button>
         </div>
         <div class="info-card">
           <div class="info-line"><span>设备地址</span><span id="detailAddress"></span></div>
@@ -1309,7 +1329,7 @@
         <section class="settings-section">
           <h4 class="settings-section-title"><svg><use href="#i-eye"/></svg>远程体验</h4>
           <div class="settings-card">
-            <div class="setting-row"><div class="setting-copy"><strong>画面刷新速度</strong><small>桌面控制会自动启用低延迟模式</small></div><select class="setting-select" id="settingFrameDelay" aria-label="画面刷新速度"><option value="80">快速（约 12 帧/秒）</option><option value="120">平衡（约 8 帧/秒）</option><option value="220">省流量（约 4 帧/秒）</option></select></div>
+            <div class="setting-row"><div class="setting-copy"><strong>远程画面最高帧率</strong><small>桌面控制与桌面观看统一使用 30 / 60 / 120 FPS 上限；实际帧率会随网络与设备性能自动降低</small></div><select class="setting-select" id="settingControlFps" aria-label="远程画面最高帧率"><option value="30">最高 30 FPS</option><option value="60">最高 60 FPS</option><option value="120">最高 120 FPS</option></select></div>
             <div class="setting-row"><div class="setting-copy"><strong>断开远控时自动锁定远端电脑</strong></div><label class="switch"><input id="settingLockRemoteOnDisconnect" type="checkbox" aria-label="断开远控时自动锁定远端电脑"><span></span></label></div>
             <div class="setting-row"><div class="setting-copy"><strong>减少界面动效</strong></div><label class="switch"><input id="settingReduceMotion" type="checkbox" aria-label="减少界面动效"><span></span></label></div>
           </div>
@@ -1340,15 +1360,17 @@
     <form class="dialog" id="pairForm">
       <div class="dialog-head">
         <div class="dialog-icon"><svg><use href="#i-shield"/></svg></div>
-        <div><h3 id="pairTitle">连接到 <span id="pairDeviceName"></span></h3><p>可输入目标电脑的临时访问码或永久访问密码</p></div>
+        <div><h3 id="pairTitle"><span id="pairActionLabel">连接到</span> <span id="pairDeviceName"></span></h3><p id="pairDescription">可输入目标电脑的临时访问码或永久访问密码</p></div>
       </div>
       <div class="dialog-password-row"><input class="code-input" id="codeInput" type="password" aria-label="临时访问码或永久访问密码" placeholder="临时访问码或永久访问密码" autocomplete="off" spellcheck="false"><button class="button password-toggle" type="button" data-password-toggle data-target="codeInput" aria-pressed="false">显示</button></div>
       <div class="dialog-options">
         <label class="dialog-check"><input id="rememberPermanentAccess" type="checkbox" checked>如果验证为永久访问密码，使用 Windows 加密后长期记住</label>
-        <div class="dialog-subtitle">锁屏自动输入（可选）</div>
-        <div class="dialog-password-row"><input class="code-input" id="lockPasswordInput" type="password" maxlength="128" aria-label="对方 Windows 锁屏密码" placeholder="对方 Windows 锁屏密码" autocomplete="off"><button class="button password-toggle" type="button" data-password-toggle data-target="lockPasswordInput" aria-pressed="false">显示</button></div>
-        <label class="dialog-check"><input id="rememberLockPassword" type="checkbox">加密记住，并在确认对方锁屏时自动输入一次</label>
-        <span class="credential-state" id="credentialState"></span>
+        <div id="lockCredentialOptions">
+          <div class="dialog-subtitle">锁屏自动输入（可选）</div>
+          <div class="dialog-password-row"><input class="code-input" id="lockPasswordInput" type="password" maxlength="128" aria-label="对方 Windows 锁屏密码" placeholder="对方 Windows 锁屏密码" autocomplete="off"><button class="button password-toggle" type="button" data-password-toggle data-target="lockPasswordInput" aria-pressed="false">显示</button></div>
+          <label class="dialog-check"><input id="rememberLockPassword" type="checkbox">加密记住，并在确认对方锁屏时自动输入一次</label>
+          <span class="credential-state" id="credentialState"></span>
+        </div>
       </div>
       <div class="dialog-error" id="pairError" role="alert"></div>
       <div class="dialog-actions">
@@ -1370,6 +1392,7 @@
     <div class="remote-toolbar">
       <span class="remote-toolbar-grip pywebview-drag-region" id="remoteToolbarGrip" title="拖动控制窗口"></span>
       <label class="remote-monitor-control" title="选择远端显示器"><svg><use href="#i-monitor"/></svg><select id="monitorSelect" aria-label="远端显示器"><option value="all">全部显示器</option></select></label>
+      <label class="remote-fps-control" id="fpsLimitControl" title="当前会话最高帧率；实际帧率取决于网络和设备性能"><span id="fpsLimitLabel">60 FPS</span><select id="fpsLimitSelect" aria-label="当前会话最高帧率"><option value="30">最高 30 FPS</option><option value="60">最高 60 FPS</option><option value="120">最高 120 FPS</option></select></label>
       <button class="button" id="keyboardButton" title="键盘控制"><svg><use href="#i-keyboard"/></svg><span>键盘</span></button>
       <button class="button" id="clipboardButton" title="剪贴板同步"><svg><use href="#i-clipboard"/></svg><span>剪贴板</span></button>
       <button class="button" id="remoteFileButton" title="远程文件"><svg><use href="#i-folder"/></svg><span>远程文件</span></button>
@@ -1422,6 +1445,7 @@
       localStatus: {active: false},
       pairMode: "control",
       session: null,
+      fileSession: null,
       sessionHeartbeatTimer: 0,
       sessionHeartbeatInFlight: false,
       loadingFrame: false,
@@ -1446,11 +1470,11 @@
       frameObjectUrl: "",
       remoteFrameWidth: 0,
       remoteFrameHeight: 0,
-      cursorTimer: 0,
-      cursorRequestInFlight: false,
-      cursorRequestRevision: 0,
+      cursorReconnectTimer: 0,
+      cursorStreamRevision: 0,
       cursorAbortController: null,
       remoteCursor: null,
+      cursorOwner: "controller",
       toastTimer: 0,
       autoUnlockChecking: false,
       monitors: [],
@@ -1471,11 +1495,14 @@
       remoteLockSentForClose: false,
       pairCredentialSource: "",
       pairCredentialStatus: {access_saved: false, lock_saved: false},
+      previewRevision: 0,
+      previewDeviceId: "",
+      previewObjectUrl: "",
       refreshingAccessCode: false,
       settingsSaveQueue: Promise.resolve(true),
       settingsSaveRevision: 0,
       settingsSaveTimer: 0,
-      settings: {frame_delay_ms: 80, remember_codes: true, close_to_tray: true, lock_remote_on_disconnect: false, auto_check_updates: true, auto_install_updates: true},
+      settings: {control_fps_limit: 60, remember_codes: true, close_to_tray: true, lock_remote_on_disconnect: false, auto_check_updates: true, auto_install_updates: true},
       latestUpdate: null,
       autoUpdateStartedForVersion: ""
     };
@@ -1548,14 +1575,62 @@
       }
     }
 
+    function releaseDevicePreviewImage() {
+      if (state.previewObjectUrl) URL.revokeObjectURL(state.previewObjectUrl);
+      state.previewObjectUrl = "";
+      $("detailPreviewImage").removeAttribute("src");
+      $("detailPreview").classList.remove("wallpaper-loaded");
+    }
+
+    async function loadDeviceWallpaper(device, tokenOverride = "") {
+      const revision = ++state.previewRevision;
+      state.previewDeviceId = device.id;
+      releaseDevicePreviewImage();
+      try {
+        let token = String(tokenOverride || "");
+        let url = `/desktop-background?local=1&t=${Date.now()}`;
+        const headers = {};
+        if (!device.is_self) {
+          if (!token) token = (await cachedAccessCredential(device.id)).token;
+          if (revision !== state.previewRevision || state.selectedId !== device.id) return;
+          if (!token) return;
+          url = `${deviceOrigin(device)}/desktop-background?t=${Date.now()}`;
+          headers["X-Remote-Token"] = token;
+        }
+        const response = await fetch(url, {headers, cache: "no-store"});
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const blob = await response.blob();
+        if (!blob.type.startsWith("image/")) throw new Error("桌面背景格式无效");
+        const objectUrl = URL.createObjectURL(blob);
+        const preload = new Image();
+        try {
+          await new Promise((resolve, reject) => {
+            preload.onload = resolve;
+            preload.onerror = () => reject(new Error("桌面背景无法解码"));
+            preload.src = objectUrl;
+          });
+        } catch (error) {
+          URL.revokeObjectURL(objectUrl);
+          throw error;
+        }
+        if (revision !== state.previewRevision || state.selectedId !== device.id) {
+          URL.revokeObjectURL(objectUrl);
+          return;
+        }
+        state.previewObjectUrl = objectUrl;
+        $("detailPreviewImage").src = objectUrl;
+        $("detailPreview").classList.add("wallpaper-loaded");
+      } catch {
+        // Keep the graphic fallback when the original wallpaper is unavailable.
+      }
+    }
+
     function renderDevicePreview(device) {
-      const busy = Boolean(device.busy);
-      $("detailPreviewStatus").classList.toggle("busy", busy);
-      $("detailPreviewState").textContent = busy
-        ? (device.busy_mode === "view" ? "正在被观看" : "远程会话中")
-        : "在线可连接";
-      $("detailPreviewCaption").textContent = "静态桌面";
-      $("detailPreviewTime").textContent = "不含远控画面";
+      const online = device.online !== false;
+      $("detailPreviewStatus").classList.toggle("busy", online && Boolean(device.busy));
+      $("detailPreviewStatus").classList.toggle("offline", !online);
+      $("detailPreviewState").textContent = online ? "在线" : "离线";
+      if (state.previewDeviceId !== device.id) loadDeviceWallpaper(device);
     }
 
     function showToast(message) {
@@ -1591,7 +1666,7 @@
         : "服务未安装";
       $("secureDesktopStatus").classList.toggle("warning", !state.settings.secure_desktop_available);
       $("settingRememberCodes").checked = Boolean(state.settings.remember_codes);
-      $("settingFrameDelay").value = String(state.settings.frame_delay_ms || 80);
+      $("settingControlFps").value = String(state.settings.control_fps_limit || 60);
       $("settingLockRemoteOnDisconnect").checked = Boolean(state.settings.lock_remote_on_disconnect);
       $("settingReduceMotion").checked = Boolean(state.settings.reduce_motion);
       $("settingLaunchAtLogin").checked = Boolean(state.settings.launch_at_login);
@@ -1639,7 +1714,7 @@
         view_only: $("settingViewOnly").checked,
         secure_desktop_enabled: $("settingSecureDesktop").checked,
         remember_codes: $("settingRememberCodes").checked,
-        frame_delay_ms: Number($("settingFrameDelay").value),
+        control_fps_limit: Number($("settingControlFps").value),
         lock_remote_on_disconnect: $("settingLockRemoteOnDisconnect").checked,
         reduce_motion: $("settingReduceMotion").checked,
         launch_at_login: $("settingLaunchAtLogin").checked,
@@ -1897,7 +1972,12 @@
       const device = selectedDevice();
       $("detailsEmpty").style.display = device ? "none" : "grid";
       $("deviceDetail").classList.toggle("show", Boolean(device));
-      if (!device) return;
+      if (!device) {
+        state.previewRevision += 1;
+        state.previewDeviceId = "";
+        releaseDevicePreviewImage();
+        return;
+      }
       $("detailName").textContent = device.name;
       $("detailState").textContent = device.busy
         ? `${device.is_self ? "本机" : "局域网设备"} · ${device.busy_mode === "view" ? "正在被观看" : "正在被控制"}`
@@ -1909,6 +1989,8 @@
       const blocked = Boolean(device.is_self || device.busy || state.localStatus?.active);
       $("controlButton").disabled = Boolean(device.view_only || blocked);
       $("viewButton").disabled = blocked;
+      $("deviceFileButton").disabled = Boolean(device.view_only || blocked);
+      $("credentialButton").disabled = Boolean(device.is_self || state.localStatus?.active);
       renderDevicePreview(device);
     }
 
@@ -1937,12 +2019,19 @@
         showToast("这台设备正在远程会话中，请稍后再试");
         return;
       }
-      if (mode === "control" && device.view_only) {
-        showToast("这台设备当前只允许观看");
+      if ((mode === "control" || mode === "files") && device.view_only) {
+        showToast(mode === "files" ? "这台设备当前不允许远程文件" : "这台设备当前只允许观看");
         return;
       }
       state.pairMode = mode;
+      const fileMode = mode === "files";
+      $("pairActionLabel").textContent = fileMode ? "访问" : "连接到";
       $("pairDeviceName").textContent = device.name;
+      $("pairDescription").textContent = fileMode
+        ? "验证后直接浏览和传输这台电脑上的文件"
+        : "可输入目标电脑的临时访问码或永久访问密码";
+      $("lockCredentialOptions").hidden = fileMode;
+      $("pairSubmit").textContent = fileMode ? "打开" : "连接";
       $("pairError").textContent = "";
       resetPasswordVisibility($("pairModal"));
       $("lockPasswordInput").value = "";
@@ -2020,13 +2109,30 @@
           }
         }
 
-        if (window.pywebview?.api?.save_lock_password) {
+        if (state.pairMode !== "files" && window.pywebview?.api?.save_lock_password) {
           const lockPassword = $("lockPasswordInput").value;
           if ($("rememberLockPassword").checked) {
             if (lockPassword) await window.pywebview.api.save_lock_password(device.id, lockPassword, device.name);
           } else if (state.pairCredentialStatus.lock_saved) {
             await window.pywebview.api.clear_lock_password(device.id);
           }
+        }
+        loadDeviceWallpaper(device, result.session_token || token);
+        if (state.pairMode === "files") {
+          state.filePath = "";
+          state.fileParent = "";
+          state.fileRoots = [];
+          state.fileEntries = [];
+          state.fileSession = {
+            device,
+            token: result.session_token || token,
+            connected: true,
+            viewOnly: false,
+            standalone: true
+          };
+          closePair();
+          showRemoteFiles(state.fileSession);
+          return;
         }
         const localDevice = state.devices.find((item) => item.is_self);
         const controllerSessionId = createSessionId();
@@ -2055,7 +2161,7 @@
         $("pairError").textContent = error.message || "无法连接到设备";
       } finally {
         submit.disabled = false;
-        submit.textContent = "连接";
+        submit.textContent = state.pairMode === "files" ? "打开" : "连接";
       }
     }
 
@@ -2086,7 +2192,8 @@
         controllerName,
         connected: true,
         initialAutoUnlockPending: !viewOnly,
-        monitorId: "all"
+        monitorId: "all",
+        fpsLimit: normalizeControlFps(state.settings.control_fps_limit)
       };
       state.loadingFrame = false;
       state.remoteFrameWidth = 0;
@@ -2100,6 +2207,9 @@
       resetClipboardSync();
       $("remoteName").textContent = `${device.name} · ${viewOnly ? "观看" : "控制"}`;
       $("keyboardButton").style.display = viewOnly ? "none" : "inline-flex";
+      $("fpsLimitControl").style.display = "inline-flex";
+      $("fpsLimitSelect").value = String(state.session.fpsLimit);
+      $("fpsLimitLabel").textContent = `${state.session.fpsLimit} FPS`;
       $("clipboardButton").style.display = viewOnly ? "none" : "inline-flex";
       $("remoteFileButton").style.display = viewOnly ? "none" : "inline-flex";
       $("lockRemoteButton").style.display = viewOnly ? "none" : "inline-flex";
@@ -2230,6 +2340,12 @@
     function endpoint(path) {
       const session = state.session;
       if (!session) return "";
+      return remoteSessionEndpoint(session, path);
+    }
+
+    function fileEndpoint(path) {
+      const session = state.fileSession?.connected ? state.fileSession : state.session;
+      if (!session?.connected) return "";
       return remoteSessionEndpoint(session, path);
     }
 
@@ -2453,10 +2569,10 @@
     }
 
     async function loadRemoteDirectory(path = "") {
-      if (!state.session?.connected) return;
+      if (!fileEndpoint("/files")) return;
       $("fileProgress").textContent = "正在读取远端文件夹…";
       try {
-        const response = await fetch(endpoint(`/files?path=${encodeURIComponent(path)}`), {cache: "no-store"});
+        const response = await fetch(fileEndpoint(`/files?path=${encodeURIComponent(path)}`), {cache: "no-store"});
         const result = await response.json().catch(() => ({}));
         if (!response.ok || !result.ok) throw new Error(result.error || "无法读取文件夹");
         state.filePath = result.path;
@@ -2476,18 +2592,25 @@
       }
     }
 
-    function openRemoteFiles() {
-      if (!state.session?.connected || state.session.viewOnly) return;
+    function showRemoteFiles(session) {
+      if (!session?.connected || session.viewOnly) return;
+      state.fileSession = session;
       releaseAllRemoteInput();
       setNativeKeyboardCapture(false);
-      $("fileDeviceName").textContent = `· ${state.session.device.name}`;
+      $("fileDeviceName").textContent = `· ${session.device.name}`;
       $("fileModal").classList.add("show");
       scheduleNativeInputSync();
       loadRemoteDirectory(state.filePath || "");
     }
 
+    function openRemoteFiles() {
+      showRemoteFiles(state.session);
+    }
+
     function closeRemoteFiles(restoreKeyboardCapture = true) {
       $("fileModal").classList.remove("show");
+      if (state.fileSession?.standalone) state.fileSession.connected = false;
+      state.fileSession = null;
       if (restoreKeyboardCapture && state.keyboardEnabled) {
         setNativeKeyboardCapture(true);
         $("remoteStage").focus();
@@ -2497,7 +2620,7 @@
 
     function downloadRemoteFile(path, name) {
       const link = document.createElement("a");
-      link.href = endpoint(`/files/download?path=${encodeURIComponent(path)}`);
+      link.href = fileEndpoint(`/files/download?path=${encodeURIComponent(path)}`);
       link.download = name;
       link.style.display = "none";
       document.body.appendChild(link);
@@ -2513,7 +2636,7 @@
       const xhr = new XMLHttpRequest();
       state.fileTransfer = xhr;
       $("fileCancelTransfer").disabled = false;
-      xhr.open("POST", endpoint(`/files/upload?path=${encodeURIComponent(state.filePath)}&name=${encodeURIComponent(file.name)}&overwrite=${exists ? "1" : "0"}`));
+      xhr.open("POST", fileEndpoint(`/files/upload?path=${encodeURIComponent(state.filePath)}&name=${encodeURIComponent(file.name)}&overwrite=${exists ? "1" : "0"}`));
       xhr.upload.onprogress = (event) => {
         const percent = event.lengthComputable ? Math.round(event.loaded * 100 / event.total) : 0;
         $("fileProgress").textContent = `正在上传 ${file.name} · ${percent}% · ${formatFileSize(event.loaded)} / ${formatFileSize(event.total || file.size)}`;
@@ -2543,11 +2666,17 @@
       xhr.send(file);
     }
 
-    const CONTROL_STREAM_FPS = 60;
-    const REMOTE_CURSOR_INTERVAL_MS = 8;
+    const CONTROL_STREAM_FPS_OPTIONS = new Set([30, 60, 120]);
+    const REMOTE_CURSOR_STREAM_FPS = 120;
+    const REMOTE_CURSOR_RECONNECT_MS = 80;
 
-    function frameIntervalMs(session) {
-      return Number(state.settings.frame_delay_ms) || 80;
+    function normalizeControlFps(value) {
+      const fps = Number(value);
+      return CONTROL_STREAM_FPS_OPTIONS.has(fps) ? fps : 60;
+    }
+
+    function sessionControlFps(session) {
+      return normalizeControlFps(session?.fpsLimit || state.settings.control_fps_limit);
     }
 
     function releaseFrameObjectUrl() {
@@ -2576,20 +2705,22 @@
 
     function markScreenReady(session, image) {
       const monitor = selectedMonitorGeometry(session);
+      const fpsLimit = sessionControlFps(session);
       state.remoteFrameWidth = Number(monitor?.width) || image.naturalWidth;
       state.remoteFrameHeight = Number(monitor?.height) || image.naturalHeight;
       $("remoteHint").classList.add("hidden");
       setRemoteStatus(
-        `已连接 · ${monitor?.label || "远端屏幕"} · ${state.remoteFrameWidth} × ${state.remoteFrameHeight} · ${CONTROL_STREAM_FPS} FPS`
+        `已连接 · ${monitor?.label || "远端屏幕"} · ${state.remoteFrameWidth} × ${state.remoteFrameHeight} · 最高 ${fpsLimit} FPS`
       );
       scheduleNativeInputSync();
       maybeAutoUnlock();
       updateRemoteCursorOverlay();
     }
 
-    function startControlScreenStream(session) {
+    function startDesktopScreenStream(session) {
       const revision = state.frameRequestRevision;
       const monitorId = session.monitorId || "all";
+      const fpsLimit = sessionControlFps(session);
       const image = $("remoteScreen");
       let ready = false;
       state.loadingFrame = true;
@@ -2627,75 +2758,9 @@
         state.refreshTimer = setTimeout(refreshScreen, 350);
       };
       image.src = endpoint(
-        `/screen-stream?monitor=${encodeURIComponent(monitorId)}&cursor=0&fps=${CONTROL_STREAM_FPS}&t=${Date.now()}`
+        `/screen-stream?monitor=${encodeURIComponent(monitorId)}&cursor=0&fps=${fpsLimit}&t=${Date.now()}`
       );
       waitForFirstFrame();
-    }
-
-    async function refreshPollingScreen(session) {
-      const revision = state.frameRequestRevision;
-      const monitorId = session.monitorId || "all";
-      const startedAt = performance.now();
-      const abortController = new AbortController();
-      state.screenAbortController = abortController;
-      state.loadingFrame = true;
-      let nextDelay = 850;
-      try {
-        const response = await fetch(
-          endpoint(`/screen?monitor=${encodeURIComponent(monitorId)}&cursor=1&t=${Date.now()}`),
-          {cache: "no-store", signal: abortController.signal}
-        );
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        const blob = await response.blob();
-        if (
-          revision !== state.frameRequestRevision ||
-          !state.session?.connected ||
-          state.session.monitorId !== monitorId
-        ) return;
-        const objectUrl = URL.createObjectURL(blob);
-        const frame = new Image();
-        try {
-          await new Promise((resolve, reject) => {
-            frame.onload = resolve;
-            frame.onerror = () => reject(new Error("远端画面解码失败"));
-            frame.src = objectUrl;
-          });
-        } catch (error) {
-          URL.revokeObjectURL(objectUrl);
-          throw error;
-        }
-        if (
-          revision !== state.frameRequestRevision ||
-          !state.session?.connected ||
-          state.session.monitorId !== monitorId
-        ) {
-          URL.revokeObjectURL(objectUrl);
-          return;
-        }
-        state.remoteFrameWidth = frame.naturalWidth;
-        state.remoteFrameHeight = frame.naturalHeight;
-        const previousObjectUrl = state.frameObjectUrl;
-        state.frameObjectUrl = objectUrl;
-        $("remoteScreen").src = objectUrl;
-        if (previousObjectUrl) URL.revokeObjectURL(previousObjectUrl);
-        $("remoteHint").classList.add("hidden");
-        const monitor = selectedMonitorGeometry(session);
-        setRemoteStatus(`已连接 · ${monitor?.label || "远端屏幕"} · ${frame.naturalWidth} × ${frame.naturalHeight}`);
-        scheduleNativeInputSync();
-        maybeAutoUnlock();
-        updateRemoteCursorOverlay();
-        nextDelay = Math.max(0, frameIntervalMs(session) - (performance.now() - startedAt));
-      } catch (error) {
-        if (error.name === "AbortError" || revision !== state.frameRequestRevision) return;
-        setRemoteStatus("画面连接中断，正在重试…", true);
-      } finally {
-        if (revision !== state.frameRequestRevision) return;
-        if (state.screenAbortController === abortController) state.screenAbortController = null;
-        state.loadingFrame = false;
-        if (state.session?.connected && state.session.monitorId === monitorId) {
-          state.refreshTimer = setTimeout(refreshScreen, nextDelay);
-        }
-      }
     }
 
     function refreshScreen() {
@@ -2716,18 +2781,14 @@
         openPair(mode);
         return;
       }
-      if (session.viewOnly) {
-        refreshPollingScreen(session);
-        return;
-      }
-      startControlScreenStream(session);
+      startDesktopScreenStream(session);
     }
 
     function updateRemoteCursorOverlay() {
       const cursor = state.remoteCursor;
       const pointer = $("remotePointer");
       const image = $("remoteScreen");
-      if (!cursor?.visible || !image.naturalWidth) {
+      if (state.cursorOwner !== "remote" || !cursor?.visible || !image.naturalWidth) {
         pointer.classList.remove("visible");
         return;
       }
@@ -2738,61 +2799,95 @@
       const scale = Math.min(imageRect.width / remoteWidth, imageRect.height / remoteHeight);
       const contentWidth = remoteWidth * scale;
       const contentHeight = remoteHeight * scale;
-      const left = imageRect.left - stageRect.left + (imageRect.width - contentWidth) / 2 + cursor.x * scale;
-      const top = imageRect.top - stageRect.top + (imageRect.height - contentHeight) / 2 + cursor.y * scale;
+      const left = imageRect.left - stageRect.left + (imageRect.width - contentWidth) / 2 + cursor.x * scale - 2;
+      const top = imageRect.top - stageRect.top + (imageRect.height - contentHeight) / 2 + cursor.y * scale - 1.6;
       pointer.style.transform = `translate3d(${left}px, ${top}px, 0)`;
       pointer.classList.add("visible");
     }
 
+    function setRemoteCursorOwner(owner) {
+      state.cursorOwner = owner === "remote" ? "remote" : "controller";
+      $("remoteStage").classList.toggle("remote-cursor-active", state.cursorOwner === "remote");
+      updateRemoteCursorOverlay();
+    }
+
+    function acceptRemoteCursor(result) {
+      const previous = state.remoteCursor;
+      const changed = Boolean(previous) && (
+        Boolean(previous.visible) !== Boolean(result.visible) ||
+        Number(previous.x) !== Number(result.x) ||
+        Number(previous.y) !== Number(result.y)
+      );
+      state.remoteCursor = result;
+      if (state.session?.viewOnly) {
+        setRemoteCursorOwner("remote");
+      } else if (result.input_source === "controller") {
+        setRemoteCursorOwner("controller");
+      } else if (changed) {
+        setRemoteCursorOwner("remote");
+      } else {
+        updateRemoteCursorOverlay();
+      }
+    }
+
     function stopRemoteCursorTracking() {
-      state.cursorRequestRevision += 1;
-      clearTimeout(state.cursorTimer);
-      state.cursorTimer = 0;
+      state.cursorStreamRevision += 1;
+      clearTimeout(state.cursorReconnectTimer);
+      state.cursorReconnectTimer = 0;
       state.cursorAbortController?.abort();
       state.cursorAbortController = null;
-      state.cursorRequestInFlight = false;
       state.remoteCursor = null;
-      $("remotePointer").classList.remove("visible");
+      setRemoteCursorOwner("controller");
     }
 
     async function refreshRemoteCursor() {
       const session = state.session;
-      if (!session?.connected || session.viewOnly || state.cursorRequestInFlight) return;
-      const revision = state.cursorRequestRevision;
+      if (!session?.connected || state.cursorAbortController) return;
+      const revision = state.cursorStreamRevision;
       const monitorId = session.monitorId || "all";
-      const startedAt = performance.now();
       const abortController = new AbortController();
       state.cursorAbortController = abortController;
-      state.cursorRequestInFlight = true;
-      let nextDelay = REMOTE_CURSOR_INTERVAL_MS;
       try {
         const response = await fetch(
-          endpoint(`/cursor?monitor=${encodeURIComponent(monitorId)}&t=${Date.now()}`),
+          endpoint(`/cursor-stream?monitor=${encodeURIComponent(monitorId)}&t=${Date.now()}`),
           {cache: "no-store", signal: abortController.signal}
         );
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        const result = await response.json();
-        if (!result.ok) throw new Error(result.error || "光标状态不可用");
-        if (
-          revision !== state.cursorRequestRevision ||
-          !state.session?.connected ||
-          state.session.monitorId !== monitorId
-        ) return;
-        state.remoteCursor = result;
-        updateRemoteCursorOverlay();
-        nextDelay = Math.max(0, REMOTE_CURSOR_INTERVAL_MS - (performance.now() - startedAt));
-      } catch (error) {
-        if (error.name !== "AbortError") {
-          state.remoteCursor = null;
-          $("remotePointer").classList.remove("visible");
-          nextDelay = 240;
+        if (!response.body) throw new Error("光标流不可用");
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        while (true) {
+          const {done, value} = await reader.read();
+          if (done) break;
+          if (
+            revision !== state.cursorStreamRevision ||
+            !state.session?.connected ||
+            state.session.monitorId !== monitorId
+          ) return;
+          buffer += decoder.decode(value, {stream: true});
+          const lines = buffer.split("\n");
+          buffer = lines.pop() || "";
+          for (const line of lines) {
+            if (!line) continue;
+            try {
+              const result = JSON.parse(line);
+              if (result.ok) acceptRemoteCursor(result);
+            } catch (error) {
+              // The next complete NDJSON record can recover this stream.
+            }
+          }
         }
+      } catch (error) {
+        if (error.name === "AbortError") return;
       } finally {
-        if (revision !== state.cursorRequestRevision) return;
         if (state.cursorAbortController === abortController) state.cursorAbortController = null;
-        state.cursorRequestInFlight = false;
-        if (state.session?.connected && !state.session.viewOnly && state.session.monitorId === monitorId) {
-          state.cursorTimer = setTimeout(refreshRemoteCursor, nextDelay);
+        if (
+          revision === state.cursorStreamRevision &&
+          state.session?.connected &&
+          state.session.monitorId === monitorId
+        ) {
+          state.cursorReconnectTimer = setTimeout(refreshRemoteCursor, REMOTE_CURSOR_RECONNECT_MS);
         }
       }
     }
@@ -3210,7 +3305,7 @@
       "settingViewOnly",
       "settingSecureDesktop",
       "settingRememberCodes",
-      "settingFrameDelay",
+      "settingControlFps",
       "settingLockRemoteOnDisconnect",
       "settingReduceMotion",
       "settingLaunchAtLogin",
@@ -3236,6 +3331,7 @@
     $("installUpdate").addEventListener("click", () => installUpdate(false));
     $("controlButton").addEventListener("click", () => openPair("control"));
     $("viewButton").addEventListener("click", () => openPair("view"));
+    $("deviceFileButton").addEventListener("click", () => openPair("files"));
     $("credentialButton").addEventListener("click", () => openPair(selectedDevice()?.view_only ? "view" : "control", true));
     $("pairForm").addEventListener("submit", verifyAndConnect);
     $("pairCancel").addEventListener("click", closePair);
@@ -3259,6 +3355,20 @@
       scheduleNativeInputSync();
       refreshScreen();
       refreshRemoteCursor();
+    });
+    $("fpsLimitSelect").addEventListener("change", () => {
+      const session = state.session;
+      if (!session?.connected) return;
+      const fpsLimit = normalizeControlFps($("fpsLimitSelect").value);
+      $("fpsLimitSelect").value = String(fpsLimit);
+      $("fpsLimitLabel").textContent = `${fpsLimit} FPS`;
+      if (session.fpsLimit === fpsLimit) return;
+      session.fpsLimit = fpsLimit;
+      resetScreenStream();
+      $("remoteHint").classList.remove("hidden");
+      $("remoteHint").textContent = `正在切换到最高 ${fpsLimit} FPS…`;
+      setRemoteStatus(`正在切换画面帧率上限 · ${fpsLimit} FPS`);
+      refreshScreen();
     });
     $("clipboardButton").addEventListener("click", (event) => {
       const popover = $("clipboardPopover");
@@ -3407,6 +3517,7 @@
       event.stopPropagation();
     });
     $("remoteStage").addEventListener("pointermove", (event) => {
+      if (state.session?.connected && !state.session.viewOnly) setRemoteCursorOwner("controller");
       if (state.nativeInputActive) return;
       const now = performance.now();
       if (now - state.lastMoveAt < 28) return;
@@ -3509,6 +3620,7 @@
       if (document.hidden) releaseAllRemoteInput();
     });
     window.addEventListener("pagehide", () => {
+      releaseDevicePreviewImage();
       const session = state.session;
       if (session?.controllerSessionId) {
         const endBody = new Blob([JSON.stringify({

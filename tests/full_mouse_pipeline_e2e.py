@@ -20,7 +20,7 @@ from PIL import Image
 
 
 TOKEN = "abcdefghijklmnop"
-CONTROLLER_PORT = int(os.environ.get("LAN_REMOTE_CONTROLLER_PORT", "8765"))
+CONTROLLER_PORT = int(os.environ.get("LAN_REMOTE_CONTROLLER_PORT", "0"))
 WM_CLOSE = 0x0010
 MOUSEEVENTF_LEFTDOWN = 0x0002
 MOUSEEVENTF_LEFTUP = 0x0004
@@ -165,9 +165,37 @@ class AuditHandler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(FRAME)
             return
+        if path == "/cursor-stream":
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "application/x-ndjson; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Connection", "keep-alive")
+            self.send_header("X-Remote-Cursor-FPS", "120")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            try:
+                while True:
+                    with self.server.state.lock:
+                        self.server.state.cursor_request_times.append(time.monotonic())
+                    payload = json.dumps(
+                        {
+                            "ok": True,
+                            "visible": True,
+                            "x": 640,
+                            "y": 360,
+                            "width": 1280,
+                            "height": 720,
+                            "input_source": "controller",
+                        },
+                        separators=(",", ":"),
+                    ).encode("utf-8")
+                    self.wfile.write(payload + b"\n")
+                    self.wfile.flush()
+                    time.sleep(1 / 120)
+            except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, OSError):
+                self.close_connection = True
+                return
         if path == "/cursor":
-            with self.server.state.lock:
-                self.server.state.cursor_request_times.append(time.monotonic())
             self.json_response(
                 {
                     "ok": True,
@@ -176,6 +204,7 @@ class AuditHandler(BaseHTTPRequestHandler):
                     "y": 360,
                     "width": 1280,
                     "height": 720,
+                    "input_source": "controller",
                 }
             )
             return
@@ -613,6 +642,8 @@ def main() -> int:
             raise TimeoutError(f"remote cursor channel produced only {len(cursor_times)} updates")
         if not all("cursor=0" in query for query in screen_queries):
             raise RuntimeError(f"control frames still include a baked cursor: {screen_queries}")
+        if not all("fps=60" in query for query in screen_queries):
+            raise RuntimeError(f"control stream did not use the configured FPS ceiling: {screen_queries}")
         screen_intervals_ms = [
             (later - earlier) * 1000
             for earlier, later in zip(screen_times[-5:-1], screen_times[-4:])
