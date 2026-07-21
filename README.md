@@ -15,7 +15,7 @@ LAN Remote 是一个 Windows 桌面软件，只在局域网内工作。启动后
 - 设置页显示、复制或立即刷新临时访问码
 - 临时访问码每 30 分钟自动轮换，到期后旧码立即失效
 - 可设置永久访问密码，并在受信任控制端长期免输连接
-- 对方锁屏密码使用 Windows DPAPI 加密保存在控制端；确认锁屏后会先唤醒登录界面，再逐字输入并提交一次
+- 对方锁屏密码使用 Windows DPAPI 加密保存在控制端；自动解锁会识别锁屏封面、凭据界面与切换状态，只在确认安全时唤醒、逐字输入并提交
 - 普通桌面默认使用 DXGI + D3D11 + Media Foundation H.264 原生低延迟画面链路；不支持时明确回退 MJPEG
 - 30、60、120 FPS 三档均表示最高上限；原生诊断可查看实际采集、编码、发送、解码、呈现帧率及队列丢帧
 - 鼠标移动、单击、右键、纵向/横向滚轮以及原始 XBUTTON1/XBUTTON2 侧键
@@ -69,9 +69,9 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-windows-
 
 构建产物：
 
-- `dist\WindowsLANRemote-1.0.2-portable.zip`：免安装桌面程序（解压后运行其中的 EXE）
-- `dist\WindowsLANRemoteSetup-1.0.2.exe`：管理员安装包
-- `dist\WindowsLANRemoteService-1.0.2.exe`：构建产生的安全桌面服务组件
+- `dist\WindowsLANRemote-1.0.3-portable.zip`：免安装桌面程序（解压后运行其中的 EXE）
+- `dist\WindowsLANRemoteSetup-1.0.3.exe`：管理员安装包
+- `dist\WindowsLANRemoteService-1.0.3.exe`：构建产生的安全桌面服务组件
 
 安装包需要 UAC 管理员确认，安装位置为 `%ProgramFiles%\Windows LAN Remote`。它会创建开始菜单快捷方式、卸载项、专用网络防火墙规则，并注册自动启动的 `WindowsLANRemoteSecureDesktop` LocalSystem 服务。服务只在 `127.0.0.1:8767` 和 `127.0.0.1:8768` 上提供经过本机密钥验证的安全桌面与高权限输入通道，不直接对局域网开放。
 
@@ -82,7 +82,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-windows-
 - 只能控制 Windows 电脑。
 - 软件界面依赖 Microsoft Edge WebView2 Runtime；Windows 10/11 安装 Edge 后通常已自带。
 - 锁屏支持面向已登录后锁定的当前控制台会话；尚未登录、切换用户或远程桌面会话不在当前版本保证范围内。
-- 锁屏自动输入会先按 Enter 唤醒登录界面，等待输入框稳定后逐字输入 Windows 密码并按 Enter 提交；Windows Hello、PIN、智能卡以及要求 Ctrl+Alt+Delete 的策略可能仍需手动操作。
+- 锁屏自动输入会结合 Windows 会话状态、输入桌面和前台系统进程识别 LockApp、LogonUI 与切换状态；已在凭据界面时不会先按 Enter，状态不确定时不会发送密码。Windows Hello、PIN、智能卡以及要求 Ctrl+Alt+Delete 的策略可能仍需手动操作。
 - Windows 的 Ctrl+Alt+Delete 属于安全注意序列，普通窗口级键盘捕获无法拦截或转发，后续需要单独的安全命令入口。
 - 剪贴板同步当前只传输纯文字；图片、HTML 和文件剪贴板不会同步。
 - 单个远程上传或下载文件限制为 2 GB，暂不支持断点续传。
@@ -95,7 +95,8 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-windows-
 - 访问码不会通过设备发现广播，只显示在本机软件窗口。
 - 临时访问码每 30 分钟轮换，永久访问密码只在被控端保存 PBKDF2 哈希。
 - 控制端保存的永久访问密码和 Windows 锁屏密码使用当前用户的 Windows DPAPI 加密，不以明文写入文件。
-- 自动锁屏输入仅在同时确认安全桌面活动且 Windows 会话锁定时执行，并且每次锁屏最多自动尝试一次。
+- 系统服务记录 Windows 当前控制台会话的锁定/解锁事件，应用只接受同会话且未过期的状态；服务状态不可用时才回退到 WTS 查询。
+- 自动锁屏输入仅在首次连接确认 Windows 会话已锁定时尝试一次；控制过程中再次锁屏只显示手动解锁按钮。
 - 高权限安全桌面助手仅监听本机回环地址，并使用安装时随机生成、受 ACL 保护的服务密钥。
 - 安全桌面控制可在设置中关闭。
 - 自动更新只接受 GitHub 官方 HTTPS Release 下载地址，下载后仍由 UAC 安装器完成升级。

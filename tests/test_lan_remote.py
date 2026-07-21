@@ -53,6 +53,79 @@ def make_state(settings: lan_remote.SettingsStore) -> lan_remote.ServerState:
 
 
 class CoreFunctionTests(unittest.TestCase):
+    def test_service_session_state_is_fresh_known_and_session_scoped(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            state_path = Path(directory) / "session-state.json"
+
+            def publish(**changes: object) -> None:
+                payload: dict[str, object] = {
+                    "version": 1,
+                    "session_id": 7,
+                    "locked": True,
+                    "known": True,
+                    "updated_at_ms": 1_000_000,
+                }
+                payload.update(changes)
+                state_path.write_text(json.dumps(payload), encoding="utf-8")
+
+            publish()
+            self.assertIs(lan_remote.service_session_locked(state_path, now_ms=1_001_000, session_id=7), True)
+            publish(locked=False)
+            self.assertIs(lan_remote.service_session_locked(state_path, now_ms=1_001_000, session_id=7), False)
+            publish(known=False)
+            self.assertIsNone(lan_remote.service_session_locked(state_path, now_ms=1_001_000, session_id=7))
+            publish(session_id=8)
+            self.assertIsNone(lan_remote.service_session_locked(state_path, now_ms=1_001_000, session_id=7))
+            publish(updated_at_ms=990_000)
+            self.assertIsNone(lan_remote.service_session_locked(state_path, now_ms=1_001_000, session_id=7))
+
+    def test_locked_default_desktop_uses_normal_input_but_native_video_falls_back(self) -> None:
+        with (
+            patch.object(lan_remote, "current_session_locked", return_value=True),
+            patch.object(lan_remote, "input_desktop_name", return_value="Default"),
+        ):
+            self.assertFalse(lan_remote.secure_desktop_active())
+            self.assertTrue(lan_remote.native_video_requires_compatibility())
+
+    def test_session_ui_state_covers_unlock_transitions_without_guessing(self) -> None:
+        self.assertEqual(lan_remote.session_ui_state(False, "Default"), "unlocked")
+        self.assertEqual(lan_remote.session_ui_state(False, "Winlogon"), "secure_prompt")
+        self.assertEqual(lan_remote.session_ui_state(True, "Default", "LockApp.exe"), "lock_screen")
+        self.assertEqual(lan_remote.session_ui_state(True, "Winlogon", "LockApp.exe"), "lock_screen")
+        self.assertEqual(lan_remote.session_ui_state(True, "Winlogon", "LogonUI.exe"), "credential_ui")
+        self.assertEqual(lan_remote.session_ui_state(True, "Winlogon", None), "locked_transition")
+        self.assertEqual(lan_remote.session_ui_state(True, "Disconnect"), "locked_transition")
+        self.assertEqual(lan_remote.session_ui_state(True, None), "unknown")
+
+    def test_locked_default_desktop_wake_input_is_not_sent_to_winlogon_helper(self) -> None:
+        state = Mock()
+        state.settings.values = {"secure_desktop_enabled": True}
+        payload = {"type": "key_press", "key": "Enter", "code": "Enter"}
+        with (
+            patch.object(lan_remote, "current_session_locked", return_value=True),
+            patch.object(lan_remote, "input_desktop_name", return_value="Default"),
+            patch.object(lan_remote, "try_send_elevated_input", return_value=True) as elevated,
+            patch.object(lan_remote, "send_secure_input") as secure,
+        ):
+            lan_remote.dispatch_remote_input(state, payload)
+        elevated.assert_called_once_with(payload)
+        secure.assert_not_called()
+
+    def test_lock_events_and_first_frame_gate_are_wired_into_native_paths(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        service = (root / "packaging" / "SecureDesktopService.cs").read_text(encoding="utf-8")
+        native = (root / "native" / "WindowsLANRemoteVideo.cpp").read_text(encoding="utf-8")
+        html = (root / "web" / "index.html").read_text(encoding="utf-8")
+        self.assertIn("SessionChangeReason.SessionLock", service)
+        self.assertIn("SessionChangeReason.SessionUnlock", service)
+        self.assertIn('Path.Combine(directory, "session-state.json")', service)
+        self.assertIn("helpersNeedRefresh = false;", service)
+        self.assertIn('"decoding"', native)
+        self.assertIn("rendered_frames_.load() > first_frame_rendered_count", native)
+        self.assertIn("next_first_frame_keyframe", native)
+        self.assertIn("function startNativeVideoPreview(session)", html)
+        self.assertIn("Number(status.rendered_frames || 0) > 0", html)
+
     def test_native_video_protocol_round_trip_and_validation(self) -> None:
         message = lan_remote.NativeVideoMessage(
             message_type=lan_remote.NATIVE_VIDEO_MESSAGE_ACCESS_UNIT,
@@ -638,33 +711,31 @@ class CoreFunctionTests(unittest.TestCase):
 
 
 class SettingsAndAuthenticationTests(unittest.TestCase):
-    def test_auto_unlock_wakes_types_sequentially_and_submits(self) -> None:
+    def test_auto_unlock_types_directly_when_credential_ui_is_already_ready(self) -> None:
         api = lan_remote.DesktopApi()
         api.vault = Mock()
         api.vault.get_secret.return_value = "Lock 密码"
         device = {"id": "remote-device", "ip": "192.168.1.25", "port": 8765}
         remote = Mock(
             side_effect=[
-                {"session_locked": True},
-                {"ok": True},
-                {"session_locked": True},
+                {"session_locked": True, "session_ui_state": "credential_ui"},
                 {"ok": True},
                 {"ok": True},
+                {"session_locked": False, "session_ui_state": "unlocked"},
             ]
         )
         with (
             patch.object(api, "_validated_device", return_value=device),
             patch.object(api, "_remote_json", remote),
             patch.object(lan_remote.time, "sleep") as pause,
+            patch.object(lan_remote, "UNLOCK_RESULT_POLLS", 1),
         ):
             result = api.try_auto_unlock("{}", "access-token")
 
-        self.assertEqual(result, {"ok": True, "status": "submitted"})
+        self.assertEqual(result, {"ok": True, "status": "unlocked"})
         self.assertEqual(
             remote.call_args_list,
             [
-                call(device, "/api/session-status", "access-token"),
-                call(device, "/input", "access-token", {"type": "key_press", "key": "Enter", "code": "Enter"}),
                 call(device, "/api/session-status", "access-token"),
                 call(
                     device,
@@ -674,12 +745,84 @@ class SettingsAndAuthenticationTests(unittest.TestCase):
                     timeout=lan_remote.UNLOCK_SEQUENCE_TIMEOUT_SECONDS,
                 ),
                 call(device, "/input", "access-token", {"type": "key_press", "key": "Enter", "code": "Enter"}),
+                call(device, "/api/session-status", "access-token"),
             ],
         )
         self.assertEqual(
             pause.call_args_list,
-            [call(lan_remote.UNLOCK_WAKE_DELAY_SECONDS), call(lan_remote.UNLOCK_SUBMIT_DELAY_SECONDS)],
+            [call(lan_remote.UNLOCK_SUBMIT_DELAY_SECONDS), call(lan_remote.UNLOCK_RESULT_POLL_SECONDS)],
         )
+
+    def test_auto_unlock_retries_an_unresponsive_lock_screen_before_typing(self) -> None:
+        api = lan_remote.DesktopApi()
+        api.vault = Mock()
+        api.vault.get_secret.return_value = "Lock password"
+        device = {"id": "remote-device", "ip": "192.168.1.25", "port": 8765}
+        remote = Mock(
+            side_effect=[
+                {"session_locked": True, "session_ui_state": "lock_screen"},
+                {"ok": True},
+                {"session_locked": True, "session_ui_state": "lock_screen"},
+                {"session_locked": True, "session_ui_state": "lock_screen"},
+                {"ok": True},
+                {"session_locked": True, "session_ui_state": "credential_ui"},
+                {"ok": True},
+                {"ok": True},
+                {"session_locked": False, "session_ui_state": "unlocked"},
+            ]
+        )
+        with (
+            patch.object(api, "_validated_device", return_value=device),
+            patch.object(api, "_remote_json", remote),
+            patch.object(lan_remote.time, "sleep"),
+            patch.object(lan_remote, "UNLOCK_WAKE_POLLS_PER_ATTEMPT", 2),
+            patch.object(lan_remote, "UNLOCK_RESULT_POLLS", 1),
+        ):
+            result = api.try_auto_unlock("{}", "access-token")
+
+        self.assertEqual(result, {"ok": True, "status": "unlocked"})
+        wake = call(device, "/input", "access-token", {"type": "key_press", "key": "Enter", "code": "Enter"})
+        self.assertEqual(remote.call_args_list.count(wake), 3)
+        # Two wake presses plus the final credential submission. Password is
+        # sent only after the status endpoint reports credential_ui.
+        password_call = call(
+            device,
+            "/input",
+            "access-token",
+            {"type": "text_sequence", "text": "Lock password"},
+            timeout=lan_remote.UNLOCK_SEQUENCE_TIMEOUT_SECONDS,
+        )
+        self.assertLess(remote.call_args_list.index(password_call), len(remote.call_args_list) - 1)
+
+    def test_auto_unlock_waits_out_a_transition_without_sending_a_wake_key(self) -> None:
+        api = lan_remote.DesktopApi()
+        api.vault = Mock()
+        api.vault.get_secret.return_value = "Lock password"
+        device = {"id": "remote-device", "ip": "192.168.1.25", "port": 8765}
+        remote = Mock(
+            side_effect=[
+                {"session_locked": True, "session_ui_state": "locked_transition"},
+                {"session_locked": True, "session_ui_state": "credential_ui"},
+                {"ok": True},
+                {"ok": True},
+                {"session_locked": False, "session_ui_state": "unlocked"},
+            ]
+        )
+        with (
+            patch.object(api, "_validated_device", return_value=device),
+            patch.object(api, "_remote_json", remote),
+            patch.object(lan_remote.time, "sleep"),
+            patch.object(lan_remote, "UNLOCK_WAKE_POLLS_PER_ATTEMPT", 1),
+            patch.object(lan_remote, "UNLOCK_RESULT_POLLS", 1),
+        ):
+            result = api.try_auto_unlock("{}", "access-token")
+
+        self.assertEqual(result, {"ok": True, "status": "unlocked"})
+        key_calls = [
+            entry for entry in remote.call_args_list
+            if len(entry.args) >= 4 and entry.args[1] == "/input" and entry.args[3].get("type") == "key_press"
+        ]
+        self.assertEqual(len(key_calls), 1)
 
     def test_manual_unlock_can_retry_after_the_initial_attempt(self) -> None:
         api = lan_remote.DesktopApi()
@@ -689,22 +832,36 @@ class SettingsAndAuthenticationTests(unittest.TestCase):
         device = {"id": "remote-device", "ip": "192.168.1.25", "port": 8765}
         remote = Mock(
             side_effect=[
-                {"session_locked": True},
-                {"ok": True},
-                {"session_locked": True},
+                {"session_locked": True, "session_ui_state": "credential_ui"},
                 {"ok": True},
                 {"ok": True},
+                {"session_locked": True, "session_ui_state": "credential_ui"},
             ]
         )
         with (
             patch.object(api, "_validated_device", return_value=device),
             patch.object(api, "_remote_json", remote),
             patch.object(lan_remote.time, "sleep"),
+            patch.object(lan_remote, "UNLOCK_RESULT_POLLS", 1),
         ):
             result = api.try_auto_unlock("{}", "access-token", force=True)
 
-        self.assertEqual(result, {"ok": True, "status": "submitted"})
-        self.assertEqual(remote.call_count, 5)
+        self.assertEqual(result, {"ok": False, "status": "still_locked"})
+        self.assertEqual(remote.call_count, 4)
+
+    def test_auto_unlock_never_types_when_remote_ui_state_is_unavailable(self) -> None:
+        api = lan_remote.DesktopApi()
+        api.vault = Mock()
+        api.vault.get_secret.return_value = "must-not-be-sent"
+        device = {"id": "remote-device", "ip": "192.168.1.25", "port": 8765}
+        remote = Mock(return_value={"session_locked": True})
+        with (
+            patch.object(api, "_validated_device", return_value=device),
+            patch.object(api, "_remote_json", remote),
+        ):
+            result = api.try_auto_unlock("{}", "access-token")
+        self.assertEqual(result, {"ok": False, "status": "state_unavailable"})
+        self.assertEqual(remote.call_count, 1)
 
     def test_saved_settings_and_permanent_password_survive_reload(self) -> None:
         with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {"APPDATA": directory}):
@@ -1049,7 +1206,7 @@ class HttpIntegrationTests(unittest.TestCase):
 
         with (
             patch.object(lan_remote, "screen_rect", return_value=(0, 0, 100, 80)),
-            patch.object(lan_remote, "secure_desktop_active", return_value=True),
+            patch.object(lan_remote, "native_video_requires_compatibility", return_value=True),
         ):
             status, _, data = self.request(
                 "CONNECT",
@@ -1058,6 +1215,24 @@ class HttpIntegrationTests(unittest.TestCase):
             )
         self.assertEqual(status, 423)
         self.assertIn(b"MJPEG", data)
+
+    def test_session_status_reports_wts_lock_even_when_input_desktop_is_default(self) -> None:
+        with (
+            patch.object(lan_remote, "current_session_locked", return_value=True),
+            patch.object(lan_remote, "input_desktop_name", return_value="Default"),
+            patch.object(lan_remote, "foreground_process_name", return_value="LockApp.exe"),
+        ):
+            status, _, data = self.request(
+                "GET",
+                "/api/session-status",
+                headers={"X-Remote-Token": "TEST-TEMP-CODE"},
+            )
+        self.assertEqual(status, 200, data)
+        payload = json.loads(data)
+        self.assertTrue(payload["session_locked"])
+        self.assertFalse(payload["secure_desktop_active"])
+        self.assertEqual(payload["session_ui_state"], "lock_screen")
+        self.assertFalse(payload["credential_ui_ready"])
 
     def test_authentication_session_input_and_monitor_endpoints(self) -> None:
         status, _, _ = self.request("GET", "/monitors")

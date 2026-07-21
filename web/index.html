@@ -2997,7 +2997,12 @@
         try {
           const response = await fetch(endpoint(`/api/session-status?t=${Date.now()}`), {cache: "no-store"});
           const status = await response.json();
-          if (response.ok && status.ok && !status.secure_desktop_active) {
+          if (
+            response.ok &&
+            status.ok &&
+            !status.session_locked &&
+            !status.secure_desktop_active
+          ) {
             resetScreenStream();
             refreshScreen();
             return;
@@ -3034,7 +3039,7 @@
       }
       if (revision !== state.nativeVideoRevision || session !== state.session) return;
       state.nativeVideoDiagnostics = status;
-      if (status?.state === "streaming") {
+      if (status?.state === "streaming" && Number(status.rendered_frames || 0) > 0) {
         const monitor = selectedMonitorGeometry(session);
         state.nativeVideoActive = true;
         state.loadingFrame = false;
@@ -3066,9 +3071,29 @@
       );
     }
 
+    function startNativeVideoPreview(session) {
+      const revision = state.frameRequestRevision;
+      const monitorId = session.monitorId || "all";
+      const image = $("remoteScreen");
+      image.onload = () => {
+        if (
+          revision !== state.frameRequestRevision ||
+          session !== state.session ||
+          !session?.connected ||
+          !image.naturalWidth
+        ) return;
+        markScreenReady(session, image);
+      };
+      image.onerror = () => {};
+      image.src = endpoint(
+        `/screen?monitor=${encodeURIComponent(monitorId)}&cursor=0&t=${Date.now()}`
+      );
+    }
+
     async function startNativeVideo(session) {
       const revision = ++state.nativeVideoRevision;
       state.loadingFrame = true;
+      startNativeVideoPreview(session);
       const layout = nativeVideoLayout();
       let started = false;
       try {
@@ -3312,6 +3337,11 @@
           session.token,
           Boolean(manual)
         );
+        if (result?.status === "unlocked") {
+          setRemoteUnlockVisible(false);
+          setRemoteStatus(manual ? "远程电脑已解锁" : "已自动解锁远程电脑");
+          return true;
+        }
         if (result?.status === "submitted") {
           setRemoteStatus(manual ? "已手动提交远端锁屏密码" : "检测到初始锁屏，已自动提交锁屏密码");
           return true;
@@ -3326,6 +3356,30 @@
         }
         if (result?.status === "access_denied") {
           setRemoteStatus("访问凭据已失效，请重新连接", true);
+          return false;
+        }
+        if (result?.status === "wake_unresponsive") {
+          setRemoteStatus("锁屏界面没有响应，请点击解锁重试", true);
+          return false;
+        }
+        if (result?.status === "transition_timeout") {
+          setRemoteStatus("登录界面仍在切换，请稍后点击解锁", true);
+          return false;
+        }
+        if (result?.status === "still_locked") {
+          setRemoteStatus("远程电脑仍处于锁定状态，请检查保存的密码", true);
+          return false;
+        }
+        if (result?.status === "returned_to_lock_screen") {
+          setRemoteStatus("登录界面已返回锁屏，请点击解锁重试", true);
+          return false;
+        }
+        if (result?.status === "result_unknown") {
+          setRemoteStatus("密码已提交，但暂时无法确认解锁结果", true);
+          return false;
+        }
+        if (result?.status === "state_unavailable") {
+          setRemoteStatus("暂时无法确认远程登录界面，未发送密码", true);
           return false;
         }
         if (manual && result?.error) showToast(`解锁失败：${result.error}`);
