@@ -204,7 +204,8 @@ async function startNativeHostTest() {{
       }}
       await window.pywebview.api.set_native_video_layout({{...config, visible:true}});
       await window.pywebview.api.set_native_overlay_state({{
-        visible:true, collapsed:false, unlock_visible:false, view_only:false,
+        visible:true, title:'NATIVE-E2E · 控制', maximized:false,
+        collapsed:false, unlock_visible:false, view_only:false,
         fps:60, scale_mode:'fill', keyboard:true, clipboard:true, fullscreen:false,
         status_error:false, monitors:[{{id:'all',label:'全部显示器'}}]
       }});
@@ -285,11 +286,21 @@ else window.addEventListener('pywebviewready', startNativeHostTest, {{once:true}
             left, top, right, bottom = window_rect(window)
             time.sleep(0.25)
             owned = visible_owned_windows(window)
-            if not any(
-                owned_right - owned_left >= 300 and 30 <= owned_bottom - owned_top <= 120
-                for owned_left, owned_top, owned_right, owned_bottom in owned
-            ):
-                raise RuntimeError(f"native glass toolbar was not visible above the D3D surface: {owned}")
+            owner_width = right - left
+            titlebars = [
+                rect for rect in owned
+                if rect[2] - rect[0] >= owner_width - 80 and 36 <= rect[3] - rect[1] <= 120
+            ]
+            toolbars = [
+                rect for rect in owned
+                if 260 <= rect[2] - rect[0] < owner_width - 100 and 38 <= rect[3] - rect[1] <= 120
+            ]
+            if not titlebars:
+                raise RuntimeError(f"native remote titlebar was not visible above the D3D surface: {owned}")
+            if not toolbars:
+                raise RuntimeError(f"native glass toolbar was not separated from the window chrome: {owned}")
+            if min(rect[1] for rect in toolbars) < min(rect[3] for rect in titlebars):
+                raise RuntimeError(f"native glass toolbar overlapped the remote titlebar: {owned}")
             first = ImageGrab.grab(bbox=(left, top, right, bottom)).convert("RGB")
             preview_path = Path(__file__).resolve().parents[1] / "build" / "native-glass-toolbar-e2e.png"
             first.save(preview_path)

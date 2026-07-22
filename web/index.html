@@ -2492,6 +2492,7 @@
       const revision = ++state.nativeOverlaySyncRevision;
       const payload = {
         visible: Boolean(state.nativeVideoActive && session?.connected && !nativeOverlayObscured()),
+        title: $("remoteName").textContent || "远程桌面",
         collapsed: $("remoteSession").classList.contains("toolbar-collapsed"),
         unlock_visible: Boolean(state.remoteSessionLocked && session?.connected && !session?.viewOnly),
         view_only: Boolean(session?.viewOnly),
@@ -2500,6 +2501,7 @@
         keyboard: Boolean(state.keyboardEnabled),
         clipboard: Boolean($("clipboardSend").checked || $("clipboardReceive").checked),
         fullscreen: document.body.classList.contains("remote-fullscreen"),
+        maximized: document.body.classList.contains("window-maximized"),
         status_error: $("remoteStatus").classList.contains("error"),
         monitors: state.monitors.map((monitor) => ({id: monitor.id, label: monitor.label || monitor.id}))
       };
@@ -4172,6 +4174,7 @@
       document.body.classList.toggle("window-maximized", Boolean(maximized));
       $("windowMaximize").title = maximized ? "还原" : "最大化";
       $("remoteWindowMaximize").title = maximized ? "还原" : "最大化";
+      requestAnimationFrame(syncNativeOverlayState);
     }
 
     $("windowMinimize").addEventListener("click", () => window.pywebview?.api?.minimize_window?.());
