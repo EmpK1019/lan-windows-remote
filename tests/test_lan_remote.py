@@ -101,6 +101,60 @@ class CoreFunctionTests(unittest.TestCase):
         self.assertIn("/secure/video-stream?monitor=all&fps=60&generation=17", request.full_url)
         self.assertEqual(open_url.call_args.kwargs["timeout"], 0.7)
         response.fp.raw._sock.settimeout.assert_called_once_with(None)
+        self.assertIs(response._lan_remote_socket, response.fp.raw._sock)
+
+    def test_abort_secure_native_stream_does_not_wait_for_a_real_buffered_http_read(self) -> None:
+        release_handler = threading.Event()
+
+        class StaticResponseHandler(lan_remote.BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+
+            def do_GET(self) -> None:
+                self.send_response(200)
+                self.send_header("Content-Type", "application/octet-stream")
+                self.end_headers()
+                self.wfile.write(b"x")
+                self.wfile.flush()
+                release_handler.wait(3)
+
+            def log_message(self, _format: str, *args: object) -> None:
+                del args
+
+        server = lan_remote.ThreadingHTTPServer(("127.0.0.1", 0), StaticResponseHandler)
+        server.daemon_threads = True
+        server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+        server_thread.start()
+        response = lan_remote.urlopen(
+            f"http://127.0.0.1:{server.server_address[1]}/static",
+            timeout=2,
+        )
+        response_socket = response.fp.raw._sock
+        response_socket.settimeout(None)
+        response._lan_remote_socket = response_socket
+        reader_finished = threading.Event()
+
+        def blocked_read() -> None:
+            try:
+                response.read(2)
+            except (OSError, ValueError):
+                pass
+            finally:
+                reader_finished.set()
+
+        reader = threading.Thread(target=blocked_read, daemon=True)
+        reader.start()
+        try:
+            time.sleep(0.05)
+            started_at = time.monotonic()
+            lan_remote.abort_secure_native_video_stream(response)
+            self.assertLess(time.monotonic() - started_at, 0.7)
+            release_handler.set()
+            self.assertTrue(reader_finished.wait(0.7))
+        finally:
+            release_handler.set()
+            server.shutdown()
+            server.server_close()
+            server_thread.join(timeout=2)
 
     def test_secure_native_helper_closes_a_static_stream_immediately_after_unlock(self) -> None:
         release_reader = threading.Event()
@@ -242,6 +296,9 @@ class CoreFunctionTests(unittest.TestCase):
         self.assertIn("next_first_frame_keyframe", native)
         self.assertIn("preserve_last_frame", native)
         self.assertIn("if (!preserve_last_frame) renderer_.reset();", native)
+        self.assertIn("Visibility controls composition only", native)
+        self.assertNotIn("if (!sample || !visible_) return false;", native)
+        self.assertNotIn("output_height_ == 0 || !visible_", native)
         self.assertIn("function startNativeVideoPreview(session)", html)
         self.assertIn("Number(status.rendered_frames || 0) > 0", html)
         self.assertIn("nativeFallbackPending", html)
@@ -249,6 +306,11 @@ class CoreFunctionTests(unittest.TestCase):
         self.assertIn("async function loadSecureTransitionFrame(session)", html)
         self.assertIn("await window.pywebview?.api?.configure_native_video?.({enabled: false})", html)
         self.assertIn("firstFrameReady: backingReady", html)
+        self.assertIn("function restartNativeVideoAfterUnlock()", html)
+        self.assertIn("if (wasLocked && !state.remoteSessionLocked) restartNativeVideoAfterUnlock();", html)
+        self.assertIn("resetScreenStream({stopNativeVideo: false});", html)
+        self.assertIn("await window.pywebview.api.configure_native_video({enabled: false});", html)
+        self.assertIn("远程电脑已解锁 · 正在重新连接桌面画面", html)
         self.assertNotIn('startMjpegFallback(session, "secure desktop requested"', html)
         server = (root / "lan_remote.py").read_text(encoding="utf-8")
         installer = (root / "packaging" / "install.ps1").read_text(encoding="utf-8")
@@ -1350,11 +1412,23 @@ class HttpIntegrationTests(unittest.TestCase):
         return result
 
     def test_remote_native_stream_switches_off_an_idle_secure_source_after_unlock(self) -> None:
+        class AbortSocket:
+            def __init__(self, stream: "IdleStream") -> None:
+                self.stream = stream
+
+            def shutdown(self, _how: int) -> None:
+                self.stream.aborted.set()
+
+            def close(self) -> None:
+                self.stream.aborted.set()
+
         class IdleStream:
-            def __init__(self, payload: bytes) -> None:
+            def __init__(self, payload: bytes, require_abort: bool = False) -> None:
                 self.payload = bytearray(payload)
-                self.closed = threading.Event()
+                self.aborted = threading.Event()
                 self.lock = threading.Lock()
+                self.require_abort = require_abort
+                self._lan_remote_socket = AbortSocket(self)
 
             def read(self, length: int) -> bytes:
                 with self.lock:
@@ -1362,11 +1436,13 @@ class HttpIntegrationTests(unittest.TestCase):
                         result = bytes(self.payload[:length])
                         del self.payload[:length]
                         return result
-                self.closed.wait(3)
+                self.aborted.wait(3)
                 return b""
 
             def close(self) -> None:
-                self.closed.set()
+                if self.require_abort and not self.aborted.wait(0.5):
+                    raise TimeoutError("buffered response close blocked behind a static read")
+                self.aborted.set()
 
         def config(generation: int, capture: str) -> bytes:
             return lan_remote.pack_native_video_message(
@@ -1388,7 +1464,7 @@ class HttpIntegrationTests(unittest.TestCase):
         normal_streams: list[IdleStream] = []
 
         def open_secure(_monitor: str, _fps: int, generation: int, **_kwargs: object) -> IdleStream:
-            stream = IdleStream(config(generation, "secure"))
+            stream = IdleStream(config(generation, "secure"), require_abort=True)
             secure_streams.append(stream)
             return stream
 

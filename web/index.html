@@ -1531,6 +1531,7 @@
       nativeVideoActive: false,
       nativeVideoStatusTimer: 0,
       nativeVideoRetryTimer: 0,
+      nativeVideoUnlockRestartTimer: 0,
       nativeVideoRevision: 0,
       nativeVideoDiagnostics: null,
       nativeFallbackPending: false,
@@ -2937,18 +2938,22 @@
       }
     }
 
-    function resetScreenStream() {
+    function resetScreenStream(options = {}) {
       state.frameRequestRevision += 1;
       state.nativeVideoRevision += 1;
       clearTimeout(state.nativeVideoStatusTimer);
       clearTimeout(state.nativeVideoRetryTimer);
+      clearTimeout(state.nativeVideoUnlockRestartTimer);
       state.nativeVideoStatusTimer = 0;
       state.nativeVideoRetryTimer = 0;
+      state.nativeVideoUnlockRestartTimer = 0;
       state.nativeVideoActive = false;
       state.nativeVideoDiagnostics = null;
       state.nativeFallbackPending = false;
       document.body.classList.remove("native-video-active");
-      window.pywebview?.api?.configure_native_video?.({enabled: false}).catch(() => {});
+      if (options.stopNativeVideo !== false) {
+        window.pywebview?.api?.configure_native_video?.({enabled: false}).catch(() => {});
+      }
       window.pywebview?.api?.set_native_overlay_state?.({visible: false}).catch(() => {});
       clearTimeout(state.refreshTimer);
       state.refreshTimer = 0;
@@ -3419,7 +3424,43 @@
       }
     }
 
+    function restartNativeVideoAfterUnlock() {
+      const session = state.session;
+      const nativeAdvertised = Array.isArray(session?.device?.video_capabilities) &&
+        session.device.video_capabilities.includes("native_h264_v1");
+      if (
+        !session?.connected ||
+        !remoteWindowMode ||
+        !nativeAdvertised ||
+        !window.pywebview?.api?.configure_native_video
+      ) return;
+      clearTimeout(state.nativeVideoUnlockRestartTimer);
+      state.nativeVideoUnlockRestartTimer = setTimeout(async () => {
+        state.nativeVideoUnlockRestartTimer = 0;
+        if (
+          session !== state.session ||
+          !session.connected ||
+          state.remoteSessionLocked
+        ) return;
+        state.loadingFrame = false;
+        resetScreenStream({stopNativeVideo: false});
+        $("remoteHint").classList.remove("hidden");
+        $("remoteHint").textContent = "正在切换到桌面画面…";
+        setRemoteStatus("远程电脑已解锁 · 正在重新连接桌面画面");
+        try {
+          await window.pywebview.api.configure_native_video({enabled: false});
+        } catch {}
+        if (
+          session !== state.session ||
+          !session.connected ||
+          state.remoteSessionLocked
+        ) return;
+        refreshScreen();
+      }, 80);
+    }
+
     function setRemoteUnlockVisible(visible) {
+      const wasLocked = state.remoteSessionLocked;
       state.remoteSessionLocked = Boolean(visible);
       $("unlockRemoteButton").classList.toggle(
         "show",
@@ -3428,6 +3469,7 @@
       scheduleNativeInputSync(30);
       requestAnimationFrame(syncNativeVideoLayout);
       requestAnimationFrame(syncNativeOverlayState);
+      if (wasLocked && !state.remoteSessionLocked) restartNativeVideoAfterUnlock();
     }
 
     async function requestRemoteUnlock(manual = false) {

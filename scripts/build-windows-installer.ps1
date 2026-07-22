@@ -1,5 +1,5 @@
 param(
-    [string]$Version = "1.0.7",
+    [string]$Version = "1.0.8",
     [switch]$SkipDependencyInstall
 )
 
@@ -249,6 +249,14 @@ if ($LASTEXITCODE -ne 0) {
     --native-dir $PortableDir
 if ($LASTEXITCODE -ne 0) {
     throw "Packaged WebView2/native H.264 host E2E failed with exit code $LASTEXITCODE."
+}
+
+& $VenvPython `
+    (Join-Path $Root "tests\packaged_unlock_video_recovery_e2e.py") `
+    --control-host $ControlHostPath `
+    --native-dir $PortableDir
+if ($LASTEXITCODE -ne 0) {
+    throw "Packaged locked-to-unlocked native video recovery E2E failed with exit code $LASTEXITCODE."
 }
 
 foreach ($InteractiveTest in @(

@@ -61,7 +61,7 @@ if platform.system() == "Windows":
 
 
 APP_NAME = "Windows LAN Remote"
-APP_VERSION = "1.0.7"
+APP_VERSION = "1.0.8"
 GITHUB_REPOSITORY = "EmpK1019/lan-windows-remote"
 GITHUB_LATEST_RELEASE_API = f"https://api.github.com/repos/{GITHUB_REPOSITORY}/releases/latest"
 DEFAULT_PORT = 8765
@@ -3214,6 +3214,7 @@ def open_secure_native_video_stream(
         try:
             response_socket = response.fp.raw._sock
             response_socket.settimeout(None)
+            response._lan_remote_socket = response_socket
         except (AttributeError, OSError):
             pass
         return response
@@ -3225,6 +3226,44 @@ def open_secure_native_video_stream(
         raise RuntimeError(str(message)) from exc
     except (URLError, TimeoutError, OSError) as exc:
         raise RuntimeError("安全桌面 H.264 服务未就绪") from exc
+
+
+def abort_secure_native_video_stream(stream: Any) -> None:
+    """Invalidate a helper socket without blocking the video source-switch loop."""
+    response_socket = getattr(stream, "_lan_remote_socket", None)
+    if response_socket is None:
+        try:
+            response_socket = stream.fp.raw._sock
+        except AttributeError:
+            response_socket = None
+    if response_socket is not None:
+        try:
+            response_socket.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+        try:
+            response_socket.close()
+        except OSError:
+            pass
+
+    def close_buffered_response() -> None:
+        try:
+            stream.close()
+        except OSError:
+            pass
+
+    if response_socket is None:
+        close_buffered_response()
+        return
+    # HTTPResponse.close() takes the same buffered-reader lock as read(). On
+    # Windows it can remain blocked until the peer writes or closes even after
+    # shutdown(), which would stall the source-switch loop again. The socket is
+    # already invalidated; let the reader and response dispose off the hot path.
+    threading.Thread(
+        target=close_buffered_response,
+        name="lan-remote-secure-source-close",
+        daemon=True,
+    ).start()
 
 
 def capture_secure_desktop(monitor_id: str = "all", include_cursor: bool = True) -> tuple[bytes, str]:
@@ -4761,10 +4800,7 @@ class RemoteHandler(BaseHTTPRequestHandler):
                                 break
                     finally:
                         secure_reader_stop.set()
-                        try:
-                            secure_stream.close()
-                        except OSError:
-                            pass
+                        abort_secure_native_video_stream(secure_stream)
                     if secure_was_active and not secure_video_source_required():
                         self.server.state.clear_lock_transition()
                     if secure_video_source_required():
