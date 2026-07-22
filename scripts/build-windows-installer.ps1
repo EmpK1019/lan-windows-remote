@@ -1,5 +1,5 @@
 param(
-    [string]$Version = "1.0.4",
+    [string]$Version = "1.0.5",
     [switch]$SkipDependencyInstall
 )
 
@@ -102,9 +102,10 @@ foreach ($NativeFps in @(30, 60, 120)) {
     --fps 30 `
     --measure-seconds 1 `
     --native-dir $NativeBuildDir `
-    --exercise-secure-transition
+    --exercise-secure-transition `
+    --force-gdi
 if ($LASTEXITCODE -ne 0) {
-    throw "Native secure-desktop fallback/recovery E2E failed with exit code $LASTEXITCODE."
+    throw "Native secure-desktop H.264 source-switch E2E failed with exit code $LASTEXITCODE."
 }
 
 & powershell.exe `

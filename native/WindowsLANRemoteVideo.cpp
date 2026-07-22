@@ -622,9 +622,10 @@ private:
         ThrowIfFailed(
             video_context_->VideoProcessorBlt(processor_.Get(), output_view.Get(), 0, 1, &stream),
             "render decoded video texture");
-        const HRESULT present = swap_chain_->Present(0, DXGI_PRESENT_DO_NOT_WAIT);
-        if (present == DXGI_ERROR_WAS_STILL_DRAWING) return false;
-        ThrowIfFailed(present, "present native video frame");
+        // The frame-latency object above already guarantees a free one-frame
+        // presentation slot. DO_NOT_WAIT performs a second, racy rejection and
+        // drops displayable frames around the monitor refresh boundary.
+        ThrowIfFailed(swap_chain_->Present(0, 0), "present native video frame");
         return true;
     }
 
@@ -653,11 +654,11 @@ private:
         processor_.Reset();
         D3D11_VIDEO_PROCESSOR_CONTENT_DESC description{};
         description.InputFrameFormat = D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE;
-        description.InputFrameRate.Numerator = 60;
+        description.InputFrameRate.Numerator = 120;
         description.InputFrameRate.Denominator = 1;
         description.InputWidth = width;
         description.InputHeight = height;
-        description.OutputFrameRate.Numerator = 60;
+        description.OutputFrameRate.Numerator = 120;
         description.OutputFrameRate.Denominator = 1;
         description.OutputWidth = output_width_;
         description.OutputHeight = output_height_;

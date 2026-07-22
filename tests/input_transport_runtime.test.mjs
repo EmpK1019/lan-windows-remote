@@ -104,4 +104,90 @@ const delay = milliseconds => new Promise(resolve => setTimeout(resolve, millise
   assert.ok(harness.statuses.some(item => item.failed), "the timeout should be visible to the user");
 }
 
+{
+  const fallbackStart = pageScript.indexOf("async function finishNativeFallback");
+  const fallbackEnd = pageScript.indexOf("async function pollNativeVideoStatus", fallbackStart);
+  assert.ok(fallbackStart >= 0 && fallbackEnd > fallbackStart, "native fallback source was not found");
+  const fallbackSource = pageScript.slice(fallbackStart, fallbackEnd);
+  const order = [];
+  const stage = {style: {}};
+  const image = {
+    naturalWidth: 1920,
+    naturalHeight: 1080,
+    onload: null,
+    onerror: null,
+    set src(value) {
+      this.currentSrc = value;
+      order.push("snapshot_loaded");
+      this.onload?.();
+    }
+  };
+  const session = {connected: true, monitorId: "all", scaleMode: "fit"};
+  const state = {
+    session,
+    frameRequestRevision: 3,
+    screenAbortController: null,
+    frameObjectUrl: "",
+    nativeFallbackPending: false,
+    nativeVideoActive: true,
+    nativeVideoRevision: 1,
+    nativeVideoStatusTimer: 0,
+    nativeVideoDiagnostics: null,
+    loadingFrame: false,
+    refreshTimer: 0
+  };
+  const context = vm.createContext({
+    AbortController,
+    Promise,
+    clearTimeout,
+    setTimeout,
+    state,
+    endpoint: path => path,
+    fetch: async () => ({ok: true, status: 200, blob: async () => ({type: "image/jpeg"})}),
+    URL: {
+      createObjectURL: () => "blob:secure-frame",
+      revokeObjectURL: () => order.push("snapshot_revoked")
+    },
+    $: id => id === "remoteStage" ? stage : image,
+    document: {body: {classList: {remove: () => order.push("native_class_removed")}}},
+    window: {pywebview: {api: {
+      configure_native_video: async () => {
+        order.push("native_stop_start");
+        await Promise.resolve();
+        order.push("native_stop_done");
+        return true;
+      },
+      set_native_overlay_state: async () => order.push("native_overlay_hidden")
+    }}},
+    releaseFrameObjectUrl: () => {},
+    sessionScaleMode: () => "fit",
+    sessionControlFps: () => 60,
+    markScreenReady: () => order.push("snapshot_ready"),
+    setRemoteStatus: () => {},
+    startDesktopScreenStream: (activeSession, options) => {
+      assert.equal(activeSession, session);
+      assert.equal(options.firstFrameReady, true);
+      order.push("stream_start");
+    },
+    scheduleNativeVideoRetry: () => order.push("native_retry_scheduled")
+  });
+  new vm.Script(
+    `${fallbackSource}\nglobalThis.__fallback = {startMjpegFallback};`,
+    {filename: "native-fallback-excerpt.js"}
+  ).runInContext(context);
+  await context.__fallback.startMjpegFallback(session, "secure desktop requested", {
+    secureTransition: true,
+    preserveNative: true
+  });
+  assert.equal(stage.style.backgroundImage, 'url("blob:secure-frame")');
+  assert.ok(
+    order.indexOf("snapshot_ready") < order.indexOf("native_stop_start"),
+    "a valid secure frame must be visible before native video is stopped"
+  );
+  assert.ok(
+    order.indexOf("native_stop_done") < order.indexOf("stream_start"),
+    "MJPEG must start only after the native child window has stopped"
+  );
+}
+
 console.log("INPUT_TRANSPORT_RUNTIME_TESTS_OK");

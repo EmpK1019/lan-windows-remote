@@ -31,16 +31,13 @@
 #include <vector>
 
 #include "NativeVideoProtocol.hpp"
+#include "VideoQualityPolicy.hpp"
 
 using Microsoft::WRL::ComPtr;
 using lanremote::video::Message;
 using lanremote::video::MessageType;
 
 namespace {
-
-constexpr UINT32 kDefaultBitrate30 = 8'000'000;
-constexpr UINT32 kDefaultBitrate60 = 16'000'000;
-constexpr UINT32 kDefaultBitrate120 = 24'000'000;
 
 void ThrowIfFailed(const HRESULT hr, const char* operation) {
     if (FAILED(hr)) {
@@ -305,7 +302,10 @@ public:
     explicit DesktopCapture(const std::wstring& monitor) {
         ComPtr<IDXGIFactory1> factory;
         ThrowIfFailed(CreateDXGIFactory1(IID_PPV_ARGS(&factory)), "CreateDXGIFactory1");
+        const bool force_gdi =
+            GetEnvironmentVariableW(L"LAN_REMOTE_NATIVE_VIDEO_FORCE_GDI", nullptr, 0) > 0;
         RECT union_rect{LONG_MAX, LONG_MAX, LONG_MIN, LONG_MIN};
+        std::size_t matched_outputs = 0;
         for (UINT adapter_index = 0;; ++adapter_index) {
             ComPtr<IDXGIAdapter1> adapter;
             if (factory->EnumAdapters1(adapter_index, &adapter) == DXGI_ERROR_NOT_FOUND) break;
@@ -318,6 +318,12 @@ public:
                 ThrowIfFailed(output->GetDesc(&description), "Get output description");
                 if (!description.AttachedToDesktop) continue;
                 if (monitor != L"all" && _wcsicmp(monitor.c_str(), description.DeviceName) != 0) continue;
+                ++matched_outputs;
+                union_rect.left = (std::min)(union_rect.left, description.DesktopCoordinates.left);
+                union_rect.top = (std::min)(union_rect.top, description.DesktopCoordinates.top);
+                union_rect.right = (std::max)(union_rect.right, description.DesktopCoordinates.right);
+                union_rect.bottom = (std::max)(union_rect.bottom, description.DesktopCoordinates.bottom);
+                if (force_gdi) continue;
                 try {
                     if (!adapter_device) {
                         ThrowIfFailed(
@@ -342,13 +348,18 @@ public:
                     std::cerr << "capture output skipped: " << error.what() << std::endl;
                     continue;
                 }
-                union_rect.left = (std::min)(union_rect.left, description.DesktopCoordinates.left);
-                union_rect.top = (std::min)(union_rect.top, description.DesktopCoordinates.top);
-                union_rect.right = (std::max)(union_rect.right, description.DesktopCoordinates.right);
-                union_rect.bottom = (std::max)(union_rect.bottom, description.DesktopCoordinates.bottom);
             }
         }
-        if (outputs_.empty()) throw std::runtime_error("no capturable desktop output was found");
+        if (matched_outputs == 0) throw std::runtime_error("no desktop output matched the requested monitor");
+        if (outputs_.size() != matched_outputs) {
+            outputs_.clear();
+            gpu_capture_available_ = false;
+            gpu_device_.Reset();
+            gpu_context_.Reset();
+            gdi_fallback_active_ = true;
+            std::cerr << "capture_backend=gdi_compatibility reason="
+                      << (force_gdi ? "forced" : "dxgi_unavailable") << std::endl;
+        }
         if (gpu_capture_available_ && gpu_context_) {
             ComPtr<ID3D11Multithread> multithread;
             if (SUCCEEDED(gpu_context_.As(&multithread))) {
@@ -462,6 +473,11 @@ public:
     }
 
     bool gdi_fallback_active() const { return gdi_fallback_active_; }
+
+    const char* backend_name() const {
+        if (gdi_fallback_active_) return "gdi_compatibility";
+        return gpu_capture_available_ ? "dxgi_d3d11_gpu_texture" : "dxgi_cpu_readback";
+    }
 
     void ApplyTestPattern(const std::uint64_t frame) {
         const UINT block_width = (std::min)(width_, 320U);
@@ -1311,9 +1327,7 @@ private:
 };
 
 UINT32 BitrateForFps(const UINT fps) {
-    if (fps >= 120) return kDefaultBitrate120;
-    if (fps >= 60) return kDefaultBitrate60;
-    return kDefaultBitrate30;
+    return lanremote::video::DefaultBitrateForFps(fps);
 }
 
 std::atomic<bool> force_keyframe{true};
@@ -1337,8 +1351,9 @@ void ReadControlMessages(const UINT configured_fps, const UINT32 configured_bitr
             if (capacity >= 24.0) {
                 receiver_capacity = static_cast<UINT>((std::clamp)(
                     capacity, 24.0, static_cast<double>(configured_fps)));
-                target_fps = (std::min)(target_fps, receiver_capacity);
             }
+            target_fps = (std::min)(
+                (std::min)(target_fps, receiver_capacity), adaptive_fps_limit.load());
             // Render FPS may legitimately be below the selected ceiling when
             // the display refresh is lower. Decode FPS is the transport
             // backpressure signal; use wide hysteresis so ordinary sampling
@@ -1348,19 +1363,16 @@ void ReadControlMessages(const UINT configured_fps, const UINT32 configured_bitr
                     target_fps = static_cast<UINT>((std::clamp)(
                         decode_fps * 1.05, 24.0, static_cast<double>(receiver_capacity)));
                     low_decode_reports = 0;
-                    adaptive_bitrate = (std::max)(
-                        2'000'000U, adaptive_bitrate.load() * 4 / 5);
                 }
             } else if (decode_fps >= target_fps * 0.95 && target_fps < receiver_capacity) {
                 low_decode_reports = 0;
                 target_fps = (std::min)(receiver_capacity, target_fps + 5);
-                adaptive_bitrate = (std::min)(
-                    configured_bitrate,
-                    adaptive_bitrate.load() + configured_bitrate / 10);
             } else {
                 low_decode_reports = 0;
             }
             adaptive_fps_limit = target_fps;
+            adaptive_bitrate = lanremote::video::AdaptiveBitrateForFps(
+                configured_bitrate, configured_fps, target_fps);
         }
     }
 }
@@ -1400,7 +1412,10 @@ int Run(const Options& options) {
             gpu_converter ? gpu_converter->device() : nullptr, software);
     };
     const auto benchmark_encoder = [&](MfH264Encoder* candidate) {
-        constexpr int sample_count = 24;
+        // This only chooses between hardware and software at the 120 FPS ceiling.
+        // A short warm benchmark is sufficient and avoids delaying the first real
+        // remote frame by roughly half a second on mid-range machines.
+        constexpr int sample_count = 12;
         const auto started = std::chrono::steady_clock::now();
         for (int index = 0; index < sample_count; ++index) {
             if (gpu_converter) {
@@ -1426,8 +1441,8 @@ int Run(const Options& options) {
                 try {
                     auto software = create_encoder(true);
                     software_benchmark_fps = benchmark_encoder(software.get());
-                    if (software_benchmark_fps >= 90.0 &&
-                        software_benchmark_fps > hardware_benchmark_fps * 1.05) {
+                    if (lanremote::video::PreferSoftwareEncoderFor120Fps(
+                            hardware_benchmark_fps, software_benchmark_fps)) {
                         encoder = std::move(software);
                         encoder_selection = "adaptive_software_for_120fps";
                     }
@@ -1463,8 +1478,7 @@ int Run(const Options& options) {
            << ",\"pixel_format\":\"nv12\",\"color_conversion\":\""
            << (gpu_converter ? "d3d11_video_processor" : "cpu")
            << "\",\"capture\":\""
-           << (capture.gpu_capture_available() && gpu_converter
-               ? "dxgi_d3d11_gpu_texture" : "dxgi_cpu_readback")
+           << capture.backend_name()
            << "\",\"queue_capacity\":2}";
     const std::string config_text = config.str();
     Message config_message;
@@ -1692,8 +1706,12 @@ int Run(const Options& options) {
                 const std::uint64_t current_writer_dropped = writer.dropped();
                 if (current_writer_dropped > last_diagnostic_writer_dropped + 2 ||
                     writer.depth() >= 2) {
-                    adaptive_bitrate = (std::max)(
-                        2'000'000U, adaptive_bitrate.load() * 4 / 5);
+                    const UINT congested_fps = (std::max)(
+                        lanremote::video::kMinimumAdaptiveFps,
+                        adaptive_fps_limit.load() * 4 / 5);
+                    adaptive_fps_limit = congested_fps;
+                    adaptive_bitrate = lanremote::video::AdaptiveBitrateForFps(
+                        bitrate, options.fps, congested_fps);
                 }
                 const UINT32 requested_bitrate = adaptive_bitrate.load();
                 if (requested_bitrate != active_bitrate && encoder->SetBitrate(requested_bitrate)) {

@@ -49,6 +49,51 @@ def find_window(title: str) -> int:
     return int(result.value or 0)
 
 
+def child_window_texts(parent: int) -> list[str]:
+    results: list[str] = []
+    callback_type = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
+
+    @callback_type
+    def callback(window: int, _: int) -> bool:
+        length = ctypes.windll.user32.GetWindowTextLengthW(window)
+        if length > 0:
+            text = ctypes.create_unicode_buffer(length + 1)
+            ctypes.windll.user32.GetWindowTextW(window, text, len(text))
+            if text.value:
+                results.append(text.value)
+        return True
+
+    ctypes.windll.user32.EnumChildWindows(parent, callback, 0)
+    return results
+
+
+def process_windows(process_id: int) -> list[tuple[int, str, bool, list[str]]]:
+    results: list[tuple[int, str, bool, list[str]]] = []
+    callback_type = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
+
+    @callback_type
+    def callback(window: int, _: int) -> bool:
+        owner = wintypes.DWORD()
+        ctypes.windll.user32.GetWindowThreadProcessId(window, ctypes.byref(owner))
+        if int(owner.value) != process_id:
+            return True
+        length = ctypes.windll.user32.GetWindowTextLengthW(window)
+        text = ctypes.create_unicode_buffer(max(1, length + 1))
+        ctypes.windll.user32.GetWindowTextW(window, text, len(text))
+        results.append(
+            (
+                int(window),
+                text.value,
+                bool(ctypes.windll.user32.IsWindowVisible(window)),
+                child_window_texts(window),
+            )
+        )
+        return True
+
+    ctypes.windll.user32.EnumWindows(callback, 0)
+    return results
+
+
 def window_rect(window: int) -> tuple[int, int, int, int]:
     rect = wintypes.RECT()
     if not ctypes.windll.user32.GetWindowRect(window, ctypes.byref(rect)):
@@ -205,7 +250,8 @@ else window.addEventListener('pywebviewready', startNativeHostTest, {{once:true}
                 raise RuntimeError(
                     "packaged native control host did not report video readiness "
                     f"(page_requested={page_event.is_set()}, process_exit={process.poll()}, "
-                    f"window={find_window(WINDOW_TITLE)})"
+                    f"window={find_window(WINDOW_TITLE)}, "
+                    f"process_windows={process_windows(process.pid)})"
                 )
             if report.get("state") != "streaming" or int(report.get("rendered_frames", 0)) < 30:
                 raise RuntimeError(f"packaged native control host failed: {report}")

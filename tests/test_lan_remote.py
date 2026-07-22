@@ -79,13 +79,102 @@ class CoreFunctionTests(unittest.TestCase):
             publish(updated_at_ms=990_000)
             self.assertIsNone(lan_remote.service_session_locked(state_path, now_ms=1_001_000, session_id=7))
 
-    def test_locked_default_desktop_uses_normal_input_but_native_video_falls_back(self) -> None:
+    def test_locked_default_desktop_uses_normal_input_and_secure_video_source(self) -> None:
         with (
             patch.object(lan_remote, "current_session_locked", return_value=True),
             patch.object(lan_remote, "input_desktop_name", return_value="Default"),
         ):
             self.assertFalse(lan_remote.secure_desktop_active())
-            self.assertTrue(lan_remote.native_video_requires_compatibility())
+            self.assertTrue(lan_remote.secure_video_source_required())
+
+    def test_secure_native_stream_only_times_out_during_helper_connection(self) -> None:
+        response = Mock()
+        response.fp.raw._sock = Mock()
+        with (
+            patch.object(lan_remote, "read_service_secret", return_value="service-secret"),
+            patch.object(lan_remote, "urlopen", return_value=response) as open_url,
+        ):
+            actual = lan_remote.open_secure_native_video_stream("all", 60, 17, timeout=0.7)
+
+        self.assertIs(actual, response)
+        request = open_url.call_args.args[0]
+        self.assertIn("/secure/video-stream?monitor=all&fps=60&generation=17", request.full_url)
+        self.assertEqual(open_url.call_args.kwargs["timeout"], 0.7)
+        response.fp.raw._sock.settimeout.assert_called_once_with(None)
+
+    def test_secure_native_helper_closes_a_static_stream_immediately_after_unlock(self) -> None:
+        release_reader = threading.Event()
+
+        class StaticEncoderStream:
+            def __init__(self, payload: bytes) -> None:
+                self.payload = bytearray(payload)
+                self.lock = threading.Lock()
+
+            def read(self, length: int) -> bytes:
+                with self.lock:
+                    if self.payload:
+                        result = bytes(self.payload[:length])
+                        del self.payload[:length]
+                        return result
+                release_reader.wait(3)
+                return b""
+
+        config = lan_remote.pack_native_video_message(
+            lan_remote.NativeVideoMessage(
+                message_type=lan_remote.NATIVE_VIDEO_MESSAGE_STREAM_CONFIG,
+                flags=0,
+                generation=5,
+                sequence=0,
+                timestamp_us=1,
+                width=100,
+                height=80,
+                fps_limit=30,
+                payload=b'{"codec":"h264_annexb"}',
+            )
+        )
+        stream = StaticEncoderStream(config)
+        process = Mock()
+        process.stdout = stream
+        source = lan_remote.NativeVideoEncoderProcess(process, [], threading.Lock())
+        locked = {"active": True}
+        server = lan_remote.SecureDesktopServer(
+            ("127.0.0.1", 0),
+            lan_remote.SecureDesktopHandler,
+            lan_remote.SecureDesktopState("test-secret"),
+        )
+        server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+        server_thread.start()
+        connection = http.client.HTTPConnection("127.0.0.1", server.server_address[1], timeout=2)
+        try:
+            with (
+                patch.object(lan_remote, "current_session_locked", side_effect=lambda: locked["active"]),
+                patch.object(lan_remote, "secure_desktop_active", return_value=False),
+                patch.object(lan_remote, "screen_rect", return_value=(0, 0, 100, 80)),
+                patch.object(lan_remote, "start_native_video_encoder", return_value=source),
+                patch.object(
+                    lan_remote,
+                    "stop_native_video_encoder",
+                    side_effect=lambda _source: release_reader.set(),
+                ),
+            ):
+                connection.request(
+                    "GET",
+                    "/secure/video-stream?monitor=all&fps=30&generation=5",
+                    headers={"X-Secure-Token": "test-secret"},
+                )
+                response = connection.getresponse()
+                self.assertEqual(response.status, 200)
+                packet = lan_remote.read_native_video_packet(response)
+                self.assertIsNotNone(packet)
+                self.assertEqual(packet[0].generation, 5)
+                locked["active"] = False
+                self.assertEqual(response.read(1), b"")
+        finally:
+            release_reader.set()
+            connection.close()
+            server.shutdown()
+            server.server_close()
+            server_thread.join(timeout=3)
 
     def test_session_ui_state_covers_unlock_transitions_without_guessing(self) -> None:
         self.assertEqual(lan_remote.session_ui_state(False, "Default"), "unlocked")
@@ -139,7 +228,15 @@ class CoreFunctionTests(unittest.TestCase):
         self.assertIn("Number(status.rendered_frames || 0) > 0", html)
         self.assertIn("nativeFallbackPending", html)
         self.assertIn("secure_transition=1", html)
-        self.assertIn("preserveNative: true", html)
+        self.assertIn("async function loadSecureTransitionFrame(session)", html)
+        self.assertIn("await window.pywebview?.api?.configure_native_video?.({enabled: false})", html)
+        self.assertIn("firstFrameReady: backingReady", html)
+        self.assertNotIn('startMjpegFallback(session, "secure desktop requested"', html)
+        server = (root / "lan_remote.py").read_text(encoding="utf-8")
+        self.assertIn("with active_input_desktop() as desktop_name:", server)
+        self.assertIn('if path == "/secure/video-stream":', server)
+        self.assertIn("open_secure_native_video_stream(", server)
+        self.assertIn("control_target = NativeVideoControlTarget()", server)
 
     def test_native_video_protocol_round_trip_and_validation(self) -> None:
         message = lan_remote.NativeVideoMessage(
@@ -498,6 +595,24 @@ class CoreFunctionTests(unittest.TestCase):
         self.assertIn("ControlRight", lan_remote.EXTENDED_KEY_CODES)
         self.assertIn("NumpadEnter", lan_remote.EXTENDED_KEY_CODES)
 
+    def test_secure_character_uses_foreground_layout_and_scancode_chord(self) -> None:
+        user32 = Mock()
+        user32.GetForegroundWindow.return_value = 100
+        user32.GetWindowThreadProcessId.return_value = 44
+        user32.GetKeyboardLayout.return_value = 123
+        user32.VkKeyScanExW.return_value = (1 << 8) | ord("A")
+        user32.MapVirtualKeyExW.side_effect = lambda key, _kind, _layout: {
+            0x10: 42,
+            ord("A"): 30,
+        }[key]
+        user32.SendInput.return_value = 4
+        with patch.object(lan_remote.ctypes.windll, "user32", user32):
+            self.assertTrue(lan_remote.send_physical_character("A"))
+        user32.GetKeyboardLayout.assert_called_once_with(44)
+        reports = list(user32.SendInput.call_args.args[1])
+        self.assertEqual([report.ki.wScan for report in reports], [42, 30, 30, 42])
+        self.assertEqual([report.ki.dwFlags for report in reports], [0x0008, 0x0008, 0x000A, 0x000A])
+
     def test_elevated_input_helper_is_preferred_and_temporarily_cached_when_unavailable(self) -> None:
         previous_retry = lan_remote.ELEVATED_INPUT_HELPER_RETRY_AFTER
         payload = {"type": "key_down", "key": "Escape", "code": "Escape"}
@@ -704,6 +819,10 @@ class CoreFunctionTests(unittest.TestCase):
         self.assertIn("CONNECT /input-stream HTTP/1.1", host)
         self.assertIn('case "configure_native_input"', host)
         self.assertIn("GetForegroundWindow() == Handle", host)
+        self.assertIn("PhysicalToLogicalPointForPerMonitorDPI(Handle, ref logicalInputPoint)", host)
+        self.assertIn("int resizeHit = BorderlessResizeHitTest(windowPoint, windowBounds.Size, ResizeGrip);", host)
+        self.assertIn("BeginNativeWindowResize(resizeHit)", host)
+        self.assertIn("value.Style |= WsThickFrame;", host)
         self.assertIn('case "set_keyboard_capture"', host)
         service = (Path(__file__).resolve().parents[1] / "packaging" / "SecureDesktopService.cs").read_text(
             encoding="utf-8"
@@ -723,6 +842,17 @@ class CoreFunctionTests(unittest.TestCase):
             pause.call_args_list,
             [call(lan_remote.UNLOCK_CHARACTER_DELAY_SECONDS), call(lan_remote.UNLOCK_CHARACTER_DELAY_SECONDS)],
         )
+
+    def test_secure_password_prefers_physical_keys_with_unicode_fallback(self) -> None:
+        with (
+            patch.object(lan_remote, "send_physical_character", side_effect=[True, False]) as physical,
+            patch.object(lan_remote, "send_unicode_text") as unicode_fallback,
+            patch.object(lan_remote.time, "sleep") as pause,
+        ):
+            lan_remote.handle_secure_desktop_input({"type": "text_sequence", "text": "A密"})
+        self.assertEqual(physical.call_args_list, [call("A"), call("密")])
+        unicode_fallback.assert_called_once_with("密")
+        pause.assert_called_once_with(lan_remote.UNLOCK_CHARACTER_DELAY_SECONDS)
 
 
 class SettingsAndAuthenticationTests(unittest.TestCase):
@@ -1221,7 +1351,7 @@ class HttpIntegrationTests(unittest.TestCase):
 
         with (
             patch.object(lan_remote, "screen_rect", return_value=(0, 0, 100, 80)),
-            patch.object(lan_remote, "native_video_requires_compatibility", return_value=True),
+            patch.object(lan_remote, "secure_video_source_required", return_value=True),
         ):
             status, _, data = self.request(
                 "CONNECT",
@@ -1235,7 +1365,7 @@ class HttpIntegrationTests(unittest.TestCase):
         try:
             with (
                 patch.object(lan_remote, "screen_rect", return_value=(0, 0, 100, 80)),
-                patch.object(lan_remote, "native_video_requires_compatibility", return_value=False),
+                patch.object(lan_remote, "secure_video_source_required", return_value=False),
             ):
                 status, _, data = self.request(
                     "CONNECT",
@@ -1606,6 +1736,32 @@ class HttpIntegrationTests(unittest.TestCase):
         self.assertNotIn(black_frame, response)
         self.assertIn(ready_frame, response)
         self.assertGreaterEqual(capture_mock.call_count, 2)
+
+    def test_secure_transition_snapshot_skips_initial_black_frame(self) -> None:
+        def jpeg(level: int) -> bytes:
+            output = io.BytesIO()
+            lan_remote.Image.new("RGB", (100, 80), (level, level, level)).save(output, format="JPEG")
+            return output.getvalue()
+
+        black_frame = jpeg(0)
+        ready_frame = jpeg(160)
+        with (
+            patch.object(lan_remote, "current_session_locked", return_value=True),
+            patch.object(lan_remote, "secure_desktop_active", return_value=False),
+            patch.object(
+                lan_remote,
+                "capture_screen_image",
+                side_effect=[(black_frame, "image/jpeg"), (ready_frame, "image/jpeg")],
+            ) as capture_mock,
+        ):
+            status, _, body = self.request(
+                "GET",
+                "/screen?monitor=all&cursor=0&secure_transition=1",
+                headers={"X-Remote-Token": "TEST-TEMP-CODE"},
+            )
+        self.assertEqual(status, 200)
+        self.assertEqual(body, ready_frame)
+        self.assertEqual(capture_mock.call_count, 2)
 
     def test_cursor_stream_is_persistent_authenticated_and_source_aware(self) -> None:
         cursor = {"visible": True, "x": 44, "y": 55, "width": 100, "height": 80}

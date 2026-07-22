@@ -694,8 +694,20 @@ namespace WindowsLANRemoteControlHost
 
     internal sealed class ControlWindow : Form
     {
+        private const int WmNcHitTest = 0x0084;
         private const int WmNcLButtonDown = 0x00A1;
+        private const int HtClient = 0x0001;
         private const int HtCaption = 0x0002;
+        private const int HtLeft = 0x000A;
+        private const int HtRight = 0x000B;
+        private const int HtTop = 0x000C;
+        private const int HtTopLeft = 0x000D;
+        private const int HtTopRight = 0x000E;
+        private const int HtBottom = 0x000F;
+        private const int HtBottomLeft = 0x0010;
+        private const int HtBottomRight = 0x0011;
+        private const int ResizeGrip = 8;
+        private const int WsThickFrame = 0x00040000;
         private const int WhKeyboardLl = 13;
         private const int WhMouseLl = 14;
         private const int WmKeyDown = 0x0100;
@@ -736,6 +748,7 @@ namespace WindowsLANRemoteControlHost
         private IntPtr mouseHook = IntPtr.Zero;
         private LowLevelMouseProc mouseHookProc;
         private volatile bool keyboardCaptureEnabled;
+        private volatile bool nativeWindowResizeActive;
         private readonly object nativeInputLock = new object();
         private readonly Queue<NativeInputMessage> nativeInputQueue = new Queue<NativeInputMessage>();
         private readonly AutoResetEvent nativeInputSignal = new AutoResetEvent(false);
@@ -812,6 +825,16 @@ namespace WindowsLANRemoteControlHost
         [DllImport("WindowsLANRemoteVideo.dll", CallingConvention = CallingConvention.StdCall)]
         private static extern void LANRemoteVideoDestroy(IntPtr handle);
 
+        protected override CreateParams CreateParams
+        {
+            get
+            {
+                CreateParams value = base.CreateParams;
+                value.Style |= WsThickFrame;
+                return value;
+            }
+        }
+
         [DllImport("user32.dll")]
         private static extern bool ReleaseCapture();
 
@@ -832,6 +855,11 @@ namespace WindowsLANRemoteControlHost
 
         [DllImport("user32.dll")]
         private static extern IntPtr GetForegroundWindow();
+
+        [DllImport("user32.dll", SetLastError = true)]
+        private static extern bool PhysicalToLogicalPointForPerMonitorDPI(
+            IntPtr window,
+            ref NativePoint point);
 
         [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
         private static extern IntPtr GetModuleHandle(string moduleName);
@@ -1155,7 +1183,11 @@ namespace WindowsLANRemoteControlHost
                 {
                     SendNativeOverlayAction("unlock", String.Empty);
                 });
-                Deactivate += delegate { ReleaseNativePressedInputs(); };
+                Deactivate += delegate
+                {
+                    nativeWindowResizeActive = false;
+                    ReleaseNativePressedInputs();
+                };
             }
 
             Shown += async delegate
@@ -1334,8 +1366,47 @@ namespace WindowsLANRemoteControlHost
             {
                 return CallNextHookEx(mouseHook, code, wParam, lParam);
             }
-
             int message = wParam.ToInt32();
+            if (nativeWindowResizeActive)
+            {
+                return CallNextHookEx(mouseHook, code, wParam, lParam);
+            }
+            // The WS_THICKFRAME non-client border is outside ClientSize. Use
+            // the complete screen-space window rectangle so every physical
+            // edge and corner is classified consistently before the remote
+            // input surface gets a chance to consume the gesture.
+            NativePoint logicalInputPoint = input.Point;
+            try
+            {
+                // MSLLHOOKSTRUCT.pt is always in per-monitor-aware physical
+                // screen coordinates. WinForms may expose DPI-virtualized
+                // logical Bounds, so normalize the hook point to this HWND's
+                // coordinate space before hit testing or remote mapping.
+                PhysicalToLogicalPointForPerMonitorDPI(Handle, ref logicalInputPoint);
+            }
+            catch (EntryPointNotFoundException)
+            {
+                // Windows 10/11 provide the API. Keeping the original point is
+                // the safe fallback for older systems without per-monitor DPI.
+            }
+            int inputX = logicalInputPoint.X;
+            int inputY = logicalInputPoint.Y;
+            Rectangle windowBounds = Bounds;
+            Point windowPoint = new Point(
+                inputX - windowBounds.Left,
+                inputY - windowBounds.Top);
+            int resizeHit = BorderlessResizeHitTest(windowPoint, windowBounds.Size, ResizeGrip);
+            if (!fullscreen && WindowState == FormWindowState.Normal && resizeHit != HtClient)
+            {
+                if (message == WmLButtonDown)
+                {
+                    nativeWindowResizeActive = true;
+                    BeginInvoke(new Action(delegate { BeginNativeWindowResize(resizeHit); }));
+                    return new IntPtr(1);
+                }
+                return CallNextHookEx(mouseHook, code, wParam, lParam);
+            }
+
             bool swallow = false;
             lock (nativeInputLock)
             {
@@ -1348,8 +1419,8 @@ namespace WindowsLANRemoteControlHost
                 {
                     return CallNextHookEx(mouseHook, code, wParam, lParam);
                 }
-                bool inside = session.RemoteBounds.Contains(input.Point.X, input.Point.Y) &&
-                    !PointInExclusion(session, input.Point.X, input.Point.Y);
+                bool inside = session.RemoteBounds.Contains(inputX, inputY) &&
+                    !PointInExclusion(session, inputX, inputY);
                 bool dragging = nativePressedButtons.Count > 0;
                 if (!inside && !dragging)
                 {
@@ -1358,7 +1429,7 @@ namespace WindowsLANRemoteControlHost
 
                 int remoteX;
                 int remoteY;
-                MapRemotePoint(session, input.Point.X, input.Point.Y, out remoteX, out remoteY);
+                MapRemotePoint(session, inputX, inputY, out remoteX, out remoteY);
                 lastRemoteX = remoteX;
                 lastRemoteY = remoteY;
 
@@ -1418,6 +1489,20 @@ namespace WindowsLANRemoteControlHost
             return swallow
                 ? new IntPtr(1)
                 : CallNextHookEx(mouseHook, code, wParam, lParam);
+        }
+
+        private void BeginNativeWindowResize(int resizeHit)
+        {
+            try
+            {
+                if (fullscreen || WindowState != FormWindowState.Normal) return;
+                ReleaseCapture();
+                SendMessage(Handle, WmNcLButtonDown, new IntPtr(resizeHit), IntPtr.Zero);
+            }
+            finally
+            {
+                nativeWindowResizeActive = false;
+            }
         }
 
         private bool PointInExclusion(NativeInputSession session, int x, int y)
@@ -2360,6 +2445,50 @@ namespace WindowsLANRemoteControlHost
                 maximized = restoredMaximized;
             }
             UpdateNativeOverlayVisibility();
+        }
+
+        private static int BorderlessResizeHitTest(Point point, Size clientSize, int grip)
+        {
+            if (clientSize.Width < 1 || clientSize.Height < 1 || grip < 1)
+            {
+                return HtClient;
+            }
+            bool left = point.X >= 0 && point.X < grip;
+            bool right = point.X < clientSize.Width && point.X >= clientSize.Width - grip;
+            bool top = point.Y >= 0 && point.Y < grip;
+            bool bottom = point.Y < clientSize.Height && point.Y >= clientSize.Height - grip;
+            if (top && left) return HtTopLeft;
+            if (top && right) return HtTopRight;
+            if (bottom && left) return HtBottomLeft;
+            if (bottom && right) return HtBottomRight;
+            if (left) return HtLeft;
+            if (right) return HtRight;
+            if (top) return HtTop;
+            if (bottom) return HtBottom;
+            return HtClient;
+        }
+
+        protected override void WndProc(ref Message message)
+        {
+            base.WndProc(ref message);
+            if (
+                message.Msg != WmNcHitTest ||
+                fullscreen ||
+                WindowState != FormWindowState.Normal ||
+                message.Result.ToInt32() != HtClient)
+            {
+                return;
+            }
+            long packed = message.LParam.ToInt64();
+            Point screenPoint = new Point(
+                unchecked((short)(packed & 0xFFFF)),
+                unchecked((short)((packed >> 16) & 0xFFFF)));
+            Point clientPoint = PointToClient(screenPoint);
+            int hit = BorderlessResizeHitTest(clientPoint, ClientSize, ResizeGrip);
+            if (hit != HtClient)
+            {
+                message.Result = new IntPtr(hit);
+            }
         }
 
         protected override void OnSizeChanged(EventArgs e)

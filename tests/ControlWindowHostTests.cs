@@ -27,6 +27,7 @@ internal static class ControlWindowHostTests
             TestUrlValidation(assembly);
             TestFullscreenRestore(assembly, false);
             TestFullscreenRestore(assembly, true);
+            TestBorderlessResizeHitTesting(assembly);
             TestCloseToTray(assembly);
             TestKeyboardCaptureSurface(assembly);
             TestMouseCaptureMappings(assembly);
@@ -120,6 +121,26 @@ internal static class ControlWindowHostTests
                 throw new InvalidOperationException("Normal bounds were not restored.");
             window.Hide();
         }
+    }
+
+    private static void TestBorderlessResizeHitTesting(Assembly assembly)
+    {
+        Type windowType = RequiredType(assembly, "WindowsLANRemoteControlHost.ControlWindow");
+        MethodInfo hitTest = windowType.GetMethod(
+            "BorderlessResizeHitTest",
+            BindingFlags.NonPublic | BindingFlags.Static);
+        if (hitTest == null) throw new InvalidOperationException("Borderless resize hit test was not found.");
+        Size size = new Size(1000, 700);
+        Func<Point, int> hit = point => (int)hitTest.Invoke(null, new object[] { point, size, 8 });
+        if (hit(new Point(1, 1)) != 13) throw new InvalidOperationException("Top-left resize grip failed.");
+        if (hit(new Point(998, 1)) != 14) throw new InvalidOperationException("Top-right resize grip failed.");
+        if (hit(new Point(1, 698)) != 16) throw new InvalidOperationException("Bottom-left resize grip failed.");
+        if (hit(new Point(998, 698)) != 17) throw new InvalidOperationException("Bottom-right resize grip failed.");
+        if (hit(new Point(1, 300)) != 10) throw new InvalidOperationException("Left resize grip failed.");
+        if (hit(new Point(998, 300)) != 11) throw new InvalidOperationException("Right resize grip failed.");
+        if (hit(new Point(500, 1)) != 12) throw new InvalidOperationException("Top resize grip failed.");
+        if (hit(new Point(500, 698)) != 15) throw new InvalidOperationException("Bottom resize grip failed.");
+        if (hit(new Point(500, 350)) != 1) throw new InvalidOperationException("Resize center was not client area.");
     }
 
     private static void TestCloseToTray(Assembly assembly)

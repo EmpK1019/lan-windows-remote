@@ -40,6 +40,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--native-dir", type=Path)
     parser.add_argument("--enforce-performance", action="store_true")
     parser.add_argument("--exercise-secure-transition", action="store_true")
+    parser.add_argument("--force-gdi", action="store_true")
     return parser.parse_args()
 
 
@@ -53,17 +54,46 @@ def main() -> int:
         raise RuntimeError("build native video components before running the E2E test")
     lan_remote.native_video_encoder_path = lambda: encoder_path
     original_secure_desktop_active = lan_remote.secure_desktop_active
+    original_secure_video_source_required = lan_remote.secure_video_source_required
+    original_secure_native_video_available = lan_remote.secure_native_video_available
+    original_open_secure_native_video_stream = lan_remote.open_secure_native_video_stream
     secure_state = {"active": False}
+    secure_sources: list[object] = []
     if args.exercise_secure_transition:
         lan_remote.secure_desktop_active = lambda: secure_state["active"]
+        lan_remote.secure_video_source_required = lambda: secure_state["active"]
+        lan_remote.secure_native_video_available = lambda: True
+
+        class EncoderStream:
+            def __init__(self, monitor: str, fps: int, generation: int) -> None:
+                self.source = lan_remote.start_native_video_encoder(monitor, fps, generation)
+                secure_sources.append(self)
+
+            def read(self, length: int) -> bytes:
+                if self.source.process.stdout is None:
+                    return b""
+                return self.source.process.stdout.read(length)
+
+            def close(self) -> None:
+                if self.source is None:
+                    return
+                source, self.source = self.source, None
+                lan_remote.stop_native_video_encoder(source)
+
+        lan_remote.open_secure_native_video_stream = (
+            lambda monitor, fps, generation, timeout=4.0: EncoderStream(monitor, fps, generation)
+        )
 
     with tempfile.TemporaryDirectory() as appdata:
         previous_appdata = os.environ.get("APPDATA")
         previous_video_debug = os.environ.get("LAN_REMOTE_NATIVE_VIDEO_DEBUG")
         previous_test_pattern = os.environ.get("LAN_REMOTE_NATIVE_VIDEO_TEST_PATTERN")
+        previous_force_gdi = os.environ.get("LAN_REMOTE_NATIVE_VIDEO_FORCE_GDI")
         os.environ["APPDATA"] = appdata
         os.environ["LAN_REMOTE_NATIVE_VIDEO_DEBUG"] = "1"
         os.environ["LAN_REMOTE_NATIVE_VIDEO_TEST_PATTERN"] = "1"
+        if args.force_gdi:
+            os.environ["LAN_REMOTE_NATIVE_VIDEO_FORCE_GDI"] = "1"
         settings = lan_remote.SettingsStore()
         state = lan_remote.ServerState(
             token="TEST-TEMP-CODE",
@@ -285,20 +315,27 @@ def main() -> int:
                     )
             if args.exercise_secure_transition:
                 initial_generation = int(final_status.get("generation", 0))
+                initial_rendered = int(final_status.get("rendered_frames", 0))
                 secure_state["active"] = True
-                transition_deadline = time.monotonic() + 5
+                transition_deadline = time.monotonic() + 10
+                secure_generation = 0
                 while time.monotonic() < transition_deadline:
                     window.update()
                     buffer = ctypes.create_unicode_buffer(4096)
                     dll.LANRemoteVideoGetStatus(handle, buffer, len(buffer))
                     transition_status = json.loads(buffer.value or "{}")
                     if transition_status.get("state") == "failed":
-                        if "secure desktop" not in str(transition_status.get("error", "")).lower():
-                            raise RuntimeError(f"unexpected secure transition failure: {transition_status}")
+                        raise RuntimeError(f"secure H.264 transition failed: {transition_status}")
+                    secure_generation = int(transition_status.get("generation", 0))
+                    if (
+                        transition_status.get("state") == "streaming"
+                        and secure_generation not in (0, initial_generation)
+                        and int(transition_status.get("rendered_frames", 0)) > initial_rendered
+                    ):
                         break
                     time.sleep(0.02)
                 else:
-                    raise RuntimeError("native stream did not enter secure-desktop fallback")
+                    raise RuntimeError("native stream did not switch to the secure H.264 source")
                 window.update()
                 held_frame = ImageGrab.grab(
                     bbox=(
@@ -310,15 +347,10 @@ def main() -> int:
                 ).convert("L").resize((32, 18))
                 held_mean = sum(held_frame.get_flattened_data()) / (32 * 18)
                 if held_mean < 8.0:
-                    raise RuntimeError("native secure transition exposed the black backing surface")
+                    raise RuntimeError("secure H.264 transition exposed a black frame")
                 final_status["secure_transition_held_frame_mean"] = round(held_mean, 2)
+                final_status["secure_h264_generation"] = secure_generation
                 secure_state["active"] = False
-                if not dll.LANRemoteVideoConfigure(
-                    handle, "127.0.0.1", state.port, "TEST-TEMP-CODE", "all",
-                    args.fps, 40, 50, 820, 460,
-                ):
-                    raise RuntimeError("native stream could not restart after secure desktop")
-                dll.LANRemoteVideoSetLayout(handle, 40, 50, 820, 460, 1)
                 recovery_deadline = time.monotonic() + 10
                 while time.monotonic() < recovery_deadline:
                     window.update()
@@ -327,8 +359,9 @@ def main() -> int:
                     recovered = json.loads(buffer.value or "{}")
                     if (
                         recovered.get("state") == "streaming"
-                        and int(recovered.get("generation", 0)) != initial_generation
-                        and int(recovered.get("rendered_frames", 0)) > 0
+                        and int(recovered.get("generation", 0)) not in
+                            (initial_generation, secure_generation)
+                        and int(recovered.get("rendered_frames", 0)) > initial_rendered
                     ):
                         final_status["secure_transition_recovered"] = True
                         break
@@ -356,7 +389,16 @@ def main() -> int:
                 os.environ.pop("LAN_REMOTE_NATIVE_VIDEO_TEST_PATTERN", None)
             else:
                 os.environ["LAN_REMOTE_NATIVE_VIDEO_TEST_PATTERN"] = previous_test_pattern
+            if previous_force_gdi is None:
+                os.environ.pop("LAN_REMOTE_NATIVE_VIDEO_FORCE_GDI", None)
+            else:
+                os.environ["LAN_REMOTE_NATIVE_VIDEO_FORCE_GDI"] = previous_force_gdi
             lan_remote.secure_desktop_active = original_secure_desktop_active
+            lan_remote.secure_video_source_required = original_secure_video_source_required
+            lan_remote.secure_native_video_available = original_secure_native_video_available
+            lan_remote.open_secure_native_video_stream = original_open_secure_native_video_stream
+            for source in secure_sources:
+                source.close()
     return 0
 
 

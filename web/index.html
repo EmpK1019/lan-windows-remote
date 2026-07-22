@@ -2466,6 +2466,7 @@
       const next = mode === "fill" ? "fill" : "fit";
       if (state.session) state.session.scaleMode = next;
       $("remoteScreen").classList.toggle("scale-fill", next === "fill");
+      $("remoteStage").style.backgroundSize = next === "fill" ? "cover" : "contain";
       $("scaleModeButton").classList.toggle("active", next === "fill");
       $("scaleModeButton").title = next === "fill" ? "画面模式：填充（无黑边）" : "画面模式：适应（完整画面）";
       $("scaleModeButton").querySelector("span").textContent = next === "fill" ? "填充" : "适应";
@@ -2925,9 +2926,15 @@
     }
 
     function releaseFrameObjectUrl() {
-      if (!state.frameObjectUrl) return;
-      URL.revokeObjectURL(state.frameObjectUrl);
-      state.frameObjectUrl = "";
+      const stage = $("remoteStage");
+      stage.style.backgroundImage = "";
+      stage.style.backgroundPosition = "";
+      stage.style.backgroundRepeat = "";
+      stage.style.backgroundSize = "";
+      if (state.frameObjectUrl) {
+        URL.revokeObjectURL(state.frameObjectUrl);
+        state.frameObjectUrl = "";
+      }
     }
 
     function resetScreenStream() {
@@ -3014,15 +3021,71 @@
       }, delay);
     }
 
-    function finishNativeFallback() {
+    async function finishNativeFallback() {
+      try {
+        await window.pywebview?.api?.configure_native_video?.({enabled: false});
+      } catch {}
       state.nativeFallbackPending = false;
       state.nativeVideoActive = false;
       document.body.classList.remove("native-video-active");
-      window.pywebview?.api?.configure_native_video?.({enabled: false}).catch(() => {});
-      window.pywebview?.api?.set_native_overlay_state?.({visible: false}).catch(() => {});
+      try {
+        await window.pywebview?.api?.set_native_overlay_state?.({visible: false});
+      } catch {}
     }
 
-    function startMjpegFallback(session, reason = "", options = {}) {
+    async function loadSecureTransitionFrame(session) {
+      const revision = state.frameRequestRevision;
+      const monitorId = session.monitorId || "all";
+      const controller = new AbortController();
+      state.screenAbortController?.abort();
+      state.screenAbortController = controller;
+      try {
+        const response = await fetch(endpoint(
+          `/screen?monitor=${encodeURIComponent(monitorId)}&cursor=0&secure_transition=1&t=${Date.now()}`
+        ), {cache: "no-store", signal: controller.signal});
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const blob = await response.blob();
+        if (
+          revision !== state.frameRequestRevision ||
+          session !== state.session ||
+          !session?.connected ||
+          (session.monitorId || "all") !== monitorId
+        ) return false;
+
+        const objectUrl = URL.createObjectURL(blob);
+        releaseFrameObjectUrl();
+        state.frameObjectUrl = objectUrl;
+        const stage = $("remoteStage");
+        stage.style.backgroundImage = `url("${objectUrl}")`;
+        stage.style.backgroundPosition = "center";
+        stage.style.backgroundRepeat = "no-repeat";
+        stage.style.backgroundSize = sessionScaleMode(session) === "fill" ? "cover" : "contain";
+        const image = $("remoteScreen");
+        const loaded = await new Promise((resolve) => {
+          image.onload = () => resolve(Boolean(image.naturalWidth));
+          image.onerror = () => resolve(false);
+          image.src = objectUrl;
+        });
+        if (
+          !loaded ||
+          revision !== state.frameRequestRevision ||
+          session !== state.session ||
+          !session?.connected
+        ) return false;
+        state.loadingFrame = false;
+        markScreenReady(session, image);
+        return true;
+      } catch (error) {
+        if (error?.name !== "AbortError") {
+          setRemoteStatus("正在切换锁屏画面…", false);
+        }
+        return false;
+      } finally {
+        if (state.screenAbortController === controller) state.screenAbortController = null;
+      }
+    }
+
+    async function startMjpegFallback(session, reason = "", options = {}) {
       const secureTransition = Boolean(options.secureTransition || /secure desktop/i.test(reason));
       const preserveNative = Boolean(
         options.preserveNative ?? (secureTransition && state.nativeVideoActive)
@@ -3035,13 +3098,32 @@
         clearTimeout(state.nativeVideoStatusTimer);
         state.nativeVideoStatusTimer = 0;
       } else {
-        finishNativeFallback();
+        await finishNativeFallback();
       }
       if (!session?.connected || session !== state.session) return;
       setRemoteStatus(`MJPEG 兼容模式 · 最高 ${sessionControlFps(session)} FPS${reason ? ` · ${reason}` : ""}`);
+      let backingReady = false;
+      if (secureTransition) {
+        backingReady = await loadSecureTransitionFrame(session);
+        if (!backingReady) {
+          state.nativeFallbackPending = false;
+          if (session?.connected && session === state.session) {
+            clearTimeout(state.refreshTimer);
+            state.refreshTimer = setTimeout(
+              () => startMjpegFallback(session, reason, options),
+              120
+            );
+          }
+          return;
+        }
+      }
+      if (preserveNative) {
+        await finishNativeFallback();
+        if (!session?.connected || session !== state.session) return;
+      }
       startDesktopScreenStream(session, {
         secureTransition,
-        onFirstFrame: preserveNative ? finishNativeFallback : null
+        firstFrameReady: backingReady
       });
       if (secureTransition) scheduleNativeVideoRetry(session);
     }
@@ -3141,16 +3223,16 @@
       const monitorId = session.monitorId || "all";
       const fpsLimit = sessionControlFps(session);
       const image = $("remoteScreen");
-      let ready = false;
-      let loadObserved = !options.secureTransition;
-      state.loadingFrame = true;
+      let ready = Boolean(options.firstFrameReady);
+      let loadObserved = ready;
+      state.loadingFrame = !ready;
 
       const acceptFirstFrame = () => {
         if (
           ready ||
           revision !== state.frameRequestRevision ||
           !state.session?.connected ||
-          state.session.monitorId !== monitorId ||
+          (state.session.monitorId || "all") !== monitorId ||
           !loadObserved ||
           !image.naturalWidth
         ) return false;
@@ -3158,7 +3240,6 @@
         state.loadingFrame = false;
         clearTimeout(state.refreshTimer);
         state.refreshTimer = 0;
-        if (typeof options.onFirstFrame === "function") options.onFirstFrame();
         markScreenReady(session, image);
         return true;
       };
@@ -3182,12 +3263,11 @@
         setRemoteStatus("画面连接中断，正在重试…", true);
         state.refreshTimer = setTimeout(refreshScreen, 350);
       };
-      if (options.secureTransition) image.removeAttribute("src");
       const transitionQuery = options.secureTransition ? "&secure_transition=1" : "";
       image.src = endpoint(
         `/screen-stream?monitor=${encodeURIComponent(monitorId)}&cursor=0&fps=${fpsLimit}${transitionQuery}&t=${Date.now()}`
       );
-      waitForFirstFrame();
+      if (!ready) waitForFirstFrame();
     }
 
     function refreshScreen() {
@@ -3701,12 +3781,6 @@
         }
         const result = await response.json().catch(() => ({}));
         if (!response.ok || !result.ok) throw new Error(result.error || `HTTP ${response.status}`);
-        if (state.nativeVideoActive) {
-          startMjpegFallback(session, "secure desktop requested", {
-            secureTransition: true,
-            preserveNative: true
-          });
-        }
         if (notify) {
           setRemoteStatus(result.status === "already_secure" ? "远端已处于锁屏或安全桌面" : "远端电脑已锁定");
           showToast(result.status === "already_secure" ? "远端已处于锁屏或安全桌面" : "已锁定远端电脑");

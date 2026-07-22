@@ -32,6 +32,7 @@ import tempfile
 import threading
 import time
 import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -60,7 +61,7 @@ if platform.system() == "Windows":
 
 
 APP_NAME = "Windows LAN Remote"
-APP_VERSION = "1.0.4"
+APP_VERSION = "1.0.5"
 GITHUB_REPOSITORY = "EmpK1019/lan-windows-remote"
 GITHUB_LATEST_RELEASE_API = f"https://api.github.com/repos/{GITHUB_REPOSITORY}/releases/latest"
 DEFAULT_PORT = 8765
@@ -127,6 +128,9 @@ UNLOCK_SUBMIT_DELAY_SECONDS = 0.18
 UNLOCK_RESULT_POLL_SECONDS = 0.25
 UNLOCK_RESULT_POLLS = 24
 UNLOCK_SEQUENCE_TIMEOUT_SECONDS = 12.0
+DESKTOP_READOBJECTS = 0x0001
+DESKTOP_WRITEOBJECTS = 0x0080
+DESKTOP_SWITCHDESKTOP = 0x0100
 LOCAL_DESKTOP_PATHS = frozenset(
     {
         "/api/devices",
@@ -289,6 +293,146 @@ def native_video_encoder_path() -> Path | None:
         if candidate.is_file():
             return candidate
     return None
+
+
+@dataclass
+class NativeVideoEncoderProcess:
+    process: subprocess.Popen[bytes]
+    diagnostics: list[str]
+    diagnostics_lock: threading.Lock
+
+
+class NativeVideoControlTarget:
+    """Routes controller feedback to whichever local encoder is active."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._stream: Any = None
+
+    def set_stream(self, stream: Any) -> None:
+        with self._lock:
+            self._stream = stream
+
+    def write(self, payload: bytes) -> bool:
+        with self._lock:
+            stream = self._stream
+            if stream is None:
+                return False
+            try:
+                stream.write(payload)
+                stream.flush()
+                return True
+            except (BrokenPipeError, OSError, ValueError):
+                if self._stream is stream:
+                    self._stream = None
+                return False
+
+
+def _read_exact(stream: Any, length: int) -> bytes | None:
+    chunks = bytearray()
+    while len(chunks) < length:
+        chunk = stream.read(length - len(chunks))
+        if not chunk:
+            return None
+        chunks.extend(chunk)
+    return bytes(chunks)
+
+
+def read_native_video_packet(stream: Any) -> tuple[NativeVideoMessage, bytes] | None:
+    header = _read_exact(stream, NATIVE_VIDEO_HEADER.size)
+    if header is None:
+        return None
+    fields = NATIVE_VIDEO_HEADER.unpack(header)
+    payload_length = int(fields[7])
+    message_type = int(fields[2])
+    payload_limit = (
+        NATIVE_VIDEO_MAX_ACCESS_UNIT_BYTES
+        if message_type == NATIVE_VIDEO_MESSAGE_ACCESS_UNIT
+        else NATIVE_VIDEO_MAX_CONFIG_BYTES
+    )
+    if payload_length > payload_limit:
+        raise ValueError("native video payload is too large")
+    payload = _read_exact(stream, payload_length)
+    if payload is None:
+        return None
+    packed = header + payload
+    return unpack_native_video_message(packed), packed
+
+
+def start_native_video_encoder(
+    monitor_id: str,
+    fps_limit: int,
+    generation: int,
+) -> NativeVideoEncoderProcess:
+    encoder_path = native_video_encoder_path()
+    if encoder_path is None:
+        raise RuntimeError("native H.264 encoder unavailable")
+    command = [
+        str(encoder_path),
+        "--monitor",
+        monitor_id,
+        "--fps",
+        str(fps_limit),
+        "--generation",
+        str(generation),
+    ]
+    if os.environ.get("LAN_REMOTE_NATIVE_VIDEO_TEST_PATTERN") == "1":
+        command.append("--test-pattern")
+    process = subprocess.Popen(
+        command,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        bufsize=0,
+        close_fds=True,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+    source = NativeVideoEncoderProcess(process, [], threading.Lock())
+
+    def read_diagnostics() -> None:
+        if process.stderr is None:
+            return
+        try:
+            for raw_line in iter(process.stderr.readline, b""):
+                line = raw_line.decode("utf-8", "replace").strip()
+                if not line:
+                    continue
+                with source.diagnostics_lock:
+                    source.diagnostics.append(line[:512])
+                    del source.diagnostics[:-8]
+                if os.environ.get("LAN_REMOTE_NATIVE_VIDEO_DEBUG") == "1" and sys.stderr is not None:
+                    print(f"[native-video] {line[:512]}", file=sys.stderr, flush=True)
+        except OSError:
+            return
+
+    threading.Thread(
+        target=read_diagnostics,
+        name="lan-remote-native-video-diagnostics",
+        daemon=True,
+    ).start()
+    return source
+
+
+def stop_native_video_encoder(source: NativeVideoEncoderProcess) -> None:
+    process = source.process
+    if process.stdin is not None:
+        try:
+            process.stdin.close()
+        except OSError:
+            pass
+    if process.poll() is None:
+        process.terminate()
+        try:
+            process.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=2)
+    for stream in (process.stdout, process.stderr):
+        if stream is not None:
+            try:
+                stream.close()
+            except OSError:
+                pass
 
 
 def video_capabilities() -> list[str]:
@@ -1708,6 +1852,10 @@ def configure_win32_signatures() -> None:
     user32.SetCursorPos.restype = wintypes.BOOL
     user32.GetCursorInfo.argtypes = [ctypes.POINTER(CURSORINFO)]
     user32.GetCursorInfo.restype = wintypes.BOOL
+    user32.GetForegroundWindow.argtypes = []
+    user32.GetForegroundWindow.restype = wintypes.HWND
+    user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+    user32.GetWindowThreadProcessId.restype = wintypes.DWORD
     user32.GetIconInfo.argtypes = [wintypes.HANDLE, ctypes.POINTER(ICONINFO)]
     user32.GetIconInfo.restype = wintypes.BOOL
     user32.DrawIconEx.argtypes = [
@@ -1728,6 +1876,12 @@ def configure_win32_signatures() -> None:
     user32.keybd_event.restype = None
     user32.MapVirtualKeyW.argtypes = [wintypes.UINT, wintypes.UINT]
     user32.MapVirtualKeyW.restype = wintypes.UINT
+    user32.MapVirtualKeyExW.argtypes = [wintypes.UINT, wintypes.UINT, wintypes.HANDLE]
+    user32.MapVirtualKeyExW.restype = wintypes.UINT
+    user32.VkKeyScanExW.argtypes = [wintypes.WCHAR, wintypes.HANDLE]
+    user32.VkKeyScanExW.restype = ctypes.c_short
+    user32.GetKeyboardLayout.argtypes = [wintypes.DWORD]
+    user32.GetKeyboardLayout.restype = wintypes.HANDLE
     user32.SendInput.argtypes = [wintypes.UINT, ctypes.POINTER(INPUT), ctypes.c_int]
     user32.SendInput.restype = wintypes.UINT
     user32.OpenClipboard.argtypes = [wintypes.HWND]
@@ -1758,6 +1912,8 @@ def configure_win32_signatures() -> None:
     user32.GetUserObjectInformationW.restype = wintypes.BOOL
     user32.GetThreadDesktop.argtypes = [wintypes.DWORD]
     user32.GetThreadDesktop.restype = wintypes.HANDLE
+    user32.SetThreadDesktop.argtypes = [wintypes.HANDLE]
+    user32.SetThreadDesktop.restype = wintypes.BOOL
     kernel32.GetCurrentThreadId.argtypes = []
     kernel32.GetCurrentThreadId.restype = wintypes.DWORD
     kernel32.GetCurrentProcessId.argtypes = []
@@ -2677,8 +2833,8 @@ def secure_desktop_active() -> bool:
     return input_desktop_is_secure()
 
 
-def native_video_requires_compatibility() -> bool:
-    """DXGI capture cannot be trusted anywhere in a locked-session transition."""
+def secure_video_source_required() -> bool:
+    """Return True while video must be captured from the SYSTEM/Winlogon source."""
     return current_session_locked() or secure_desktop_active()
 
 
@@ -2753,6 +2909,36 @@ def current_thread_desktop_name() -> str:
     if not user32.GetUserObjectInformationW(desktop, 2, buffer, ctypes.sizeof(buffer), ctypes.byref(required)):
         return "unknown"
     return buffer.value
+
+
+@contextmanager
+def active_input_desktop() -> Any:
+    """Temporarily bind a helper request thread to the current interactive desktop."""
+    if platform.system() != "Windows":
+        yield current_thread_desktop_name()
+        return
+
+    user32 = ctypes.windll.user32
+    kernel32 = ctypes.windll.kernel32
+    original = user32.GetThreadDesktop(kernel32.GetCurrentThreadId())
+    desktop = user32.OpenInputDesktop(
+        0,
+        False,
+        DESKTOP_READOBJECTS | DESKTOP_WRITEOBJECTS | DESKTOP_SWITCHDESKTOP,
+    )
+    if not desktop:
+        raise ctypes.WinError()
+    switched = False
+    try:
+        if not user32.SetThreadDesktop(desktop):
+            raise ctypes.WinError()
+        switched = True
+        yield current_thread_desktop_name()
+    finally:
+        if switched and original and not user32.SetThreadDesktop(original):
+            # The request thread is about to exit, so restoration failure is safe to ignore.
+            pass
+        user32.CloseDesktop(desktop)
 
 
 def current_session_locked() -> bool:
@@ -2846,6 +3032,55 @@ def secure_helper_available() -> bool:
         return bool(json.loads(data.decode("utf-8")).get("ok"))
     except (RuntimeError, ValueError, UnicodeDecodeError):
         return False
+
+
+def secure_native_video_available() -> bool:
+    try:
+        data, _ = secure_helper_request("/secure/health", timeout=0.8)
+        payload = json.loads(data.decode("utf-8"))
+        return bool(payload.get("ok") and payload.get("native_video"))
+    except (RuntimeError, ValueError, UnicodeDecodeError):
+        return False
+
+
+def open_secure_native_video_stream(
+    monitor_id: str,
+    fps_limit: int,
+    generation: int,
+    *,
+    timeout: float = 4.0,
+) -> Any:
+    secret = read_service_secret()
+    if not secret:
+        raise RuntimeError("安全桌面服务尚未安装")
+    path = (
+        f"/secure/video-stream?monitor={quote(monitor_id, safe='')}"
+        f"&fps={fps_limit}&generation={generation}"
+    )
+    request = Request(
+        f"http://127.0.0.1:{SECURE_HELPER_PORT}{path}",
+        method="GET",
+        headers={"X-Secure-Token": secret},
+    )
+    try:
+        response = urlopen(request, timeout=timeout)
+        # The timeout above only bounds the helper connection. A static lock screen
+        # may legitimately produce no new access unit for an arbitrary duration.
+        # Keep that idle period from being mistaken for a failed secure source.
+        try:
+            response_socket = response.fp.raw._sock
+            response_socket.settimeout(None)
+        except (AttributeError, OSError):
+            pass
+        return response
+    except HTTPError as exc:
+        try:
+            message = json.loads(exc.read().decode("utf-8")).get("error", "安全桌面 H.264 不可用")
+        except Exception:
+            message = "安全桌面 H.264 不可用"
+        raise RuntimeError(str(message)) from exc
+    except (URLError, TimeoutError, OSError) as exc:
+        raise RuntimeError("安全桌面 H.264 服务未就绪") from exc
 
 
 def capture_secure_desktop(monitor_id: str = "all", include_cursor: bool = True) -> tuple[bytes, str]:
@@ -3166,6 +3401,62 @@ def send_unicode_text_sequence(text: str) -> None:
             time.sleep(UNLOCK_CHARACTER_DELAY_SECONDS)
 
 
+def send_physical_character(character: str) -> bool:
+    """Send one layout-aware hardware-style key chord, returning False when unmappable."""
+    if len(character) != 1:
+        return False
+    user32 = ctypes.windll.user32
+    foreground = user32.GetForegroundWindow()
+    foreground_thread = user32.GetWindowThreadProcessId(foreground, None) if foreground else 0
+    layout = user32.GetKeyboardLayout(foreground_thread)
+    mapping = int(user32.VkKeyScanExW(character, layout))
+    if mapping == -1:
+        return False
+    virtual_key = mapping & 0xFF
+    modifier_state = (mapping >> 8) & 0xFF
+    modifier_keys = [
+        virtual_key
+        for bit, virtual_key in ((1, 0x10), (2, 0x11), (4, 0x12))
+        if modifier_state & bit
+    ]
+    key_sequence = [*(key for key in modifier_keys), virtual_key]
+    inputs: list[INPUT] = []
+    for key in key_sequence:
+        scan_code = int(user32.MapVirtualKeyExW(key, 0, layout))
+        if not scan_code:
+            return False
+        inputs.append(
+            INPUT(
+                type=1,
+                ki=KEYBDINPUT(0, scan_code, 0x0008, 0, REMOTE_INPUT_EXTRA_INFO),
+            )
+        )
+    for key in reversed(key_sequence):
+        scan_code = int(user32.MapVirtualKeyExW(key, 0, layout))
+        inputs.append(
+            INPUT(
+                type=1,
+                ki=KEYBDINPUT(0, scan_code, 0x0008 | 0x0002, 0, REMOTE_INPUT_EXTRA_INFO),
+            )
+        )
+    array_type = INPUT * len(inputs)
+    sent = user32.SendInput(len(inputs), array_type(*inputs), ctypes.sizeof(INPUT))
+    if sent != len(inputs):
+        raise ctypes.WinError()
+    return True
+
+
+def send_physical_text_sequence(text: str) -> None:
+    """Type credentials as physical key chords, with Unicode only as a per-key fallback."""
+    if not text or len(text) > 128:
+        raise ValueError("credential text length is invalid")
+    for index, character in enumerate(text):
+        if not send_physical_character(character):
+            send_unicode_text(character)
+        if index + 1 < len(text):
+            time.sleep(UNLOCK_CHARACTER_DELAY_SECONDS)
+
+
 def validate_remote_input_payload(payload: dict[str, Any]) -> None:
     input_type = payload.get("type")
     if input_type not in {"mouse_move", "mouse_down", "mouse_up", "mouse_wheel", "mouse_hwheel", "key_down", "key_up", "key_press", "native_key_down", "native_key_up", "text", "text_sequence"}:
@@ -3223,6 +3514,16 @@ def handle_remote_input(payload: dict[str, Any]) -> None:
             send_unicode_text(str(payload.get("text", "")))
         elif input_type == "text_sequence":
             send_unicode_text_sequence(str(payload.get("text", "")))
+
+
+def handle_secure_desktop_input(payload: dict[str, Any]) -> None:
+    """Use hardware-style credential input on Winlogon while retaining normal input semantics."""
+    validate_remote_input_payload(payload)
+    if payload.get("type") != "text_sequence":
+        handle_remote_input(payload)
+        return
+    with INPUT_LOCK:
+        send_physical_text_sequence(str(payload.get("text", "")))
 
 
 class SecureDesktopControlDisabled(RuntimeError):
@@ -3287,41 +3588,155 @@ class SecureDesktopHandler(BaseHTTPRequestHandler):
             return False
         return True
 
+    def _serve_native_video_stream(self, parsed: Any) -> None:
+        if not (current_session_locked() or secure_desktop_active()):
+            json_response(
+                self,
+                HTTPStatus.LOCKED,
+                {"ok": False, "error": "secure desktop is not active"},
+                False,
+            )
+            return
+        query = parse_qs(parsed.query)
+        monitor_id = query.get("monitor", ["all"])[0]
+        try:
+            fps_limit = int(query.get("fps", [str(LOW_LATENCY_STREAM_FPS)])[0])
+            generation = int(query.get("generation", ["0"])[0])
+        except (TypeError, ValueError):
+            fps_limit = 0
+            generation = 0
+        if fps_limit not in CONTROL_STREAM_FPS_OPTIONS or not 1 <= generation <= 0xFFFFFFFF:
+            json_response(
+                self,
+                HTTPStatus.BAD_REQUEST,
+                {"ok": False, "error": "invalid native video configuration"},
+                False,
+            )
+            return
+        try:
+            screen_rect(monitor_id)
+            source = start_native_video_encoder(monitor_id, fps_limit, generation)
+        except ValueError as exc:
+            json_response(self, HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(exc)}, False)
+            return
+        except (OSError, RuntimeError) as exc:
+            json_response(
+                self,
+                HTTPStatus.SERVICE_UNAVAILABLE,
+                {"ok": False, "error": str(exc)},
+                False,
+            )
+            return
+
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "application/x-lan-remote-video")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Connection", "close")
+        self.send_header("X-LAN-Video-Protocol", str(NATIVE_VIDEO_PROTOCOL_VERSION))
+        self.end_headers()
+        self.wfile.flush()
+        packet_queue: queue.Queue[Any] = queue.Queue(maxsize=32)
+
+        def read_encoder_packets() -> None:
+            try:
+                if source.process.stdout is None:
+                    packet_queue.put(None)
+                    return
+                while True:
+                    packet = read_native_video_packet(source.process.stdout)
+                    packet_queue.put(packet)
+                    if packet is None or packet[0].message_type in {
+                        NATIVE_VIDEO_MESSAGE_STREAM_END,
+                        NATIVE_VIDEO_MESSAGE_ERROR,
+                    }:
+                        return
+            except (OSError, TimeoutError, ValueError, struct.error) as exc:
+                packet_queue.put(exc)
+
+        threading.Thread(
+            target=read_encoder_packets,
+            name="lan-remote-secure-video-reader",
+            daemon=True,
+        ).start()
+        try:
+            while current_session_locked() or secure_desktop_active():
+                try:
+                    packet = packet_queue.get(timeout=0.1)
+                except queue.Empty:
+                    continue
+                if isinstance(packet, BaseException):
+                    raise packet
+                if packet is None:
+                    with source.diagnostics_lock:
+                        diagnostic_text = " | ".join(source.diagnostics)
+                    if diagnostic_text:
+                        error_message = NativeVideoMessage(
+                            message_type=NATIVE_VIDEO_MESSAGE_ERROR,
+                            flags=0,
+                            generation=generation,
+                            sequence=0,
+                            timestamp_us=int(time.monotonic_ns() // 1000),
+                            width=0,
+                            height=0,
+                            fps_limit=0,
+                            payload=diagnostic_text.encode("utf-8")[:NATIVE_VIDEO_MAX_CONFIG_BYTES],
+                        )
+                        self.wfile.write(pack_native_video_message(error_message))
+                        self.wfile.flush()
+                    return
+                message, packed = packet
+                self.wfile.write(packed)
+                self.wfile.flush()
+                if message.message_type in {
+                    NATIVE_VIDEO_MESSAGE_STREAM_END,
+                    NATIVE_VIDEO_MESSAGE_ERROR,
+                }:
+                    return
+        except (BrokenPipeError, ConnectionResetError, OSError, TimeoutError, ValueError, struct.error):
+            return
+        finally:
+            self.close_connection = True
+            stop_native_video_encoder(source)
+
     def do_GET(self) -> None:
         if not self.authorized():
             return
         parsed = urlparse(self.path)
         path = parsed.path
-        if path == "/secure/health":
-            json_response(
-                self,
-                HTTPStatus.OK,
-                {
-                    "ok": True,
-                    "desktop": current_thread_desktop_name(),
-                    "secure_input_active": secure_desktop_active(),
-                    "foreground_process": foreground_process_name() or "unknown",
-                },
-                False,
-            )
-            return
-        if path == "/secure/cursor":
-            try:
-                monitor_id = parse_qs(parsed.query).get("monitor", ["all"])[0]
-                payload = desktop_cursor_payload(monitor_id)
-            except (OSError, ValueError) as exc:
-                json_response(self, HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(exc)}, False)
-                return
-            json_response(self, HTTPStatus.OK, {"ok": True, **payload}, False)
-            return
-        if path != "/secure/screen":
-            json_response(self, HTTPStatus.NOT_FOUND, {"ok": False, "error": "not found"}, False)
+        if path == "/secure/video-stream":
+            self._serve_native_video_stream(parsed)
             return
         try:
-            query = parse_qs(parsed.query)
-            monitor_id = query.get("monitor", ["all"])[0]
-            include_cursor = query.get("cursor", ["1"])[0] != "0"
-            data, content_type = capture_screen_image(monitor_id, include_cursor)
+            with active_input_desktop() as desktop_name:
+                if path == "/secure/health":
+                    json_response(
+                        self,
+                        HTTPStatus.OK,
+                        {
+                            "ok": True,
+                            "desktop": desktop_name,
+                            "secure_input_active": secure_desktop_active(),
+                            "foreground_process": foreground_process_name() or "unknown",
+                            "native_video": native_video_encoder_path() is not None,
+                        },
+                        False,
+                    )
+                    return
+                if path == "/secure/cursor":
+                    monitor_id = parse_qs(parsed.query).get("monitor", ["all"])[0]
+                    payload = desktop_cursor_payload(monitor_id)
+                    json_response(self, HTTPStatus.OK, {"ok": True, **payload}, False)
+                    return
+                if path != "/secure/screen":
+                    json_response(self, HTTPStatus.NOT_FOUND, {"ok": False, "error": "not found"}, False)
+                    return
+                query = parse_qs(parsed.query)
+                monitor_id = query.get("monitor", ["all"])[0]
+                include_cursor = query.get("cursor", ["1"])[0] != "0"
+                data, content_type = capture_screen_image(monitor_id, include_cursor)
+        except ValueError as exc:
+            json_response(self, HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(exc)}, False)
+            return
         except Exception as exc:
             json_response(self, HTTPStatus.INTERNAL_SERVER_ERROR, {"ok": False, "error": str(exc)}, False)
             return
@@ -3351,7 +3766,8 @@ class SecureDesktopHandler(BaseHTTPRequestHandler):
             payload = json.loads(raw_body.decode("utf-8"))
             if not isinstance(payload, dict):
                 raise ValueError("object required")
-            handle_remote_input(payload)
+            with active_input_desktop():
+                handle_secure_desktop_input(payload)
         except (OSError, TimeoutError):
             json_response(self, HTTPStatus.REQUEST_TIMEOUT, {"ok": False, "error": "request body timed out"}, False)
             return
@@ -3935,10 +4351,10 @@ class RemoteHandler(BaseHTTPRequestHandler):
 
     def _forward_native_video_controls(
         self,
-        process: subprocess.Popen[bytes],
+        target: NativeVideoControlTarget,
     ) -> None:
         try:
-            while process.poll() is None:
+            while True:
                 try:
                     header = self._read_stream_bytes(NATIVE_VIDEO_HEADER.size)
                 except TimeoutError:
@@ -3966,17 +4382,11 @@ class RemoteHandler(BaseHTTPRequestHandler):
                         NATIVE_VIDEO_MESSAGE_RECEIVER_REPORT,
                     }:
                         return
-                    if process.stdin is None:
-                        return
-                    process.stdin.write(pack_native_video_message(message))
-                    process.stdin.flush()
-                except (BrokenPipeError, OSError, ValueError, struct.error):
+                    target.write(pack_native_video_message(message))
+                except (OSError, ValueError, struct.error):
                     return
         except (ConnectionError, OSError):
             return
-        finally:
-            if process.poll() is None:
-                process.terminate()
 
     def _serve_native_video_stream(self, parsed: Any) -> None:
         token = self.headers.get("X-Remote-Token", "")
@@ -4000,96 +4410,191 @@ class RemoteHandler(BaseHTTPRequestHandler):
         except ValueError as exc:
             json_response(self, HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(exc)})
             return
-        if self.server.state.lock_transition_active() or native_video_requires_compatibility():
+        secure_requested = self.server.state.lock_transition_active() or secure_video_source_required()
+        if secure_requested and not secure_native_video_available():
             json_response(
                 self,
                 HTTPStatus.LOCKED,
                 {"ok": False, "error": "secure desktop requires the MJPEG compatibility path"},
             )
             return
-        encoder_path = native_video_encoder_path()
-        if encoder_path is None:
+        if not secure_requested and native_video_encoder_path() is None:
             json_response(self, HTTPStatus.SERVICE_UNAVAILABLE, {"ok": False, "error": "native H.264 encoder unavailable"})
             return
 
-        generation = secrets.randbits(32) or 1
-        creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-        diagnostics: list[str] = []
-        diagnostics_lock = threading.Lock()
-        try:
-            encoder_command = [
-                str(encoder_path),
-                "--monitor",
-                monitor_id,
-                "--fps",
-                str(fps_limit),
-                "--generation",
-                str(generation),
-            ]
-            if os.environ.get("LAN_REMOTE_NATIVE_VIDEO_TEST_PATTERN") == "1":
-                encoder_command.append("--test-pattern")
-            process = subprocess.Popen(
-                encoder_command,
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                bufsize=0,
-                close_fds=True,
-                creationflags=creation_flags,
-            )
-        except OSError as exc:
-            json_response(self, HTTPStatus.SERVICE_UNAVAILABLE, {"ok": False, "error": str(exc)})
-            return
-
-        def read_diagnostics() -> None:
-            if process.stderr is None:
-                return
-            try:
-                for raw_line in iter(process.stderr.readline, b""):
-                    line = raw_line.decode("utf-8", "replace").strip()
-                    if not line:
-                        continue
-                    with diagnostics_lock:
-                        diagnostics.append(line[:512])
-                        del diagnostics[:-8]
-                    if os.environ.get("LAN_REMOTE_NATIVE_VIDEO_DEBUG") == "1" and sys.stderr is not None:
-                        print(f"[native-video] {line[:512]}", file=sys.stderr, flush=True)
-            except OSError:
-                return
-
-        diagnostic_thread = threading.Thread(
-            target=read_diagnostics,
-            name="lan-remote-native-video-diagnostics",
-            daemon=True,
-        )
-        diagnostic_thread.start()
-
+        initial_generation = secrets.randbits(32) or 1
         self.send_response(HTTPStatus.OK)
         self.send_header("Connection", "keep-alive")
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-LAN-Video-Protocol", str(NATIVE_VIDEO_PROTOCOL_VERSION))
         self.send_header("X-LAN-Video-Capability", NATIVE_VIDEO_CAPABILITY)
-        self.send_header("X-LAN-Video-Generation", str(generation))
+        self.send_header("X-LAN-Video-Generation", str(initial_generation))
         self.end_headers()
         self.wfile.flush()
 
+        control_target = NativeVideoControlTarget()
         control_thread = threading.Thread(
             target=self._forward_native_video_controls,
-            args=(process,),
+            args=(control_target,),
             name="lan-remote-native-video-control",
             daemon=True,
         )
         control_thread.start()
         next_authentication = time.monotonic() + 1.0
+
+        def authenticate_periodically() -> bool:
+            nonlocal next_authentication
+            now = time.monotonic()
+            if now < next_authentication:
+                return True
+            if self.server.state.authenticate(token, self.client_address[0]) is None:
+                return False
+            next_authentication = now + 1.0
+            return True
+
+        def send_compatibility_fallback(generation: int, reason: str) -> None:
+            stream_end = NativeVideoMessage(
+                message_type=NATIVE_VIDEO_MESSAGE_STREAM_END,
+                flags=0,
+                generation=generation,
+                sequence=0,
+                timestamp_us=int(time.monotonic_ns() // 1000),
+                width=0,
+                height=0,
+                fps_limit=0,
+                payload=json.dumps(
+                    {"reason": "secure_desktop", "fallback": "mjpeg_v1", "error": reason},
+                    separators=(",", ":"),
+                ).encode("utf-8")[:NATIVE_VIDEO_MAX_CONFIG_BYTES],
+            )
+            self.wfile.write(pack_native_video_message(stream_end))
+            self.wfile.flush()
+
+        generation = initial_generation
+        secure_source_failures = 0
         try:
-            if process.stdout is None:
-                return
             while True:
-                header = self._read_pipe_bytes(process.stdout, NATIVE_VIDEO_HEADER.size)
-                if header is None:
-                    process.wait(timeout=1)
-                    with diagnostics_lock:
-                        diagnostic_text = " | ".join(diagnostics)
+                secure_requested = self.server.state.lock_transition_active() or secure_video_source_required()
+                generation = (generation + 1) & 0xFFFFFFFF or 1
+                if secure_requested:
+                    if not secure_native_video_available():
+                        send_compatibility_fallback(generation, "secure H.264 helper unavailable")
+                        return
+                    secure_stream = None
+                    secure_deadline = time.monotonic() + 3.0
+                    last_secure_error = "secure H.264 helper did not become ready"
+                    while secure_stream is None:
+                        if not (
+                            self.server.state.lock_transition_active() or
+                            secure_video_source_required()
+                        ):
+                            break
+                        try:
+                            secure_stream = open_secure_native_video_stream(
+                                monitor_id,
+                                fps_limit,
+                                generation,
+                                timeout=1.0,
+                            )
+                        except RuntimeError as exc:
+                            last_secure_error = str(exc)
+                            if time.monotonic() >= secure_deadline:
+                                send_compatibility_fallback(generation, last_secure_error)
+                                return
+                            time.sleep(0.08)
+                    if secure_stream is None:
+                        self.server.state.clear_lock_transition()
+                        continue
+
+                    control_target.set_stream(None)
+                    secure_was_active = False
+                    secure_delivered_frame = False
+                    try:
+                        while True:
+                            packet = read_native_video_packet(secure_stream)
+                            if packet is None:
+                                break
+                            message, packed = packet
+                            if not authenticate_periodically():
+                                return
+                            actual_secure = secure_video_source_required()
+                            secure_was_active = secure_was_active or actual_secure
+                            if secure_was_active and not actual_secure:
+                                self.server.state.clear_lock_transition()
+                                break
+                            if message.message_type == NATIVE_VIDEO_MESSAGE_ERROR:
+                                last_secure_error = message.payload.decode("utf-8", "replace")[:512]
+                                break
+                            if message.message_type == NATIVE_VIDEO_MESSAGE_ACCESS_UNIT:
+                                secure_delivered_frame = True
+                            self.wfile.write(packed)
+                            self.wfile.flush()
+                            if message.message_type == NATIVE_VIDEO_MESSAGE_STREAM_END:
+                                break
+                    finally:
+                        try:
+                            secure_stream.close()
+                        except OSError:
+                            pass
+                    if secure_was_active and not secure_video_source_required():
+                        self.server.state.clear_lock_transition()
+                    if secure_video_source_required():
+                        secure_source_failures = 0 if secure_delivered_frame else secure_source_failures + 1
+                        if secure_source_failures >= 3:
+                            send_compatibility_fallback(generation, last_secure_error)
+                            return
+                        time.sleep(0.05)
+                    continue
+
+                secure_source_failures = 0
+                try:
+                    source = start_native_video_encoder(monitor_id, fps_limit, generation)
+                except (OSError, RuntimeError) as exc:
+                    error_message = NativeVideoMessage(
+                        message_type=NATIVE_VIDEO_MESSAGE_ERROR,
+                        flags=0,
+                        generation=generation,
+                        sequence=0,
+                        timestamp_us=int(time.monotonic_ns() // 1000),
+                        width=0,
+                        height=0,
+                        fps_limit=0,
+                        payload=str(exc).encode("utf-8")[:NATIVE_VIDEO_MAX_CONFIG_BYTES],
+                    )
+                    self.wfile.write(pack_native_video_message(error_message))
+                    self.wfile.flush()
+                    return
+                control_target.set_stream(source.process.stdin)
+                source_ended = False
+                try:
+                    if source.process.stdout is None:
+                        return
+                    while True:
+                        packet = read_native_video_packet(source.process.stdout)
+                        if packet is None:
+                            source_ended = True
+                            break
+                        message, packed = packet
+                        if not authenticate_periodically():
+                            return
+                        if self.server.state.lock_transition_active() or secure_video_source_required():
+                            break
+                        self.wfile.write(packed)
+                        self.wfile.flush()
+                        if message.message_type in {
+                            NATIVE_VIDEO_MESSAGE_STREAM_END,
+                            NATIVE_VIDEO_MESSAGE_ERROR,
+                        }:
+                            source_ended = True
+                            break
+                finally:
+                    control_target.set_stream(None)
+                    stop_native_video_encoder(source)
+                if self.server.state.lock_transition_active() or secure_video_source_required():
+                    continue
+                if source_ended:
+                    with source.diagnostics_lock:
+                        diagnostic_text = " | ".join(source.diagnostics)
                     if diagnostic_text:
                         error_message = NativeVideoMessage(
                             message_type=NATIVE_VIDEO_MESSAGE_ERROR,
@@ -4105,73 +4610,19 @@ class RemoteHandler(BaseHTTPRequestHandler):
                         self.wfile.write(pack_native_video_message(error_message))
                         self.wfile.flush()
                     return
-                try:
-                    fields = NATIVE_VIDEO_HEADER.unpack(header)
-                    payload_length = int(fields[7])
-                    message_type = int(fields[2])
-                    payload_limit = (
-                        NATIVE_VIDEO_MAX_ACCESS_UNIT_BYTES
-                        if message_type == NATIVE_VIDEO_MESSAGE_ACCESS_UNIT
-                        else NATIVE_VIDEO_MAX_CONFIG_BYTES
-                    )
-                    if payload_length > payload_limit:
-                        return
-                    payload = self._read_pipe_bytes(process.stdout, payload_length)
-                    if payload is None:
-                        return
-                    packed = header + payload
-                    message = unpack_native_video_message(packed)
-                except (OSError, ValueError, struct.error):
-                    return
-
-                now = time.monotonic()
-                if now >= next_authentication:
-                    if self.server.state.authenticate(token, self.client_address[0]) is None:
-                        return
-                    next_authentication = now + 1.0
-                if self.server.state.lock_transition_active() or native_video_requires_compatibility():
-                    stream_end = NativeVideoMessage(
-                        message_type=NATIVE_VIDEO_MESSAGE_STREAM_END,
-                        flags=0,
-                        generation=generation,
-                        sequence=message.sequence,
-                        timestamp_us=int(time.monotonic_ns() // 1000),
-                        width=0,
-                        height=0,
-                        fps_limit=0,
-                        payload=b'{"reason":"secure_desktop","fallback":"mjpeg_v1"}',
-                    )
-                    self.wfile.write(pack_native_video_message(stream_end))
-                    self.wfile.flush()
-                    return
-                self.wfile.write(packed)
-                self.wfile.flush()
-                if message.message_type in {
-                    NATIVE_VIDEO_MESSAGE_STREAM_END,
-                    NATIVE_VIDEO_MESSAGE_ERROR,
-                }:
-                    return
-        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, OSError, TimeoutError):
+        except (
+            BrokenPipeError,
+            ConnectionResetError,
+            ConnectionAbortedError,
+            OSError,
+            TimeoutError,
+            ValueError,
+            struct.error,
+        ):
             return
         finally:
+            control_target.set_stream(None)
             self.close_connection = True
-            if process.stdin is not None:
-                try:
-                    process.stdin.close()
-                except OSError:
-                    pass
-            if process.poll() is None:
-                process.terminate()
-                try:
-                    process.wait(timeout=2)
-                except subprocess.TimeoutExpired:
-                    process.kill()
-                    process.wait(timeout=2)
-            if process.stderr is not None:
-                try:
-                    process.stderr.close()
-                except OSError:
-                    pass
 
     def _read_stream_bytes(self, length: int) -> bytes | None:
         chunks = bytearray()
@@ -4709,13 +5160,28 @@ class RemoteHandler(BaseHTTPRequestHandler):
                 query = parse_qs(parsed.query)
                 monitor_id = query.get("monitor", ["all"])[0]
                 include_cursor = query.get("cursor", ["1"])[0] != "0"
-                if secure_desktop_active():
-                    if not self.server.state.settings.values["secure_desktop_enabled"]:
-                        json_response(self, HTTPStatus.LOCKED, {"ok": False, "error": "secure desktop control disabled"})
-                        return
-                    data, content_type = capture_secure_desktop(monitor_id, include_cursor)
-                else:
-                    data, content_type = capture_screen_image(monitor_id, include_cursor)
+                secure_transition = query.get("secure_transition", ["0"])[0] == "1"
+                transition_deadline = time.monotonic() + LOCK_TRANSITION_DARK_FRAME_MAX_SECONDS
+                while True:
+                    session_locked = current_session_locked()
+                    if secure_transition and not session_locked and time.monotonic() < transition_deadline:
+                        time.sleep(0.04)
+                        continue
+                    if secure_desktop_active():
+                        if not self.server.state.settings.values["secure_desktop_enabled"]:
+                            json_response(self, HTTPStatus.LOCKED, {"ok": False, "error": "secure desktop control disabled"})
+                            return
+                        data, content_type = capture_secure_desktop(monitor_id, include_cursor)
+                    else:
+                        data, content_type = capture_screen_image(monitor_id, include_cursor)
+                    if (
+                        secure_transition and
+                        time.monotonic() < transition_deadline and
+                        encoded_frame_is_dark(data)
+                    ):
+                        time.sleep(0.04)
+                        continue
+                    break
             except ValueError as exc:
                 json_response(self, HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(exc)})
                 return
