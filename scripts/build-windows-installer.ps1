@@ -1,5 +1,5 @@
 param(
-    [string]$Version = "1.0.5",
+    [string]$Version = "1.0.6",
     [switch]$SkipDependencyInstall
 )
 
@@ -25,6 +25,8 @@ $ControlHostPath = Join-Path $PortableDir "WindowsLANRemoteControlHost.exe"
 $NativeBuildDir = Join-Path $BuildDir "native"
 $NativeVideoDll = Join-Path $NativeBuildDir "WindowsLANRemoteVideo.dll"
 $NativeVideoEncoder = Join-Path $NativeBuildDir "WindowsLANRemoteVideoEncoder.exe"
+$CredentialProviderDll = Join-Path $NativeBuildDir "WindowsLANRemoteCredentialProvider.dll"
+$CredentialProviderName = "WindowsLANRemoteCredentialProvider-$Version.dll"
 
 function Assert-Tool {
     param([string]$Name)
@@ -176,6 +178,7 @@ if (-not (Test-Path -LiteralPath $PortableExecutable)) {
 
 Copy-Item -LiteralPath $NativeVideoDll -Destination $PortableDir -Force
 Copy-Item -LiteralPath $NativeVideoEncoder -Destination $PortableDir -Force
+Copy-Item -LiteralPath $CredentialProviderDll -Destination (Join-Path $PortableDir $CredentialProviderName) -Force
 
 & $CscPath `
     /nologo `
@@ -364,7 +367,8 @@ $RequiredPortableFiles = @(
     (Join-Path $PortableDir "Microsoft.Web.WebView2.WinForms.dll"),
     (Join-Path $PortableDir "WebView2Loader.dll"),
     (Join-Path $PortableDir "WindowsLANRemoteVideo.dll"),
-    (Join-Path $PortableDir "WindowsLANRemoteVideoEncoder.exe")
+    (Join-Path $PortableDir "WindowsLANRemoteVideoEncoder.exe"),
+    (Join-Path $PortableDir $CredentialProviderName)
 )
 foreach ($RequiredFile in $RequiredPortableFiles) {
     if (-not (Test-Path -LiteralPath $RequiredFile)) {

@@ -61,7 +61,7 @@ if platform.system() == "Windows":
 
 
 APP_NAME = "Windows LAN Remote"
-APP_VERSION = "1.0.5"
+APP_VERSION = "1.0.6"
 GITHUB_REPOSITORY = "EmpK1019/lan-windows-remote"
 GITHUB_LATEST_RELEASE_API = f"https://api.github.com/repos/{GITHUB_REPOSITORY}/releases/latest"
 DEFAULT_PORT = 8765
@@ -128,6 +128,9 @@ UNLOCK_SUBMIT_DELAY_SECONDS = 0.18
 UNLOCK_RESULT_POLL_SECONDS = 0.25
 UNLOCK_RESULT_POLLS = 24
 UNLOCK_SEQUENCE_TIMEOUT_SECONDS = 12.0
+UNLOCK_PROVIDER_REQUEST_TTL_SECONDS = 30
+UNLOCK_PROVIDER_EVENT_NAME = "Global\\WindowsLANRemoteUnlockPending"
+UNLOCK_PROVIDER_REGISTRY_PATH = r"SOFTWARE\Windows LAN Remote\PendingUnlock"
 DESKTOP_READOBJECTS = 0x0001
 DESKTOP_WRITEOBJECTS = 0x0080
 DESKTOP_SWITCHDESKTOP = 0x0100
@@ -518,6 +521,39 @@ def dpapi_unprotect(value: str) -> str:
         raise ctypes.WinError()
     try:
         return ctypes.string_at(data_out.pbData, data_out.cbData).decode("utf-8")
+    finally:
+        ctypes.windll.kernel32.LocalFree(data_out.pbData)
+
+
+def dpapi_protect_machine(value: str) -> bytes:
+    """Protect a short-lived secret for the LocalSystem credential provider."""
+    data = value.encode("utf-16-le")
+    buffer = ctypes.create_string_buffer(data)
+    data_in = DATA_BLOB(len(data), ctypes.cast(buffer, ctypes.POINTER(ctypes.c_ubyte)))
+    data_out = DATA_BLOB()
+    crypt32 = ctypes.windll.crypt32
+    crypt32.CryptProtectData.argtypes = [
+        ctypes.POINTER(DATA_BLOB),
+        wintypes.LPCWSTR,
+        ctypes.POINTER(DATA_BLOB),
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        ctypes.POINTER(DATA_BLOB),
+    ]
+    crypt32.CryptProtectData.restype = wintypes.BOOL
+    if not crypt32.CryptProtectData(
+        ctypes.byref(data_in),
+        "LAN Remote pending workstation unlock",
+        None,
+        None,
+        None,
+        0x1 | 0x4,  # CRYPTPROTECT_UI_FORBIDDEN | CRYPTPROTECT_LOCAL_MACHINE
+        ctypes.byref(data_out),
+    ):
+        raise ctypes.WinError()
+    try:
+        return ctypes.string_at(data_out.pbData, data_out.cbData)
     finally:
         ctypes.windll.kernel32.LocalFree(data_out.pbData)
 
@@ -2745,6 +2781,114 @@ def current_process_session_id() -> int | None:
     return int(session_id.value)
 
 
+def active_session_account(session_id: int | None = None) -> tuple[str, str]:
+    """Return the domain and username attached to the interactive session."""
+    resolved_session = current_process_session_id() if session_id is None else session_id
+    if resolved_session is None:
+        raise OSError("interactive session is unavailable")
+    wtsapi32 = ctypes.windll.wtsapi32
+
+    def query(info_class: int) -> str:
+        buffer = ctypes.c_void_p()
+        returned = wintypes.DWORD()
+        if not wtsapi32.WTSQuerySessionInformationW(
+            None,
+            resolved_session,
+            info_class,
+            ctypes.byref(buffer),
+            ctypes.byref(returned),
+        ):
+            raise ctypes.WinError()
+        try:
+            if not buffer.value or returned.value < ctypes.sizeof(wintypes.WCHAR):
+                return ""
+            return ctypes.wstring_at(buffer.value).strip()
+        finally:
+            wtsapi32.WTSFreeMemory(buffer)
+
+    username = query(5)  # WTSUserName
+    domain = query(7)  # WTSDomainName
+    if not username:
+        raise OSError("interactive session account is unavailable")
+    return domain, username
+
+
+def _harden_pending_unlock_registry_key(key: Any) -> None:
+    """Restrict a machine-DPAPI unlock blob to LocalSystem and administrators."""
+    advapi32 = ctypes.windll.advapi32
+    descriptor = ctypes.c_void_p()
+    sddl = "O:SYG:SYD:P(A;;GA;;;SY)(A;;GA;;;BA)"
+    advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        ctypes.POINTER(ctypes.c_void_p),
+        ctypes.POINTER(wintypes.DWORD),
+    ]
+    advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW.restype = wintypes.BOOL
+    advapi32.RegSetKeySecurity.argtypes = [wintypes.HKEY, wintypes.DWORD, ctypes.c_void_p]
+    advapi32.RegSetKeySecurity.restype = wintypes.LONG
+    if not advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW(
+        sddl,
+        1,
+        ctypes.byref(descriptor),
+        None,
+    ):
+        raise ctypes.WinError()
+    try:
+        result = advapi32.RegSetKeySecurity(
+            int(key.handle),
+            0x00000004 | 0x80000000,  # DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION
+            descriptor,
+        )
+        if result:
+            raise OSError(result, "could not protect pending unlock registry key")
+    finally:
+        ctypes.windll.kernel32.LocalFree(descriptor)
+
+
+def queue_credential_provider_unlock(password: str) -> dict[str, Any]:
+    """Publish one short-lived password to the registered Winlogon provider."""
+    if platform.system() != "Windows":
+        raise OSError("credential provider unlock is available only on Windows")
+    if not 1 <= len(password) <= 128 or "\0" in password:
+        raise ValueError("lock credential length is invalid")
+    domain, username = active_session_account()
+    protected_password = dpapi_protect_machine(password)
+    nonce = secrets.token_hex(16)
+    expires_at_ms = int((time.time() + UNLOCK_PROVIDER_REQUEST_TTL_SECONDS) * 1000)
+    access = winreg.KEY_SET_VALUE | 0x00040000 | winreg.KEY_WOW64_64KEY  # WRITE_DAC
+    with winreg.CreateKeyEx(
+        winreg.HKEY_LOCAL_MACHINE,
+        UNLOCK_PROVIDER_REGISTRY_PATH,
+        0,
+        access,
+    ) as key:
+        _harden_pending_unlock_registry_key(key)
+        winreg.SetValueEx(key, "Version", 0, winreg.REG_DWORD, 1)
+        winreg.SetValueEx(key, "Domain", 0, winreg.REG_SZ, domain)
+        winreg.SetValueEx(key, "Username", 0, winreg.REG_SZ, username)
+        winreg.SetValueEx(key, "ProtectedPassword", 0, winreg.REG_BINARY, protected_password)
+        winreg.SetValueEx(key, "ExpiresAtMs", 0, winreg.REG_QWORD, expires_at_ms)
+        winreg.SetValueEx(key, "Nonce", 0, winreg.REG_SZ, nonce)
+
+    kernel32 = ctypes.windll.kernel32
+    kernel32.CreateEventW.argtypes = [ctypes.c_void_p, wintypes.BOOL, wintypes.BOOL, wintypes.LPCWSTR]
+    kernel32.CreateEventW.restype = wintypes.HANDLE
+    kernel32.SetEvent.argtypes = [wintypes.HANDLE]
+    kernel32.SetEvent.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+    event = kernel32.CreateEventW(None, False, False, UNLOCK_PROVIDER_EVENT_NAME)
+    if not event:
+        raise ctypes.WinError()
+    try:
+        if not kernel32.SetEvent(event):
+            raise ctypes.WinError()
+    finally:
+        kernel32.CloseHandle(event)
+    return {"ok": True, "status": "queued", "nonce": nonce, "expires_at": expires_at_ms}
+
+
 def service_session_locked(
     path: str | Path | None = None,
     *,
@@ -3110,6 +3254,18 @@ def secure_desktop_cursor_payload(monitor_id: str = "all") -> dict[str, Any]:
 def send_secure_input(payload: dict[str, Any]) -> None:
     timeout = UNLOCK_SEQUENCE_TIMEOUT_SECONDS if payload.get("type") == "text_sequence" else 2.0
     secure_helper_request("/secure/input", payload=payload, timeout=timeout)
+
+
+def request_credential_provider_unlock(password: str) -> dict[str, Any]:
+    data, _ = secure_helper_request(
+        "/secure/unlock-request",
+        payload={"password": password},
+        timeout=4.0,
+    )
+    result = json.loads(data.decode("utf-8"))
+    if not isinstance(result, dict) or not result.get("ok"):
+        raise RuntimeError("Windows 凭据解锁服务拒绝请求")
+    return result
 
 
 def try_send_elevated_input(payload: dict[str, Any]) -> bool:
@@ -3751,7 +3907,8 @@ class SecureDesktopHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         if not self.authorized():
             return
-        if urlparse(self.path).path != "/secure/input":
+        request_path = urlparse(self.path).path
+        if request_path not in {"/secure/input", "/secure/unlock-request"}:
             json_response(self, HTTPStatus.NOT_FOUND, {"ok": False, "error": "not found"}, False)
             return
         try:
@@ -3766,8 +3923,15 @@ class SecureDesktopHandler(BaseHTTPRequestHandler):
             payload = json.loads(raw_body.decode("utf-8"))
             if not isinstance(payload, dict):
                 raise ValueError("object required")
-            with active_input_desktop():
-                handle_secure_desktop_input(payload)
+            if request_path == "/secure/unlock-request":
+                password = payload.get("password")
+                if not isinstance(password, str):
+                    raise ValueError("lock credential required")
+                result = queue_credential_provider_unlock(password)
+            else:
+                with active_input_desktop():
+                    handle_secure_desktop_input(payload)
+                result = {"ok": True}
         except (OSError, TimeoutError):
             json_response(self, HTTPStatus.REQUEST_TIMEOUT, {"ok": False, "error": "request body timed out"}, False)
             return
@@ -3777,7 +3941,7 @@ class SecureDesktopHandler(BaseHTTPRequestHandler):
         except Exception as exc:
             json_response(self, HTTPStatus.INTERNAL_SERVER_ERROR, {"ok": False, "error": str(exc)}, False)
             return
-        json_response(self, HTTPStatus.OK, {"ok": True}, False)
+        json_response(self, HTTPStatus.OK, result, False)
 
 
 def run_secure_desktop_helper(port: int, secret_file: str) -> int:
@@ -3997,12 +4161,23 @@ class DesktopApi:
                 if ui_state == "lock_screen":
                     if wake_attempts >= UNLOCK_WAKE_ATTEMPTS:
                         return {"ok": False, "status": "wake_unresponsive"}
-                    self._remote_json(
-                        device,
-                        "/input",
-                        access_password,
-                        {"type": "key_press", "key": "Enter", "code": "Enter"},
-                    )
+                    try:
+                        self._remote_json(
+                            device,
+                            "/input",
+                            access_password,
+                            {"type": "key_press", "key": "Enter", "code": "Enter"},
+                        )
+                    except HTTPError as exc:
+                        # LockApp can switch to Winlogon between status sampling and
+                        # input dispatch. A secure-desktop 5xx in that narrow race is
+                        # harmless; the following status polls determine the result.
+                        if exc.code < 500:
+                            raise
+                    except (OSError, URLError, TimeoutError):
+                        # The same transition can close the old desktop input path.
+                        # Never type a password until Winlogon is positively observed.
+                        pass
                     wake_attempts += 1
                 else:
                     transition_waits += 1
@@ -4033,15 +4208,18 @@ class DesktopApi:
                     # The next loop performs the bounded second wake attempt.
                     continue
 
-            self._remote_json(
+            queued = self._remote_json(
                 device,
-                "/input",
+                "/api/credential-provider-unlock",
                 access_password,
-                {"type": "text_sequence", "text": lock_password},
+                {"password": lock_password},
                 timeout=UNLOCK_SEQUENCE_TIMEOUT_SECONDS,
             )
-            time.sleep(UNLOCK_SUBMIT_DELAY_SECONDS)
-            self._remote_json(device, "/input", access_password, {"type": "key_press", "key": "Enter", "code": "Enter"})
+            if not queued.get("ok") or queued.get("status") not in {"queued", "not_locked"}:
+                return {"ok": False, "status": "provider_unavailable"}
+            if queued.get("status") == "not_locked":
+                clear_attempt()
+                return {"ok": True, "status": "not_locked"}
 
             last_ui_state = ui_state
             for _ in range(UNLOCK_RESULT_POLLS):
@@ -5576,6 +5754,32 @@ class RemoteHandler(BaseHTTPRequestHandler):
                 json_response(self, HTTPStatus.CONFLICT, {"ok": False, "error": str(exc)})
                 return
             json_response(self, HTTPStatus.OK, {"ok": True, "status": "locked"})
+            return
+        if parsed.path == "/api/credential-provider-unlock":
+            payload = self.read_json_payload()
+            if payload is None:
+                return
+            if self.authenticate_request(parsed, payload) is None:
+                return
+            if self.server.state.view_only:
+                json_response(self, HTTPStatus.FORBIDDEN, {"ok": False, "error": "server is view-only"})
+                return
+            if not self.server.state.settings.values["secure_desktop_enabled"]:
+                json_response(self, HTTPStatus.LOCKED, {"ok": False, "error": "secure desktop control disabled"})
+                return
+            password = payload.get("password")
+            if not isinstance(password, str) or not 1 <= len(password) <= 128:
+                json_response(self, HTTPStatus.BAD_REQUEST, {"ok": False, "error": "lock credential required"})
+                return
+            if not current_session_locked():
+                json_response(self, HTTPStatus.OK, {"ok": True, "status": "not_locked"})
+                return
+            try:
+                result = request_credential_provider_unlock(password)
+            except (OSError, RuntimeError, ValueError) as exc:
+                json_response(self, HTTPStatus.SERVICE_UNAVAILABLE, {"ok": False, "error": str(exc)})
+                return
+            json_response(self, HTTPStatus.OK, result)
             return
         if parsed.path != "/input":
             json_response(self, HTTPStatus.NOT_FOUND, {"ok": False, "error": "not found"})

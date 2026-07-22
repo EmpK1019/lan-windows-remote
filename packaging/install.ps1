@@ -9,7 +9,7 @@ $AppId = "WindowsLANRemote"
 $Publisher = "EmpK1019"
 $ServiceName = "WindowsLANRemoteSecureDesktop"
 $VersionFile = Join-Path $PSScriptRoot "VERSION.txt"
-$Version = if (Test-Path -LiteralPath $VersionFile) { (Get-Content -Raw -LiteralPath $VersionFile).Trim() } else { "1.0.5" }
+$Version = if (Test-Path -LiteralPath $VersionFile) { (Get-Content -Raw -LiteralPath $VersionFile).Trim() } else { "1.0.6" }
 
 $InstallDir = Join-Path $env:ProgramFiles $AppName
 $LegacyInstallDir = Join-Path $env:LOCALAPPDATA "Programs\$AppName"
@@ -19,6 +19,8 @@ $UninstallKey = "HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\$AppI
 $LegacyUninstallKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\$AppId"
 $ExecutableName = "WindowsLANRemote-$Version.exe"
 $ServiceExecutableName = "WindowsLANRemoteService-$Version.exe"
+$CredentialProviderId = "{7C5A4A6F-4E17-4F3A-A2C6-0A9D40B0E105}"
+$CredentialProviderDllName = "WindowsLANRemoteCredentialProvider-$Version.dll"
 $SourceAppDir = Join-Path $PSScriptRoot "app"
 $SourceExecutable = Join-Path $SourceAppDir $ExecutableName
 $SourceServiceExecutable = Join-Path $PSScriptRoot "WindowsLANRemoteService.exe"
@@ -222,6 +224,22 @@ function Install-SecureDesktopService {
     (Get-Service -Name $ServiceName).WaitForStatus("Running", [TimeSpan]::FromSeconds(15))
 }
 
+function Install-CredentialProvider {
+    $ProviderDll = Join-Path $InstallDir $CredentialProviderDllName
+    if (-not (Test-Path -LiteralPath $ProviderDll)) {
+        throw "Installer payload is missing $CredentialProviderDllName."
+    }
+    $ProviderKey = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Authentication\Credential Providers\$CredentialProviderId"
+    $ClassKey = "HKLM:\SOFTWARE\Classes\CLSID\$CredentialProviderId"
+    $InprocKey = Join-Path $ClassKey "InprocServer32"
+    New-Item -Path $ProviderKey -Force | Out-Null
+    Set-Item -Path $ProviderKey -Value "LAN Remote secure unlock"
+    New-Item -Path $InprocKey -Force | Out-Null
+    Set-Item -Path $ClassKey -Value "LAN Remote secure unlock"
+    Set-Item -Path $InprocKey -Value $ProviderDll
+    New-ItemProperty -Path $InprocKey -Name "ThreadingModel" -Value "Apartment" -PropertyType String -Force | Out-Null
+}
+
 function Install-FirewallRules {
     foreach ($RuleName in @("WindowsLANRemote-TCP", "WindowsLANRemote-UDP")) {
         Get-NetFirewallRule -Name $RuleName -ErrorAction SilentlyContinue | Remove-NetFirewallRule -ErrorAction SilentlyContinue
@@ -259,6 +277,7 @@ try {
     Copy-WithRetry -Source $VersionFile -Destination (Join-Path $InstallDir "VERSION.txt")
 
     Ensure-ServiceToken
+    Install-CredentialProvider
     Install-SecureDesktopService
     Install-FirewallRules
 

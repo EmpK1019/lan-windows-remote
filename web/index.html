@@ -3492,6 +3492,10 @@
           setRemoteStatus("暂时无法确认远程登录界面，未发送密码", true);
           return false;
         }
+        if (result?.status === "provider_unavailable") {
+          setRemoteStatus("被控端安全解锁组件未就绪，请修复或重新安装", true);
+          return false;
+        }
         if (manual && result?.error) showToast(`解锁失败：${result.error}`);
         return false;
       } catch (error) {

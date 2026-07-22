@@ -55,7 +55,7 @@ try {
         (Join-Path $SdkRoot "Lib\$SdkVersion\um\x64")
     ) -join ";"
 
-    $Common = @("/nologo", "/std:c++17", "/EHsc", "/O2", "/W4", "/WX", "/DUNICODE", "/D_UNICODE")
+    $Common = @("/nologo", "/std:c++17", "/EHsc", "/O2", "/W4", "/WX", "/utf-8", "/DUNICODE", "/D_UNICODE")
     & $Compiler @Common `
         "/Fe:$OutputDir\WindowsLANRemoteVideoEncoder.exe" `
         "/Fo:$OutputDir\Encoder.obj" `
@@ -74,6 +74,17 @@ try {
         throw "Native H.264 decoder/renderer compilation failed with exit code $LASTEXITCODE."
     }
 
+    & $Compiler @Common /LD `
+        "/Fe:$OutputDir\WindowsLANRemoteCredentialProvider.dll" `
+        "/Fo:$OutputDir\CredentialProvider.obj" `
+        (Join-Path $Root "native\WindowsLANRemoteCredentialProvider.cpp") `
+        /link `
+        "/DEF:$((Join-Path $Root 'native\WindowsLANRemoteCredentialProvider.def'))" `
+        advapi32.lib credui.lib crypt32.lib ole32.lib secur32.lib shlwapi.lib uuid.lib
+    if ($LASTEXITCODE -ne 0) {
+        throw "Winlogon credential provider compilation failed with exit code $LASTEXITCODE."
+    }
+
     if ($RunTests) {
         $ProtocolTest = Join-Path $OutputDir "NativeVideoProtocolTests.exe"
         & $Compiler @Common `
@@ -87,6 +98,20 @@ try {
         if ($LASTEXITCODE -ne 0) {
             throw "Native video protocol tests failed with exit code $LASTEXITCODE."
         }
+
+        $CredentialProviderTest = Join-Path $OutputDir "CredentialProviderSmokeTests.exe"
+        & $Compiler @Common `
+            "/Fe:$CredentialProviderTest" `
+            "/Fo:$OutputDir\CredentialProviderTests.obj" `
+            (Join-Path $Root "tests\CredentialProviderSmokeTests.cpp") `
+            /link ole32.lib uuid.lib
+        if ($LASTEXITCODE -ne 0) {
+            throw "Credential provider smoke test compilation failed with exit code $LASTEXITCODE."
+        }
+        & $CredentialProviderTest (Join-Path $OutputDir "WindowsLANRemoteCredentialProvider.dll")
+        if ($LASTEXITCODE -ne 0) {
+            throw "Credential provider smoke test failed with exit code $LASTEXITCODE."
+        }
     }
 }
 finally {
@@ -96,7 +121,8 @@ finally {
 
 foreach ($Required in @(
     (Join-Path $OutputDir "WindowsLANRemoteVideoEncoder.exe"),
-    (Join-Path $OutputDir "WindowsLANRemoteVideo.dll")
+    (Join-Path $OutputDir "WindowsLANRemoteVideo.dll"),
+    (Join-Path $OutputDir "WindowsLANRemoteCredentialProvider.dll")
 )) {
     if (-not (Test-Path -LiteralPath $Required)) {
         throw "Native video build output is missing: $Required"
