@@ -531,11 +531,15 @@ private:
     }
 
     bool RenderNow(IMFSample* sample, const UINT input_width, const UINT input_height) {
-        if (!sample) return false;
+        // A hidden child swap chain must not be presented. Presenting it while
+        // hidden changes how DWM composes the owned native toolbar and can fold
+        // the host/toolbar layer back into the captured desktop. The web host
+        // now makes the child visible after decode has produced its first frame.
+        if (!sample || !visible_) return false;
         if (frame_latency_waitable_object_ &&
             WaitForSingleObject(frame_latency_waitable_object_, 12) != WAIT_OBJECT_0) return false;
         std::lock_guard<std::mutex> guard(lock_);
-        if (output_width_ == 0 || output_height_ == 0) return false;
+        if (output_width_ == 0 || output_height_ == 0 || !visible_) return false;
         ComPtr<ID3D11Texture2D> texture;
         UINT subresource = 0;
         ComPtr<IMFMediaBuffer> buffer;
@@ -635,10 +639,6 @@ private:
         // The frame-latency object above already guarantees a free one-frame
         // presentation slot. DO_NOT_WAIT performs a second, racy rejection and
         // drops displayable frames around the monitor refresh boundary.
-        // Keep presenting while the child HWND is hidden so the first decoded
-        // frame can be fully staged before the WebView swaps from its preview
-        // image to the native surface. Visibility controls composition only;
-        // using it as a render gate creates a rendered_frames == 0 deadlock.
         ThrowIfFailed(swap_chain_->Present(0, 0), "present native video frame");
         return true;
     }

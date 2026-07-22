@@ -185,20 +185,35 @@ async function startNativeHostTest() {{
   await window.pywebview.api.set_window_title({json.dumps(WINDOW_TITLE)});
   const config = {json.dumps(config)};
   const started = await window.pywebview.api.configure_native_video(config);
-  await window.pywebview.api.set_native_video_layout({{...config, visible:true}});
-  await window.pywebview.api.set_native_overlay_state({{
-    visible:true, collapsed:false, unlock_visible:false, view_only:false,
-    fps:60, scale_mode:'fill', keyboard:true, clipboard:true, fullscreen:false,
-    status_error:false, monitors:[{{id:'all',label:'全部显示器'}}]
-  }});
+  let surfaced = false;
+  let hiddenRenderedFrames = -1;
   for (let attempt=0; attempt<300; attempt++) {{
     const status = await window.pywebview.api.native_video_status();
     if (!started || status.state === 'failed') {{
       await fetch('/result', {{method:'POST', body:JSON.stringify(status)}});
       return;
     }}
+    if (!surfaced && Number(status.decoded_frames || 0) > 0) {{
+      hiddenRenderedFrames = Number(status.rendered_frames || 0);
+      if (hiddenRenderedFrames !== 0) {{
+        await fetch('/result', {{method:'POST', body:JSON.stringify({{
+          ...status, state:'failed', error:'hidden native surface was presented',
+          hidden_rendered_frames:hiddenRenderedFrames
+        }})}});
+        return;
+      }}
+      await window.pywebview.api.set_native_video_layout({{...config, visible:true}});
+      await window.pywebview.api.set_native_overlay_state({{
+        visible:true, collapsed:false, unlock_visible:false, view_only:false,
+        fps:60, scale_mode:'fill', keyboard:true, clipboard:true, fullscreen:false,
+        status_error:false, monitors:[{{id:'all',label:'全部显示器'}}]
+      }});
+      surfaced = true;
+    }}
     if (status.state === 'streaming' && Number(status.rendered_frames || 0) >= 30) {{
-      await fetch('/result', {{method:'POST', body:JSON.stringify(status)}});
+      await fetch('/result', {{method:'POST', body:JSON.stringify({{
+        ...status, hidden_rendered_frames:hiddenRenderedFrames
+      }})}});
       return;
     }}
     await new Promise(resolve => setTimeout(resolve, 50));
@@ -255,6 +270,8 @@ else window.addEventListener('pywebviewready', startNativeHostTest, {{once:true}
                 )
             if report.get("state") != "streaming" or int(report.get("rendered_frames", 0)) < 30:
                 raise RuntimeError(f"packaged native control host failed: {report}")
+            if int(report.get("hidden_rendered_frames", -1)) != 0:
+                raise RuntimeError(f"hidden native surface was presented: {report}")
             window = find_window(WINDOW_TITLE)
             if not window:
                 raise RuntimeError("packaged native control host window was not visible")

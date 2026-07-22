@@ -1529,6 +1529,7 @@
       nativeInputSyncRevision: 0,
       nativeInputSyncTimer: 0,
       nativeVideoActive: false,
+      nativeVideoPriming: false,
       nativeVideoStatusTimer: 0,
       nativeVideoRetryTimer: 0,
       nativeVideoUnlockRestartTimer: 0,
@@ -2948,6 +2949,7 @@
       state.nativeVideoRetryTimer = 0;
       state.nativeVideoUnlockRestartTimer = 0;
       state.nativeVideoActive = false;
+      state.nativeVideoPriming = false;
       state.nativeVideoDiagnostics = null;
       state.nativeFallbackPending = false;
       document.body.classList.remove("native-video-active");
@@ -2991,7 +2993,7 @@
         surface_top: rect.top,
         surface_width: rect.width,
         surface_height: rect.height,
-        visible: state.nativeVideoActive && !nativeOverlayObscured(),
+        visible: (state.nativeVideoActive || state.nativeVideoPriming) && !nativeOverlayObscured(),
         scale_mode: sessionScaleMode(),
         exclusions: []
       };
@@ -2999,7 +3001,10 @@
 
     function syncNativeVideoLayout() {
       syncNativeOverlayState();
-      if (!state.nativeVideoActive || !window.pywebview?.api?.set_native_video_layout) return;
+      if (
+        (!state.nativeVideoActive && !state.nativeVideoPriming) ||
+        !window.pywebview?.api?.set_native_video_layout
+      ) return;
       window.pywebview.api.set_native_video_layout(nativeVideoLayout()).catch(() => {});
     }
 
@@ -3032,6 +3037,7 @@
       } catch {}
       state.nativeFallbackPending = false;
       state.nativeVideoActive = false;
+      state.nativeVideoPriming = false;
       document.body.classList.remove("native-video-active");
       try {
         await window.pywebview?.api?.set_native_overlay_state?.({visible: false});
@@ -3148,9 +3154,26 @@
       }
       if (revision !== state.nativeVideoRevision || session !== state.session) return;
       state.nativeVideoDiagnostics = status;
+      if (
+        !state.nativeVideoActive &&
+        !state.nativeVideoPriming &&
+        Number(status?.decoded_frames || 0) > 0
+      ) {
+        // Decode first, then reveal the child HWND. This avoids both the old
+        // rendered_frames == 0 startup deadlock and presenting a hidden swap
+        // chain into DWM's native toolbar composition path.
+        state.nativeVideoPriming = true;
+        syncNativeVideoLayout();
+        state.nativeVideoStatusTimer = setTimeout(
+          () => pollNativeVideoStatus(session, revision, attempt + 1),
+          20
+        );
+        return;
+      }
       if (status?.state === "streaming" && Number(status.rendered_frames || 0) > 0) {
         const monitor = selectedMonitorGeometry(session);
         state.nativeVideoActive = true;
+        state.nativeVideoPriming = false;
         state.loadingFrame = false;
         state.remoteFrameWidth = Number(monitor?.width) || Number(status.coordinate_width) || 0;
         state.remoteFrameHeight = Number(monitor?.height) || Number(status.coordinate_height) || 0;
@@ -3201,6 +3224,7 @@
 
     async function startNativeVideo(session) {
       const revision = ++state.nativeVideoRevision;
+      state.nativeVideoPriming = false;
       state.loadingFrame = true;
       startNativeVideoPreview(session);
       const layout = nativeVideoLayout();

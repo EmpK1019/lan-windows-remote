@@ -296,9 +296,9 @@ class CoreFunctionTests(unittest.TestCase):
         self.assertIn("next_first_frame_keyframe", native)
         self.assertIn("preserve_last_frame", native)
         self.assertIn("if (!preserve_last_frame) renderer_.reset();", native)
-        self.assertIn("Visibility controls composition only", native)
-        self.assertNotIn("if (!sample || !visible_) return false;", native)
-        self.assertNotIn("output_height_ == 0 || !visible_", native)
+        self.assertIn("A hidden child swap chain must not be presented", native)
+        self.assertIn("if (!sample || !visible_) return false;", native)
+        self.assertIn("output_height_ == 0 || !visible_", native)
         self.assertIn(
             "VideoProcessorSetOutputBackgroundColor(processor_.Get(), FALSE, &black)",
             native,
@@ -310,6 +310,9 @@ class CoreFunctionTests(unittest.TestCase):
         self.assertIn("VideoProcessorSetOutputTargetRect(", native)
         self.assertIn("ClearRenderTargetView(render_target_view_.Get(), clear_color)", native)
         self.assertIn("function startNativeVideoPreview(session)", html)
+        self.assertIn("nativeVideoPriming", html)
+        self.assertIn("Number(status?.decoded_frames || 0) > 0", html)
+        self.assertIn("state.nativeVideoPriming = true;", html)
         self.assertIn("Number(status.rendered_frames || 0) > 0", html)
         self.assertIn("nativeFallbackPending", html)
         self.assertIn("secure_transition=1", html)

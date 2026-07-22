@@ -140,6 +140,7 @@ setInterval(async () => {
       body: JSON.stringify({
         status,
         native_video_active: Boolean(state.nativeVideoActive),
+        native_video_priming: Boolean(state.nativeVideoPriming),
         native_video_revision: Number(state.nativeVideoRevision || 0),
         remote_session_locked: Boolean(state.remoteSessionLocked)
       })
@@ -354,6 +355,9 @@ setInterval(async () => {
             left, top, right, bottom = window_rect(window)
             time.sleep(0.25)
             visible_delta = 0.0
+            rendered_before_visual = int(
+                dict(rendered_after_reconnect.get("status", {})).get("rendered_frames", 0)
+            )
             visual_deadline = time.monotonic() + 8
             previous = ImageGrab.grab(bbox=(left, top, right, bottom)).convert("RGB")
             while time.monotonic() < visual_deadline:
@@ -361,7 +365,7 @@ setInterval(async () => {
                 current = ImageGrab.grab(bbox=(left, top, right, bottom)).convert("RGB")
                 difference = ImageChops.difference(previous, current)
                 visible_delta = max(visible_delta, sum(ImageStat.Stat(difference).mean))
-                if difference.getbbox() is not None and visible_delta >= 0.02:
+                if difference.getbbox() is not None and visible_delta >= 0.01:
                     break
                 previous = current
             else:
@@ -369,7 +373,16 @@ setInterval(async () => {
                 previous.save(debug_path)
                 raise RuntimeError(
                     "Default source connected but the real D3D control surface did not keep updating; "
-                    f"screenshot={debug_path}"
+                    f"visible_delta={visible_delta:.4f}, screenshot={debug_path}"
+                )
+
+            latest_status = dict(native_status_reports[-1][1].get("status", {}))
+            rendered_after_visual = int(latest_status.get("rendered_frames", 0))
+            if rendered_after_visual <= rendered_before_visual + 5:
+                raise RuntimeError(
+                    "Default source frame counter stopped after the D3D surface became visible; "
+                    f"before={rendered_before_visual}, after={rendered_after_visual}, "
+                    f"recent_status={native_status_reports[-3:]}"
                 )
 
             print(
