@@ -10,12 +10,37 @@ import tempfile
 import threading
 import time
 import tkinter as tk
+from ctypes import wintypes
 from pathlib import Path
 
-from PIL import ImageChops, ImageGrab
+from PIL import ImageChops, ImageGrab, ImageStat
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import lan_remote
+
+
+def find_child_window(parent: int, class_name: str) -> int:
+    result = ctypes.c_void_p()
+    callback_type = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
+
+    @callback_type
+    def callback(window: int, _: int) -> bool:
+        name = ctypes.create_unicode_buffer(256)
+        ctypes.windll.user32.GetClassNameW(window, name, len(name))
+        if name.value == class_name:
+            result.value = window
+            return False
+        return True
+
+    ctypes.windll.user32.EnumChildWindows(parent, callback, 0)
+    return int(result.value or 0)
+
+
+def window_rect(window: int) -> tuple[int, int, int, int]:
+    rect = wintypes.RECT()
+    if not ctypes.windll.user32.GetWindowRect(window, ctypes.byref(rect)):
+        raise RuntimeError("could not read the native video child bounds")
+    return rect.left, rect.top, rect.right, rect.bottom
 
 
 def display_refresh_hz() -> int:
@@ -159,6 +184,9 @@ def main() -> int:
             error = ctypes.create_unicode_buffer(2048)
             dll.LANRemoteVideoGetLastError(error, len(error))
             raise RuntimeError(f"native video DLL did not create a child surface: {error.value}")
+        video_window = find_child_window(window.winfo_id(), "LANRemoteNativeVideoSurfaceV1")
+        if not video_window:
+            raise RuntimeError("native video DLL did not expose its D3D child surface")
         try:
             configure_started = time.monotonic()
             started = dll.LANRemoteVideoConfigure(
@@ -249,6 +277,7 @@ def main() -> int:
                         )
                     )
                     if ImageChops.difference(first_image, second_image).getbbox() is not None:
+                        measurement_finished = time.monotonic()
                         break
                 time.sleep(0.02)
             else:
@@ -266,7 +295,68 @@ def main() -> int:
                 raise RuntimeError(f"unexpected video transport: {final_status}")
             if final_status.get("scale_mode") != "fill":
                 raise RuntimeError(f"native fill scale mode was not applied: {final_status}")
-            measured_seconds = max(0.001, time.monotonic() - measurement_started)
+
+            # Reproduce a visibly letterboxed Fit layout and inspect the real
+            # D3D child surface. The BGRA output background must be RGB black;
+            # treating the color union as YCbCr turns these bands green.
+            fit_rendered_start = int(final_status.get("rendered_frames", 0))
+            dll.LANRemoteVideoSetLayout(handle, 200, 50, 480, 460, 1)
+            dll.LANRemoteVideoSetScaleMode(handle, 0)
+            fit_deadline = time.monotonic() + 3
+            while time.monotonic() < fit_deadline:
+                window.update()
+                buffer = ctypes.create_unicode_buffer(4096)
+                dll.LANRemoteVideoGetStatus(handle, buffer, len(buffer))
+                fit_status = json.loads(buffer.value or "{}")
+                if (
+                    fit_status.get("scale_mode") == "fit"
+                    and int(fit_status.get("rendered_frames", 0)) >= fit_rendered_start + 12
+                ):
+                    break
+                time.sleep(0.02)
+            else:
+                raise RuntimeError(f"native Fit letterbox did not render in time: {fit_status}")
+            time.sleep(0.2)
+            window.update()
+            fit_bounds = window_rect(video_window)
+            fit_image = ImageGrab.grab(bbox=fit_bounds).convert("RGB")
+            fit_width, fit_height = fit_image.size
+            if fit_width < 400 or fit_height < 400:
+                raise RuntimeError(f"native Fit child has unexpected bounds: {fit_bounds}")
+            top_band = fit_image.crop((20, 4, fit_width - 20, 20))
+            bottom_band = fit_image.crop((20, fit_height - 20, fit_width - 20, fit_height - 4))
+            letterbox_mean = [
+                round(value, 2)
+                for value in ImageStat.Stat(top_band).mean + ImageStat.Stat(bottom_band).mean
+            ]
+            if max(letterbox_mean) > 12:
+                failure_image = root_path / "build" / "native-fit-letterbox-failure.png"
+                failure_image.parent.mkdir(parents=True, exist_ok=True)
+                fit_image.save(failure_image)
+                raise RuntimeError(
+                    "native Fit letterbox is not neutral black: "
+                    f"RGB means={letterbox_mean}, screenshot={failure_image}, status={fit_status}"
+                )
+            final_status["fit_letterbox_rgb_means"] = letterbox_mean
+            restore_rendered_start = int(fit_status.get("rendered_frames", 0))
+            dll.LANRemoteVideoSetLayout(handle, 40, 50, 820, 460, 1)
+            dll.LANRemoteVideoSetScaleMode(handle, 1)
+            restore_deadline = time.monotonic() + 3
+            while time.monotonic() < restore_deadline:
+                window.update()
+                buffer = ctypes.create_unicode_buffer(4096)
+                dll.LANRemoteVideoGetStatus(handle, buffer, len(buffer))
+                restored_status = json.loads(buffer.value or "{}")
+                if (
+                    restored_status.get("scale_mode") == "fill"
+                    and int(restored_status.get("rendered_frames", 0)) >= restore_rendered_start + 12
+                ):
+                    break
+                time.sleep(0.02)
+            else:
+                raise RuntimeError(f"native Fill layout was not restored in time: {restored_status}")
+
+            measured_seconds = max(0.001, measurement_finished - measurement_started)
             final_status["measured_seconds"] = round(measured_seconds, 3)
             final_status["measured_decode_fps"] = round(
                 (int(final_status.get("decoded_frames", 0)) - measurement_start_decoded) /

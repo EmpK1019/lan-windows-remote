@@ -450,10 +450,7 @@ public:
     IMFDXGIDeviceManager* device_manager() const { return device_manager_.Get(); }
     bool hardware() const { return hardware_; }
     void SetVisible(const bool visible) { visible_ = visible; }
-    void SetScaleMode(const bool fill) {
-        std::lock_guard<std::mutex> guard(lock_);
-        fill_mode_ = fill;
-    }
+    void SetScaleMode(const bool fill) { fill_mode_ = fill; }
     double AverageRenderMilliseconds() const {
         const std::uint64_t attempts = render_attempts_.load();
         return attempts ? render_microseconds_.load() / attempts / 1000.0 : 0.0;
@@ -483,6 +480,7 @@ public:
         const UINT safe_width = (std::max)(1U, width);
         const UINT safe_height = (std::max)(1U, height);
         if (safe_width == output_width_ && safe_height == output_height_) return;
+        render_target_view_.Reset();
         back_buffer_.Reset();
         processor_enumerator_.Reset();
         processor_.Reset();
@@ -562,6 +560,13 @@ private:
         }
         EnsureProcessor(input_width, input_height);
         if (!back_buffer_) ThrowIfFailed(swap_chain_->GetBuffer(0, IID_PPV_ARGS(&back_buffer_)), "get video back buffer");
+        if (!render_target_view_) {
+            ThrowIfFailed(
+                device_->CreateRenderTargetView(back_buffer_.Get(), nullptr, &render_target_view_),
+                "create video render target view");
+        }
+        const FLOAT clear_color[4] = {0.0f, 0.0f, 0.0f, 1.0f};
+        context_->ClearRenderTargetView(render_target_view_.Get(), clear_color);
 
         D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC input_description{};
         input_description.ViewDimension = D3D11_VPIV_DIMENSION_TEXTURE2D;
@@ -583,7 +588,7 @@ private:
 
         RECT source{0, 0, static_cast<LONG>(input_width), static_cast<LONG>(input_height)};
         RECT destination{0, 0, static_cast<LONG>(output_width_), static_cast<LONG>(output_height_)};
-        if (fill_mode_) {
+        if (fill_mode_.load()) {
             const double input_aspect = static_cast<double>(input_width) / input_height;
             const double output_aspect = static_cast<double>(output_width_) / output_height_;
             if (input_aspect > output_aspect) {
@@ -611,7 +616,12 @@ private:
         }
         D3D11_VIDEO_COLOR black{};
         black.RGBA.A = 1.0f;
-        video_context_->VideoProcessorSetOutputBackgroundColor(processor_.Get(), TRUE, &black);
+        // The swap-chain output is BGRA. Passing TRUE here makes the union be
+        // interpreted as YCbCr; zero chroma then produces green letterbox bars
+        // instead of RGB black whenever Fit mode preserves the source aspect.
+        video_context_->VideoProcessorSetOutputTargetRect(
+            processor_.Get(), TRUE, &destination);
+        video_context_->VideoProcessorSetOutputBackgroundColor(processor_.Get(), FALSE, &black);
         video_context_->VideoProcessorSetStreamSourceRect(processor_.Get(), 0, TRUE, &source);
         video_context_->VideoProcessorSetStreamDestRect(processor_.Get(), 0, TRUE, &destination);
         video_context_->VideoProcessorSetStreamFrameFormat(
@@ -691,6 +701,7 @@ private:
     ComPtr<IDXGISwapChain1> swap_chain_;
     HANDLE frame_latency_waitable_object_ = nullptr;
     ComPtr<ID3D11Texture2D> back_buffer_;
+    ComPtr<ID3D11RenderTargetView> render_target_view_;
     ComPtr<ID3D11Texture2D> upload_texture_;
     ComPtr<ID3D11VideoProcessorEnumerator> processor_enumerator_;
     ComPtr<ID3D11VideoProcessor> processor_;
@@ -710,7 +721,7 @@ private:
     std::atomic<std::uint64_t> render_microseconds_{0};
     std::atomic<std::uint64_t> render_attempts_{0};
     std::atomic<bool> visible_{true};
-    bool fill_mode_ = false;
+    std::atomic<bool> fill_mode_{false};
 };
 
 class MfH264Decoder {
