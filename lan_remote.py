@@ -61,7 +61,7 @@ if platform.system() == "Windows":
 
 
 APP_NAME = "Windows LAN Remote"
-APP_VERSION = "1.0.6"
+APP_VERSION = "1.0.7"
 GITHUB_REPOSITORY = "EmpK1019/lan-windows-remote"
 GITHUB_LATEST_RELEASE_API = f"https://api.github.com/repos/{GITHUB_REPOSITORY}/releases/latest"
 DEFAULT_PORT = 8765
@@ -3745,7 +3745,8 @@ class SecureDesktopHandler(BaseHTTPRequestHandler):
         return True
 
     def _serve_native_video_stream(self, parsed: Any) -> None:
-        if not (current_session_locked() or secure_desktop_active()):
+        session_was_locked = current_session_locked()
+        if not (session_was_locked or secure_desktop_active()):
             json_response(
                 self,
                 HTTPStatus.LOCKED,
@@ -3814,8 +3815,19 @@ class SecureDesktopHandler(BaseHTTPRequestHandler):
             name="lan-remote-secure-video-reader",
             daemon=True,
         ).start()
+
+        def secure_source_still_required() -> bool:
+            # A helper created for a locked workstation can remain attached to
+            # the Winlogon desktop after Windows has unlocked the session. In
+            # that case OpenInputDesktop may continue to report a secure
+            # desktop from inside this helper even though the interactive
+            # session is already back on Default. The WTS lock state is the
+            # authoritative lifetime for a lock/login capture. UAC-only
+            # captures still follow the active secure desktop instead.
+            return current_session_locked() if session_was_locked else secure_desktop_active()
+
         try:
-            while current_session_locked() or secure_desktop_active():
+            while secure_source_still_required():
                 try:
                     packet = packet_queue.get(timeout=0.1)
                 except queue.Empty:
@@ -4687,19 +4699,57 @@ class RemoteHandler(BaseHTTPRequestHandler):
                     control_target.set_stream(None)
                     secure_was_active = False
                     secure_delivered_frame = False
+                    secure_reader_stop = threading.Event()
+                    secure_packet_queue: queue.Queue[Any] = queue.Queue(maxsize=32)
+
+                    def enqueue_secure_packet(value: Any) -> bool:
+                        while not secure_reader_stop.is_set():
+                            try:
+                                secure_packet_queue.put(value, timeout=0.1)
+                                return True
+                            except queue.Full:
+                                continue
+                        return False
+
+                    def read_secure_packets() -> None:
+                        try:
+                            while not secure_reader_stop.is_set():
+                                packet = read_native_video_packet(secure_stream)
+                                if not enqueue_secure_packet(packet):
+                                    return
+                                if packet is None or packet[0].message_type in {
+                                    NATIVE_VIDEO_MESSAGE_STREAM_END,
+                                    NATIVE_VIDEO_MESSAGE_ERROR,
+                                }:
+                                    return
+                        except (OSError, TimeoutError, ValueError, struct.error) as exc:
+                            enqueue_secure_packet(exc)
+
+                    threading.Thread(
+                        target=read_secure_packets,
+                        name="lan-remote-secure-source-reader",
+                        daemon=True,
+                    ).start()
                     try:
                         while True:
-                            packet = read_native_video_packet(secure_stream)
+                            actual_secure = secure_video_source_required()
+                            secure_was_active = secure_was_active or actual_secure
+                            if not actual_secure:
+                                self.server.state.clear_lock_transition()
+                                break
+                            try:
+                                packet = secure_packet_queue.get(timeout=0.1)
+                            except queue.Empty:
+                                if not authenticate_periodically():
+                                    return
+                                continue
+                            if isinstance(packet, BaseException):
+                                raise packet
                             if packet is None:
                                 break
                             message, packed = packet
                             if not authenticate_periodically():
                                 return
-                            actual_secure = secure_video_source_required()
-                            secure_was_active = secure_was_active or actual_secure
-                            if secure_was_active and not actual_secure:
-                                self.server.state.clear_lock_transition()
-                                break
                             if message.message_type == NATIVE_VIDEO_MESSAGE_ERROR:
                                 last_secure_error = message.payload.decode("utf-8", "replace")[:512]
                                 break
@@ -4710,6 +4760,7 @@ class RemoteHandler(BaseHTTPRequestHandler):
                             if message.message_type == NATIVE_VIDEO_MESSAGE_STREAM_END:
                                 break
                     finally:
+                        secure_reader_stop.set()
                         try:
                             secure_stream.close()
                         except OSError:

@@ -148,7 +148,10 @@ class CoreFunctionTests(unittest.TestCase):
         try:
             with (
                 patch.object(lan_remote, "current_session_locked", side_effect=lambda: locked["active"]),
-                patch.object(lan_remote, "secure_desktop_active", return_value=False),
+                # A Winlogon-bound helper can keep reporting a secure desktop
+                # briefly after WTS has declared the session unlocked. The
+                # locked-session stream must still close from the WTS state.
+                patch.object(lan_remote, "secure_desktop_active", return_value=True),
                 patch.object(lan_remote, "screen_rect", return_value=(0, 0, 100, 80)),
                 patch.object(lan_remote, "start_native_video_encoder", return_value=source),
                 patch.object(
@@ -1345,6 +1348,96 @@ class HttpIntegrationTests(unittest.TestCase):
         result = response.status, {key.lower(): value for key, value in response.getheaders()}, data
         connection.close()
         return result
+
+    def test_remote_native_stream_switches_off_an_idle_secure_source_after_unlock(self) -> None:
+        class IdleStream:
+            def __init__(self, payload: bytes) -> None:
+                self.payload = bytearray(payload)
+                self.closed = threading.Event()
+                self.lock = threading.Lock()
+
+            def read(self, length: int) -> bytes:
+                with self.lock:
+                    if self.payload:
+                        result = bytes(self.payload[:length])
+                        del self.payload[:length]
+                        return result
+                self.closed.wait(3)
+                return b""
+
+            def close(self) -> None:
+                self.closed.set()
+
+        def config(generation: int, capture: str) -> bytes:
+            return lan_remote.pack_native_video_message(
+                lan_remote.NativeVideoMessage(
+                    message_type=lan_remote.NATIVE_VIDEO_MESSAGE_STREAM_CONFIG,
+                    flags=0,
+                    generation=generation,
+                    sequence=0,
+                    timestamp_us=1,
+                    width=100,
+                    height=80,
+                    fps_limit=30,
+                    payload=json.dumps({"codec": "h264_annexb", "capture": capture}).encode(),
+                )
+            )
+
+        secure_required = {"active": True}
+        secure_streams: list[IdleStream] = []
+        normal_streams: list[IdleStream] = []
+
+        def open_secure(_monitor: str, _fps: int, generation: int, **_kwargs: object) -> IdleStream:
+            stream = IdleStream(config(generation, "secure"))
+            secure_streams.append(stream)
+            return stream
+
+        def start_normal(_monitor: str, _fps: int, generation: int) -> lan_remote.NativeVideoEncoderProcess:
+            stream = IdleStream(config(generation, "default"))
+            normal_streams.append(stream)
+            process = Mock()
+            process.stdin = io.BytesIO()
+            process.stdout = stream
+            return lan_remote.NativeVideoEncoderProcess(process, [], threading.Lock())
+
+        connection = http.client.HTTPConnection("127.0.0.1", self.state.port, timeout=3)
+        try:
+            with (
+                patch.object(lan_remote, "screen_rect", return_value=(0, 0, 100, 80)),
+                patch.object(
+                    lan_remote,
+                    "secure_video_source_required",
+                    side_effect=lambda: secure_required["active"],
+                ),
+                patch.object(lan_remote, "secure_native_video_available", return_value=True),
+                patch.object(lan_remote, "open_secure_native_video_stream", side_effect=open_secure),
+                patch.object(lan_remote, "start_native_video_encoder", side_effect=start_normal),
+                patch.object(
+                    lan_remote,
+                    "stop_native_video_encoder",
+                    side_effect=lambda source: source.process.stdout.close(),
+                ),
+            ):
+                connection.request(
+                    "CONNECT",
+                    "/video-stream?monitor=all&fps=30",
+                    headers={"X-Remote-Token": "TEST-TEMP-CODE", "X-LAN-Video-Protocol": "1"},
+                )
+                response = connection.getresponse()
+                self.assertEqual(response.status, 200)
+                secure_packet = lan_remote.read_native_video_packet(response)
+                self.assertIsNotNone(secure_packet)
+                self.assertIn(b'"capture": "secure"', secure_packet[0].payload)
+
+                secure_required["active"] = False
+                normal_packet = lan_remote.read_native_video_packet(response)
+                self.assertIsNotNone(normal_packet)
+                self.assertIn(b'"capture": "default"', normal_packet[0].payload)
+                self.assertNotEqual(secure_packet[0].generation, normal_packet[0].generation)
+        finally:
+            for stream in [*secure_streams, *normal_streams]:
+                stream.close()
+            connection.close()
 
     def test_local_api_rejects_cross_site_origin(self) -> None:
         status, headers, _ = self.request("GET", "/api/devices")
