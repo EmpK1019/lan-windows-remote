@@ -91,7 +91,7 @@ internal static class ControlWindowHostTests
             throw new InvalidOperationException("Remote startup members were not found.");
 
         using (Form mainWindow = (Form)constructor.Invoke(new object[] {
-            new Uri("http://127.0.0.1:8765/?v=1.1.1")
+            new Uri("http://127.0.0.1:8765/?v=1.2.0")
         }))
         using (Form remoteWindow = (Form)constructor.Invoke(new object[] {
             new Uri("http://127.0.0.1:8765/?remote=1&handoff=abcdefghijklmnop")
@@ -397,19 +397,19 @@ internal static class ControlWindowHostTests
             Point floatingLocation = toolbar.Location;
             if (floatingLocation.Y != 360 || !String.Equals(observedAction, "toolbar_docked0", StringComparison.Ordinal))
                 throw new InvalidOperationException("Floating toolbar did not preserve its freely dragged location.");
-            positionForOwner.Invoke(toolbar, new object[] { ownerBounds, new Point(600, 248) });
+            positionForOwner.Invoke(toolbar, new object[] { ownerBounds, new Point(600, 208) });
             if (toolbar.Location != floatingLocation)
                 throw new InvalidOperationException("Owner layout unexpectedly reset the user-positioned toolbar.");
 
-            applyUserLocation.Invoke(toolbar, new object[] { ownerBounds, new Point(500, 247) });
-            if (toolbar.Top != ownerBounds.Top + 48 || !String.Equals(observedAction, "toolbar_docked1", StringComparison.Ordinal))
-                throw new InvalidOperationException("Toolbar did not snap and arm auto-hide below the fixed titlebar.");
+            applyUserLocation.Invoke(toolbar, new object[] { ownerBounds, new Point(500, 207) });
+            if (toolbar.Top != ownerBounds.Top + 8 || !String.Equals(observedAction, "toolbar_docked1", StringComparison.Ordinal))
+                throw new InvalidOperationException("Toolbar did not snap to the true top-edge target and arm auto-hide.");
 
             expanded["collapsed"] = true;
             updateState.Invoke(toolbar, new object[] { expanded });
             if (toolbar.Width > 60 || toolbar.Height > 36)
                 throw new InvalidOperationException("Collapsed native toolbar did not become a compact glass handle.");
-            positionForOwner.Invoke(toolbar, new object[] { ownerBounds, new Point(600, 248) });
+            positionForOwner.Invoke(toolbar, new object[] { ownerBounds, new Point(600, 208) });
             if (toolbar.Top != ownerBounds.Top)
                 throw new InvalidOperationException("Collapsed native toolbar did not attach to the owner's top edge.");
         }

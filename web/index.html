@@ -4139,11 +4139,10 @@
     });
     $("remoteToolbarGrip").addEventListener("pointermove", (event) => {
       if (toolbarDragPointerId !== event.pointerId || !state.toolbarDragging) return;
-      const titlebarBottom = 40;
       const width = remoteToolbar.offsetWidth;
       const height = remoteToolbar.offsetHeight;
       const left = Math.max(0, Math.min(window.innerWidth - width, event.clientX - toolbarDragOffsetX));
-      const top = Math.max(titlebarBottom, Math.min(window.innerHeight - height, event.clientY - toolbarDragOffsetY));
+      const top = Math.max(0, Math.min(window.innerHeight - height, event.clientY - toolbarDragOffsetY));
       remoteToolbar.style.left = `${left}px`;
       remoteToolbar.style.top = `${top}px`;
       positionOpenToolbarPopovers();
@@ -4155,11 +4154,12 @@
       state.toolbarDragging = false;
       toolbarDragPointerId = null;
       remoteToolbar.style.transition = "";
-      state.toolbarDockedAtTop = rect.top <= 54;
+      state.toolbarDockedAtTop = rect.top <= 14;
       if (state.toolbarDockedAtTop) {
         remoteToolbar.style.left = `${rect.left + rect.width / 2}px`;
-        remoteToolbar.style.top = "48px";
+        remoteToolbar.style.top = "";
         remoteToolbar.style.transform = "translateX(-50%)";
+        setRemoteTitlebarVisible(false);
         scheduleToolbarCollapse(900);
       } else {
         remoteToolbar.style.left = `${rect.left}px`;

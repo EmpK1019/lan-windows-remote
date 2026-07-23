@@ -433,7 +433,7 @@ namespace WindowsLANRemoteControlHost
             if (ownerBounds.Width < 1 || ownerBounds.Height < 1) return;
             if (!userPositioned)
             {
-                dockedAtTop = defaultLocation.Y <= ownerBounds.Top + 40 + TopDockThreshold;
+                dockedAtTop = defaultLocation.Y <= ownerBounds.Top + 8 + TopDockThreshold;
                 if (dockedAtTop) defaultLocation.Y = DockedTop(ownerBounds);
                 Location = ClampLocation(ownerBounds, defaultLocation);
             }
@@ -593,9 +593,8 @@ namespace WindowsLANRemoteControlHost
 
         private void ApplyUserLocation(Rectangle ownerBounds, Point requested)
         {
-            int toolbarTopEdge = ownerBounds.Top + 40;
-            bool nextDocked = requested.Y <= toolbarTopEdge + TopDockThreshold;
-            if (nextDocked) requested.Y = ownerBounds.Top + 48;
+            bool nextDocked = requested.Y <= ownerBounds.Top + TopDockThreshold;
+            if (nextDocked) requested.Y = DockedTop(ownerBounds);
             Location = ClampLocation(ownerBounds, requested);
             userPositioned = true;
             dockedAtTop = nextDocked;
@@ -619,7 +618,7 @@ namespace WindowsLANRemoteControlHost
 
         private Point ClampLocation(Rectangle ownerBounds, Point requested)
         {
-            int minimumY = collapsed && dockedAtTop ? ownerBounds.Top : ownerBounds.Top + 40;
+            int minimumY = ownerBounds.Top;
             int maximumX = Math.Max(ownerBounds.Left, ownerBounds.Right - Width);
             int maximumY = Math.Max(minimumY, ownerBounds.Bottom - Height);
             return new Point(
@@ -629,7 +628,7 @@ namespace WindowsLANRemoteControlHost
 
         private int DockedTop(Rectangle ownerBounds)
         {
-            return collapsed ? ownerBounds.Top : ownerBounds.Top + 48;
+            return collapsed ? ownerBounds.Top : ownerBounds.Top + 8;
         }
 
         private void LayoutButtons()
@@ -2082,7 +2081,7 @@ namespace WindowsLANRemoteControlHost
                 ownerBounds,
                 new Point(
                     origin.X + Math.Max(0, (ClientSize.Width - nativeToolbar.Width) / 2),
-                    origin.Y + 48));
+                    origin.Y + 8));
         }
 
         private void SendNativeOverlayAction(string action, string value)
