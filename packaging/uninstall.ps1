@@ -3,7 +3,6 @@ $ErrorActionPreference = "Stop"
 $AppName = "Windows LAN Remote"
 $AppId = "WindowsLANRemote"
 $ServiceName = "WindowsLANRemoteSecureDesktop"
-$CredentialProviderId = "{7C5A4A6F-4E17-4F3A-A2C6-0A9D40B0E105}"
 $InstallDir = Join-Path $env:ProgramFiles $AppName
 $LegacyInstallDir = Join-Path $env:LOCALAPPDATA "Programs\$AppName"
 $StartMenuDir = Join-Path $env:ProgramData "Microsoft\Windows\Start Menu\Programs\$AppName"
@@ -22,16 +21,6 @@ if (-not (Test-Administrator)) {
     $Arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`""
     $Process = Start-Process -FilePath "powershell.exe" -ArgumentList $Arguments -Verb RunAs -Wait -PassThru
     exit $Process.ExitCode
-}
-
-foreach ($RegistryPath in @(
-    "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Authentication\Credential Providers\$CredentialProviderId",
-    "HKLM:\SOFTWARE\Classes\CLSID\$CredentialProviderId",
-    "HKLM:\SOFTWARE\Windows LAN Remote\PendingUnlock"
-)) {
-    if (Test-Path -LiteralPath $RegistryPath) {
-        Remove-Item -LiteralPath $RegistryPath -Recurse -Force -ErrorAction SilentlyContinue
-    }
 }
 
 $Service = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue

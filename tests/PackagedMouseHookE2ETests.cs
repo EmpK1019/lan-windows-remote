@@ -189,12 +189,8 @@ internal static class PackagedMouseHookE2ETests
             {
                 SuppressShownHandler(window);
                 window.Text = "LAN Remote native mouse hook audit";
+                window.StartPosition = FormStartPosition.CenterScreen;
                 window.ClientSize = new Size(900, 620);
-                window.StartPosition = FormStartPosition.Manual;
-                Rectangle primary = Screen.PrimaryScreen.WorkingArea;
-                window.Location = new Point(
-                    primary.Left + Math.Max(0, (primary.Width - window.Width) / 2),
-                    primary.Top + Math.Max(0, (primary.Height - window.Height) / 2));
                 window.TopMost = true;
                 Exception sessionFailure = null;
                 string summary = String.Empty;
@@ -232,12 +228,6 @@ internal static class PackagedMouseHookE2ETests
                             throw new InvalidOperationException("The native control window could not become foreground.");
                         Point target = window.PointToScreen(
                             new Point(window.ClientSize.Width / 2, window.ClientSize.Height / 2));
-                        Console.WriteLine(String.Format(
-                            "target={0},{1} windowBounds={2} client={3}",
-                            target.X,
-                            target.Y,
-                            window.Bounds,
-                            window.ClientRectangle));
                         auditHookProc = delegate(int code, IntPtr message, IntPtr data)
                         {
                             if (code >= 0)
@@ -290,14 +280,7 @@ internal static class PackagedMouseHookE2ETests
                         }
                         Console.WriteLine("rawEventCount=" + observedHookEvents.Count);
                         if (!receivedInput.WaitOne(0))
-                        {
-                            int first = Math.Max(0, observedHookEvents.Count - 12);
-                            Console.WriteLine(
-                                "rawEvents=" + String.Join(
-                                    " | ",
-                                    observedHookEvents.GetRange(first, observedHookEvents.Count - first).ToArray()));
                             throw new TimeoutException("Native mouse hook did not forward click and wheel input.");
-                        }
                         if (serverFailure != null)
                             throw new InvalidOperationException("Native input audit server failed.", serverFailure);
                         string rawEvents = String.Join(" | ", observedHookEvents.ToArray());

@@ -955,6 +955,13 @@
       cursor: default !important;
     }
     #remoteScreen.scale-fill { object-fit: cover; }
+    body.native-video-active .remote-toolbar,
+    body.native-video-active .remote-titlebar,
+    body.native-video-active .remote-unlock-action {
+      visibility: hidden !important;
+      opacity: 0 !important;
+      pointer-events: none !important;
+    }
     .remote-stage.controlling,
     .remote-stage.controlling #remoteScreen { cursor: default !important; }
     .remote-stage.controlling.remote-cursor-active,
@@ -1522,13 +1529,11 @@
       nativeInputSyncRevision: 0,
       nativeInputSyncTimer: 0,
       nativeVideoActive: false,
-      nativeVideoPriming: false,
       nativeVideoStatusTimer: 0,
       nativeVideoRetryTimer: 0,
-      nativeVideoUnlockRestartTimer: 0,
       nativeVideoRevision: 0,
       nativeVideoDiagnostics: null,
-      nativeFallbackPending: false,
+      nativeOverlaySyncRevision: 0,
       lastMoveAt: 0,
       refreshTimer: 0,
       frameRequestRevision: 0,
@@ -2404,6 +2409,7 @@
       $("toolbarToggle").setAttribute("aria-label", collapsed ? "展开工具栏" : "收起工具栏");
       scheduleNativeInputSync(260);
       requestAnimationFrame(syncNativeVideoLayout);
+      requestAnimationFrame(syncNativeOverlayState);
     }
 
     function scheduleToolbarCollapse(delay = 700) {
@@ -2448,6 +2454,7 @@
       $("remoteStatus").textContent = text;
       $("remoteStatus").title = text;
       $("remoteStatus").classList.toggle("error", error);
+      requestAnimationFrame(syncNativeOverlayState);
     }
 
     function sessionScaleMode(session = state.session) {
@@ -2458,23 +2465,83 @@
       const next = mode === "fill" ? "fill" : "fit";
       if (state.session) state.session.scaleMode = next;
       $("remoteScreen").classList.toggle("scale-fill", next === "fill");
-      $("remoteStage").style.backgroundSize = next === "fill" ? "cover" : "contain";
       $("scaleModeButton").classList.toggle("active", next === "fill");
       $("scaleModeButton").title = next === "fill" ? "画面模式：填充（无黑边）" : "画面模式：适应（完整画面）";
       $("scaleModeButton").querySelector("span").textContent = next === "fill" ? "填充" : "适应";
       scheduleNativeInputSync(20);
       updateRemoteCursorOverlay();
-      requestAnimationFrame(syncNativeVideoLayout);
+      requestAnimationFrame(syncNativeOverlayState);
       if (announce && state.session?.connected) {
         setRemoteStatus(next === "fill" ? "画面已填充窗口 · 边缘可能轻微裁切" : "画面已完整适应窗口");
       }
     }
 
-    function nativeVideoObscured() {
+    function nativeOverlayObscured() {
       return $("fileModal").classList.contains("show") ||
         $("clipboardPopover").classList.contains("show") ||
         document.hidden;
     }
+
+    async function syncNativeOverlayState() {
+      if (!remoteWindowMode || !window.pywebview?.api?.set_native_overlay_state) return;
+      const session = state.session;
+      const revision = ++state.nativeOverlaySyncRevision;
+      const payload = {
+        visible: Boolean(state.nativeVideoActive && session?.connected && !nativeOverlayObscured()),
+        collapsed: $("remoteSession").classList.contains("toolbar-collapsed"),
+        unlock_visible: Boolean(state.remoteSessionLocked && session?.connected && !session?.viewOnly),
+        view_only: Boolean(session?.viewOnly),
+        fps: sessionControlFps(session),
+        scale_mode: sessionScaleMode(session),
+        keyboard: Boolean(state.keyboardEnabled),
+        clipboard: Boolean($("clipboardSend").checked || $("clipboardReceive").checked),
+        fullscreen: document.body.classList.contains("remote-fullscreen"),
+        status_error: $("remoteStatus").classList.contains("error"),
+        monitors: state.monitors.map((monitor) => ({id: monitor.id, label: monitor.label || monitor.id}))
+      };
+      try {
+        await window.pywebview.api.set_native_overlay_state(payload);
+      } catch {}
+      if (revision !== state.nativeOverlaySyncRevision) return;
+    }
+
+    window.__lanNativeOverlayAction = (action, value = "") => {
+      if (!state.session?.connected && action !== "close") return;
+      if (action === "toolbar_toggle") {
+        const collapsed = $("remoteSession").classList.contains("toolbar-collapsed");
+        if (collapsed) revealToolbar(1800);
+        else {
+          clearTimeout(state.toolbarCollapseTimer);
+          setToolbarCollapsed(true);
+        }
+      } else if (action === "monitor") {
+        $("monitorSelect").value = String(value || "all");
+        $("monitorSelect").dispatchEvent(new Event("change", {bubbles: true}));
+      } else if (action === "fps") {
+        $("fpsLimitSelect").value = String(value || "60");
+        $("fpsLimitSelect").dispatchEvent(new Event("change", {bubbles: true}));
+      } else if (action === "scale_mode") {
+        setRemoteScaleMode(value);
+      } else if (action === "keyboard") {
+        $("keyboardButton").click();
+      } else if (action === "clipboard") {
+        $("clipboardButton").click();
+      } else if (action === "files") {
+        $("remoteFileButton").click();
+      } else if (action === "lock") {
+        $("lockRemoteButton").click();
+      } else if (action === "fullscreen") {
+        $("fullscreenButton").click();
+      } else if (action === "minimize") {
+        window.pywebview?.api?.minimize_window?.();
+      } else if (action === "maximize") {
+        toggleWindowMaximize();
+      } else if (action === "close") {
+        stopSession(remoteWindowMode, true);
+      } else if (action === "unlock") {
+        requestRemoteUnlock(true);
+      }
+    };
 
     function endpoint(path) {
       const session = state.session;
@@ -2857,34 +2924,23 @@
     }
 
     function releaseFrameObjectUrl() {
-      const stage = $("remoteStage");
-      stage.style.backgroundImage = "";
-      stage.style.backgroundPosition = "";
-      stage.style.backgroundRepeat = "";
-      stage.style.backgroundSize = "";
-      if (state.frameObjectUrl) {
-        URL.revokeObjectURL(state.frameObjectUrl);
-        state.frameObjectUrl = "";
-      }
+      if (!state.frameObjectUrl) return;
+      URL.revokeObjectURL(state.frameObjectUrl);
+      state.frameObjectUrl = "";
     }
 
-    function resetScreenStream(options = {}) {
+    function resetScreenStream() {
       state.frameRequestRevision += 1;
       state.nativeVideoRevision += 1;
       clearTimeout(state.nativeVideoStatusTimer);
       clearTimeout(state.nativeVideoRetryTimer);
-      clearTimeout(state.nativeVideoUnlockRestartTimer);
       state.nativeVideoStatusTimer = 0;
       state.nativeVideoRetryTimer = 0;
-      state.nativeVideoUnlockRestartTimer = 0;
       state.nativeVideoActive = false;
-      state.nativeVideoPriming = false;
       state.nativeVideoDiagnostics = null;
-      state.nativeFallbackPending = false;
       document.body.classList.remove("native-video-active");
-      if (options.stopNativeVideo !== false) {
-        window.pywebview?.api?.configure_native_video?.({enabled: false}).catch(() => {});
-      }
+      window.pywebview?.api?.configure_native_video?.({enabled: false}).catch(() => {});
+      window.pywebview?.api?.set_native_overlay_state?.({visible: false}).catch(() => {});
       clearTimeout(state.refreshTimer);
       state.refreshTimer = 0;
       state.screenAbortController?.abort();
@@ -2916,28 +2972,20 @@
 
     function nativeVideoLayout() {
       const rect = $("remoteStage").getBoundingClientRect();
-      const exclusions = [
-        {left: 0, top: 0, width: window.innerWidth, height: 7},
-        visibleElementRect(document.querySelector(".remote-toolbar")),
-        visibleElementRect($("remoteTitlebar")),
-        visibleElementRect($("unlockRemoteButton"))
-      ].filter(Boolean);
       return {
         surface_left: rect.left,
         surface_top: rect.top,
         surface_width: rect.width,
         surface_height: rect.height,
-        visible: (state.nativeVideoActive || state.nativeVideoPriming) && !nativeVideoObscured(),
+        visible: state.nativeVideoActive && !nativeOverlayObscured(),
         scale_mode: sessionScaleMode(),
-        exclusions
+        exclusions: []
       };
     }
 
     function syncNativeVideoLayout() {
-      if (
-        (!state.nativeVideoActive && !state.nativeVideoPriming) ||
-        !window.pywebview?.api?.set_native_video_layout
-      ) return;
+      syncNativeOverlayState();
+      if (!state.nativeVideoActive || !window.pywebview?.api?.set_native_video_layout) return;
       window.pywebview.api.set_native_video_layout(nativeVideoLayout()).catch(() => {});
     }
 
@@ -2949,12 +2997,7 @@
         try {
           const response = await fetch(endpoint(`/api/session-status?t=${Date.now()}`), {cache: "no-store"});
           const status = await response.json();
-          if (
-            response.ok &&
-            status.ok &&
-            !status.session_locked &&
-            !status.secure_desktop_active
-          ) {
+          if (response.ok && status.ok && !status.secure_desktop_active) {
             resetScreenStream();
             refreshScreen();
             return;
@@ -2964,109 +3007,16 @@
       }, delay);
     }
 
-    async function finishNativeFallback() {
-      try {
-        await window.pywebview?.api?.configure_native_video?.({enabled: false});
-      } catch {}
-      state.nativeFallbackPending = false;
+    function startMjpegFallback(session, reason = "") {
       state.nativeVideoActive = false;
-      state.nativeVideoPriming = false;
-      document.body.classList.remove("native-video-active");
-    }
-
-    async function loadSecureTransitionFrame(session) {
-      const revision = state.frameRequestRevision;
-      const monitorId = session.monitorId || "all";
-      const controller = new AbortController();
-      state.screenAbortController?.abort();
-      state.screenAbortController = controller;
-      try {
-        const response = await fetch(endpoint(
-          `/screen?monitor=${encodeURIComponent(monitorId)}&cursor=0&secure_transition=1&t=${Date.now()}`
-        ), {cache: "no-store", signal: controller.signal});
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        const blob = await response.blob();
-        if (
-          revision !== state.frameRequestRevision ||
-          session !== state.session ||
-          !session?.connected ||
-          (session.monitorId || "all") !== monitorId
-        ) return false;
-
-        const objectUrl = URL.createObjectURL(blob);
-        releaseFrameObjectUrl();
-        state.frameObjectUrl = objectUrl;
-        const stage = $("remoteStage");
-        stage.style.backgroundImage = `url("${objectUrl}")`;
-        stage.style.backgroundPosition = "center";
-        stage.style.backgroundRepeat = "no-repeat";
-        stage.style.backgroundSize = sessionScaleMode(session) === "fill" ? "cover" : "contain";
-        const image = $("remoteScreen");
-        const loaded = await new Promise((resolve) => {
-          image.onload = () => resolve(Boolean(image.naturalWidth));
-          image.onerror = () => resolve(false);
-          image.src = objectUrl;
-        });
-        if (
-          !loaded ||
-          revision !== state.frameRequestRevision ||
-          session !== state.session ||
-          !session?.connected
-        ) return false;
-        state.loadingFrame = false;
-        markScreenReady(session, image);
-        return true;
-      } catch (error) {
-        if (error?.name !== "AbortError") {
-          setRemoteStatus("正在切换锁屏画面…", false);
-        }
-        return false;
-      } finally {
-        if (state.screenAbortController === controller) state.screenAbortController = null;
-      }
-    }
-
-    async function startMjpegFallback(session, reason = "", options = {}) {
-      const secureTransition = Boolean(options.secureTransition || /secure desktop/i.test(reason));
-      const preserveNative = Boolean(
-        options.preserveNative ?? (secureTransition && state.nativeVideoActive)
-      );
-      if (preserveNative && state.nativeFallbackPending) return;
       state.nativeVideoDiagnostics = {state: "fallback", transport: "mjpeg_v1", error: reason};
-      if (preserveNative) {
-        state.nativeFallbackPending = true;
-        state.nativeVideoRevision += 1;
-        clearTimeout(state.nativeVideoStatusTimer);
-        state.nativeVideoStatusTimer = 0;
-      } else {
-        await finishNativeFallback();
-      }
+      document.body.classList.remove("native-video-active");
+      window.pywebview?.api?.configure_native_video?.({enabled: false}).catch(() => {});
+      window.pywebview?.api?.set_native_overlay_state?.({visible: false}).catch(() => {});
       if (!session?.connected || session !== state.session) return;
       setRemoteStatus(`MJPEG 兼容模式 · 最高 ${sessionControlFps(session)} FPS${reason ? ` · ${reason}` : ""}`);
-      let backingReady = false;
-      if (secureTransition) {
-        backingReady = await loadSecureTransitionFrame(session);
-        if (!backingReady) {
-          state.nativeFallbackPending = false;
-          if (session?.connected && session === state.session) {
-            clearTimeout(state.refreshTimer);
-            state.refreshTimer = setTimeout(
-              () => startMjpegFallback(session, reason, options),
-              120
-            );
-          }
-          return;
-        }
-      }
-      if (preserveNative) {
-        await finishNativeFallback();
-        if (!session?.connected || session !== state.session) return;
-      }
-      startDesktopScreenStream(session, {
-        secureTransition,
-        firstFrameReady: backingReady
-      });
-      if (secureTransition) scheduleNativeVideoRetry(session);
+      startDesktopScreenStream(session);
+      if (/secure desktop/i.test(reason)) scheduleNativeVideoRetry(session);
     }
 
     async function pollNativeVideoStatus(session, revision, attempt = 0) {
@@ -3084,26 +3034,9 @@
       }
       if (revision !== state.nativeVideoRevision || session !== state.session) return;
       state.nativeVideoDiagnostics = status;
-      if (
-        !state.nativeVideoActive &&
-        !state.nativeVideoPriming &&
-        Number(status?.decoded_frames || 0) > 0
-      ) {
-        // Decode first, then reveal the child HWND. This avoids both the old
-        // rendered_frames == 0 startup deadlock and presenting a hidden swap
-        // chain into DWM's native toolbar composition path.
-        state.nativeVideoPriming = true;
-        syncNativeVideoLayout();
-        state.nativeVideoStatusTimer = setTimeout(
-          () => pollNativeVideoStatus(session, revision, attempt + 1),
-          20
-        );
-        return;
-      }
-      if (status?.state === "streaming" && Number(status.rendered_frames || 0) > 0) {
+      if (status?.state === "streaming") {
         const monitor = selectedMonitorGeometry(session);
         state.nativeVideoActive = true;
-        state.nativeVideoPriming = false;
         state.loadingFrame = false;
         state.remoteFrameWidth = Number(monitor?.width) || Number(status.coordinate_width) || 0;
         state.remoteFrameHeight = Number(monitor?.height) || Number(status.coordinate_height) || 0;
@@ -3133,30 +3066,9 @@
       );
     }
 
-    function startNativeVideoPreview(session) {
-      const revision = state.frameRequestRevision;
-      const monitorId = session.monitorId || "all";
-      const image = $("remoteScreen");
-      image.onload = () => {
-        if (
-          revision !== state.frameRequestRevision ||
-          session !== state.session ||
-          !session?.connected ||
-          !image.naturalWidth
-        ) return;
-        markScreenReady(session, image);
-      };
-      image.onerror = () => {};
-      image.src = endpoint(
-        `/screen?monitor=${encodeURIComponent(monitorId)}&cursor=0&t=${Date.now()}`
-      );
-    }
-
     async function startNativeVideo(session) {
       const revision = ++state.nativeVideoRevision;
-      state.nativeVideoPriming = false;
       state.loadingFrame = true;
-      startNativeVideoPreview(session);
       const layout = nativeVideoLayout();
       let started = false;
       try {
@@ -3177,22 +3089,20 @@
       pollNativeVideoStatus(session, revision);
     }
 
-    function startDesktopScreenStream(session, options = {}) {
+    function startDesktopScreenStream(session) {
       const revision = state.frameRequestRevision;
       const monitorId = session.monitorId || "all";
       const fpsLimit = sessionControlFps(session);
       const image = $("remoteScreen");
-      let ready = Boolean(options.firstFrameReady);
-      let loadObserved = ready;
-      state.loadingFrame = !ready;
+      let ready = false;
+      state.loadingFrame = true;
 
       const acceptFirstFrame = () => {
         if (
           ready ||
           revision !== state.frameRequestRevision ||
           !state.session?.connected ||
-          (state.session.monitorId || "all") !== monitorId ||
-          !loadObserved ||
+          state.session.monitorId !== monitorId ||
           !image.naturalWidth
         ) return false;
         ready = true;
@@ -3212,21 +3122,17 @@
         }
         state.refreshTimer = setTimeout(() => waitForFirstFrame(attempt + 1), 20);
       };
-      image.onload = () => {
-        loadObserved = true;
-        acceptFirstFrame();
-      };
+      image.onload = acceptFirstFrame;
       image.onerror = () => {
         if (revision !== state.frameRequestRevision || !state.session?.connected) return;
         state.loadingFrame = false;
         setRemoteStatus("画面连接中断，正在重试…", true);
         state.refreshTimer = setTimeout(refreshScreen, 350);
       };
-      const transitionQuery = options.secureTransition ? "&secure_transition=1" : "";
       image.src = endpoint(
-        `/screen-stream?monitor=${encodeURIComponent(monitorId)}&cursor=0&fps=${fpsLimit}${transitionQuery}&t=${Date.now()}`
+        `/screen-stream?monitor=${encodeURIComponent(monitorId)}&cursor=0&fps=${fpsLimit}&t=${Date.now()}`
       );
-      if (!ready) waitForFirstFrame();
+      waitForFirstFrame();
     }
 
     function refreshScreen() {
@@ -3378,43 +3284,7 @@
       }
     }
 
-    function restartNativeVideoAfterUnlock() {
-      const session = state.session;
-      const nativeAdvertised = Array.isArray(session?.device?.video_capabilities) &&
-        session.device.video_capabilities.includes("native_h264_v1");
-      if (
-        !session?.connected ||
-        !remoteWindowMode ||
-        !nativeAdvertised ||
-        !window.pywebview?.api?.configure_native_video
-      ) return;
-      clearTimeout(state.nativeVideoUnlockRestartTimer);
-      state.nativeVideoUnlockRestartTimer = setTimeout(async () => {
-        state.nativeVideoUnlockRestartTimer = 0;
-        if (
-          session !== state.session ||
-          !session.connected ||
-          state.remoteSessionLocked
-        ) return;
-        state.loadingFrame = false;
-        resetScreenStream({stopNativeVideo: false});
-        $("remoteHint").classList.remove("hidden");
-        $("remoteHint").textContent = "正在切换到桌面画面…";
-        setRemoteStatus("远程电脑已解锁 · 正在重新连接桌面画面");
-        try {
-          await window.pywebview.api.configure_native_video({enabled: false});
-        } catch {}
-        if (
-          session !== state.session ||
-          !session.connected ||
-          state.remoteSessionLocked
-        ) return;
-        refreshScreen();
-      }, 80);
-    }
-
     function setRemoteUnlockVisible(visible) {
-      const wasLocked = state.remoteSessionLocked;
       state.remoteSessionLocked = Boolean(visible);
       $("unlockRemoteButton").classList.toggle(
         "show",
@@ -3422,7 +3292,7 @@
       );
       scheduleNativeInputSync(30);
       requestAnimationFrame(syncNativeVideoLayout);
-      if (wasLocked && !state.remoteSessionLocked) restartNativeVideoAfterUnlock();
+      requestAnimationFrame(syncNativeOverlayState);
     }
 
     async function requestRemoteUnlock(manual = false) {
@@ -3442,11 +3312,6 @@
           session.token,
           Boolean(manual)
         );
-        if (result?.status === "unlocked") {
-          setRemoteUnlockVisible(false);
-          setRemoteStatus(manual ? "远程电脑已解锁" : "已自动解锁远程电脑");
-          return true;
-        }
         if (result?.status === "submitted") {
           setRemoteStatus(manual ? "已手动提交远端锁屏密码" : "检测到初始锁屏，已自动提交锁屏密码");
           return true;
@@ -3461,34 +3326,6 @@
         }
         if (result?.status === "access_denied") {
           setRemoteStatus("访问凭据已失效，请重新连接", true);
-          return false;
-        }
-        if (result?.status === "wake_unresponsive") {
-          setRemoteStatus("锁屏界面没有响应，请点击解锁重试", true);
-          return false;
-        }
-        if (result?.status === "transition_timeout") {
-          setRemoteStatus("登录界面仍在切换，请稍后点击解锁", true);
-          return false;
-        }
-        if (result?.status === "still_locked") {
-          setRemoteStatus("远程电脑仍处于锁定状态，请检查保存的密码", true);
-          return false;
-        }
-        if (result?.status === "returned_to_lock_screen") {
-          setRemoteStatus("登录界面已返回锁屏，请点击解锁重试", true);
-          return false;
-        }
-        if (result?.status === "result_unknown") {
-          setRemoteStatus("密码已提交，但暂时无法确认解锁结果", true);
-          return false;
-        }
-        if (result?.status === "state_unavailable") {
-          setRemoteStatus("暂时无法确认远程登录界面，未发送密码", true);
-          return false;
-        }
-        if (result?.status === "provider_unavailable") {
-          setRemoteStatus("被控端安全解锁组件未就绪，请修复或重新安装", true);
           return false;
         }
         if (manual && result?.error) showToast(`解锁失败：${result.error}`);
@@ -3855,6 +3692,7 @@
       $("keyboardButton").classList.toggle("active", next);
       setNativeKeyboardCapture(next);
       scheduleNativeInputSync();
+      requestAnimationFrame(syncNativeOverlayState);
       if (statusText) setRemoteStatus(next ? "键盘控制已开启，本地按键只发送到远端" : "键盘控制已关闭");
       if (next) $("remoteStage").focus();
     }

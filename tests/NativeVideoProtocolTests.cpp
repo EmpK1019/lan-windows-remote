@@ -6,7 +6,6 @@
 #include <string>
 
 #include "../native/NativeVideoProtocol.hpp"
-#include "../native/VideoQualityPolicy.hpp"
 
 int wmain() {
     HANDLE reader = nullptr;
@@ -52,24 +51,6 @@ int wmain() {
         return 8;
     }
     CloseHandle(bad_reader);
-    if (lanremote::video::DefaultBitrateForFps(30) != 12'000'000 ||
-        lanremote::video::DefaultBitrateForFps(60) != 24'000'000 ||
-        lanremote::video::DefaultBitrateForFps(120) != 48'000'000) {
-        return 9;
-    }
-    if (lanremote::video::AdaptiveBitrateForFps(48'000'000, 120, 60) != 24'000'000 ||
-        lanremote::video::AdaptiveBitrateForFps(24'000'000, 60, 30) != 12'000'000 ||
-        lanremote::video::AdaptiveBitrateForFps(12'000'000, 30, 24) != 9'600'000 ||
-        lanremote::video::AdaptiveBitrateForFps(24'000'000, 60, 120) != 24'000'000) {
-        return 10;
-    }
-    if (!lanremote::video::PreferSoftwareEncoderFor120Fps(61.0, 85.0) ||
-        !lanremote::video::PreferSoftwareEncoderFor120Fps(88.46, 89.57) ||
-        lanremote::video::PreferSoftwareEncoderFor120Fps(100.0, 98.0) ||
-        lanremote::video::PreferSoftwareEncoderFor120Fps(90.0, 79.0) ||
-        lanremote::video::PreferSoftwareEncoderFor120Fps(55.0, 59.0)) {
-        return 11;
-    }
     std::cout << "native video protocol tests passed" << std::endl;
     return 0;
 }

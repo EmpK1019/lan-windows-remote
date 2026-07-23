@@ -450,7 +450,10 @@ public:
     IMFDXGIDeviceManager* device_manager() const { return device_manager_.Get(); }
     bool hardware() const { return hardware_; }
     void SetVisible(const bool visible) { visible_ = visible; }
-    void SetScaleMode(const bool fill) { fill_mode_ = fill; }
+    void SetScaleMode(const bool fill) {
+        std::lock_guard<std::mutex> guard(lock_);
+        fill_mode_ = fill;
+    }
     double AverageRenderMilliseconds() const {
         const std::uint64_t attempts = render_attempts_.load();
         return attempts ? render_microseconds_.load() / attempts / 1000.0 : 0.0;
@@ -480,7 +483,6 @@ public:
         const UINT safe_width = (std::max)(1U, width);
         const UINT safe_height = (std::max)(1U, height);
         if (safe_width == output_width_ && safe_height == output_height_) return;
-        render_target_view_.Reset();
         back_buffer_.Reset();
         processor_enumerator_.Reset();
         processor_.Reset();
@@ -531,10 +533,6 @@ private:
     }
 
     bool RenderNow(IMFSample* sample, const UINT input_width, const UINT input_height) {
-        // A hidden child swap chain must not be presented. Presenting it while
-        // hidden changes how DWM composes the owned native toolbar and can fold
-        // the host/toolbar layer back into the captured desktop. The web host
-        // now makes the child visible after decode has produced its first frame.
         if (!sample || !visible_) return false;
         if (frame_latency_waitable_object_ &&
             WaitForSingleObject(frame_latency_waitable_object_, 12) != WAIT_OBJECT_0) return false;
@@ -564,13 +562,6 @@ private:
         }
         EnsureProcessor(input_width, input_height);
         if (!back_buffer_) ThrowIfFailed(swap_chain_->GetBuffer(0, IID_PPV_ARGS(&back_buffer_)), "get video back buffer");
-        if (!render_target_view_) {
-            ThrowIfFailed(
-                device_->CreateRenderTargetView(back_buffer_.Get(), nullptr, &render_target_view_),
-                "create video render target view");
-        }
-        const FLOAT clear_color[4] = {0.0f, 0.0f, 0.0f, 1.0f};
-        context_->ClearRenderTargetView(render_target_view_.Get(), clear_color);
 
         D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC input_description{};
         input_description.ViewDimension = D3D11_VPIV_DIMENSION_TEXTURE2D;
@@ -592,7 +583,7 @@ private:
 
         RECT source{0, 0, static_cast<LONG>(input_width), static_cast<LONG>(input_height)};
         RECT destination{0, 0, static_cast<LONG>(output_width_), static_cast<LONG>(output_height_)};
-        if (fill_mode_.load()) {
+        if (fill_mode_) {
             const double input_aspect = static_cast<double>(input_width) / input_height;
             const double output_aspect = static_cast<double>(output_width_) / output_height_;
             if (input_aspect > output_aspect) {
@@ -620,12 +611,7 @@ private:
         }
         D3D11_VIDEO_COLOR black{};
         black.RGBA.A = 1.0f;
-        // The swap-chain output is BGRA. Passing TRUE here makes the union be
-        // interpreted as YCbCr; zero chroma then produces green letterbox bars
-        // instead of RGB black whenever Fit mode preserves the source aspect.
-        video_context_->VideoProcessorSetOutputTargetRect(
-            processor_.Get(), TRUE, &destination);
-        video_context_->VideoProcessorSetOutputBackgroundColor(processor_.Get(), FALSE, &black);
+        video_context_->VideoProcessorSetOutputBackgroundColor(processor_.Get(), TRUE, &black);
         video_context_->VideoProcessorSetStreamSourceRect(processor_.Get(), 0, TRUE, &source);
         video_context_->VideoProcessorSetStreamDestRect(processor_.Get(), 0, TRUE, &destination);
         video_context_->VideoProcessorSetStreamFrameFormat(
@@ -636,10 +622,9 @@ private:
         ThrowIfFailed(
             video_context_->VideoProcessorBlt(processor_.Get(), output_view.Get(), 0, 1, &stream),
             "render decoded video texture");
-        // The frame-latency object above already guarantees a free one-frame
-        // presentation slot. DO_NOT_WAIT performs a second, racy rejection and
-        // drops displayable frames around the monitor refresh boundary.
-        ThrowIfFailed(swap_chain_->Present(0, 0), "present native video frame");
+        const HRESULT present = swap_chain_->Present(0, DXGI_PRESENT_DO_NOT_WAIT);
+        if (present == DXGI_ERROR_WAS_STILL_DRAWING) return false;
+        ThrowIfFailed(present, "present native video frame");
         return true;
     }
 
@@ -668,11 +653,11 @@ private:
         processor_.Reset();
         D3D11_VIDEO_PROCESSOR_CONTENT_DESC description{};
         description.InputFrameFormat = D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE;
-        description.InputFrameRate.Numerator = 120;
+        description.InputFrameRate.Numerator = 60;
         description.InputFrameRate.Denominator = 1;
         description.InputWidth = width;
         description.InputHeight = height;
-        description.OutputFrameRate.Numerator = 120;
+        description.OutputFrameRate.Numerator = 60;
         description.OutputFrameRate.Denominator = 1;
         description.OutputWidth = output_width_;
         description.OutputHeight = output_height_;
@@ -701,7 +686,6 @@ private:
     ComPtr<IDXGISwapChain1> swap_chain_;
     HANDLE frame_latency_waitable_object_ = nullptr;
     ComPtr<ID3D11Texture2D> back_buffer_;
-    ComPtr<ID3D11RenderTargetView> render_target_view_;
     ComPtr<ID3D11Texture2D> upload_texture_;
     ComPtr<ID3D11VideoProcessorEnumerator> processor_enumerator_;
     ComPtr<ID3D11VideoProcessor> processor_;
@@ -721,7 +705,7 @@ private:
     std::atomic<std::uint64_t> render_microseconds_{0};
     std::atomic<std::uint64_t> render_attempts_{0};
     std::atomic<bool> visible_{true};
-    std::atomic<bool> fill_mode_{false};
+    bool fill_mode_ = false;
 };
 
 class MfH264Decoder {
@@ -1548,7 +1532,6 @@ private:
         HRESULT com = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
         bool com_initialized = SUCCEEDED(com);
         bool mf_initialized = false;
-        bool preserve_last_frame = false;
         try {
             ThrowIfFailed(com, "initialize native video COM");
             ThrowIfFailed(MFStartup(MF_VERSION, MFSTARTUP_FULL), "start Media Foundation");
@@ -1567,9 +1550,6 @@ private:
 
             std::uint32_t current_generation = 0;
             bool waiting_for_keyframe = true;
-            bool first_frame_rendered = false;
-            std::uint64_t first_frame_rendered_count = rendered_frames_.load();
-            std::uint64_t next_first_frame_keyframe = 0;
             StreamConfiguration current_configuration;
             bool have_configuration = false;
             std::uint64_t receiver_report_started = MonotonicMicroseconds();
@@ -1592,9 +1572,6 @@ private:
                     SetStreamConfigurationStatus(configuration);
                     decoder_.reset();
                     waiting_for_keyframe = true;
-                    first_frame_rendered = false;
-                    first_frame_rendered_count = rendered_frames_.load();
-                    next_first_frame_keyframe = MonotonicMicroseconds() + 250'000;
                     SetStatus(
                         "connecting", "", "", false,
                         configuration.encoded_width, configuration.encoded_height);
@@ -1624,7 +1601,7 @@ private:
                             decoder_ = std::make_unique<MfH264Decoder>(
                                 renderer_.get(), current_configuration, std::move(sequence_header));
                             SetStatus(
-                                "decoding", "", decoder_->name(), decoder_->hardware(),
+                                "streaming", "", decoder_->name(), decoder_->hardware(),
                                 current_configuration.encoded_width,
                                 current_configuration.encoded_height);
                         }
@@ -1637,16 +1614,6 @@ private:
                     ++decoded_frames_;
                     decoder_->Decode(message);
                     const std::uint64_t now_us = MonotonicMicroseconds();
-                    if (!first_frame_rendered && rendered_frames_.load() > first_frame_rendered_count) {
-                        first_frame_rendered = true;
-                        SetStatus(
-                            "streaming", "", decoder_->name(), decoder_->hardware(),
-                            current_configuration.encoded_width,
-                            current_configuration.encoded_height);
-                    } else if (!first_frame_rendered && now_us >= next_first_frame_keyframe) {
-                        RequestKeyframe(connected, current_generation);
-                        next_first_frame_keyframe = now_us + 250'000;
-                    }
                     if (now_us >= receiver_report_started + 1'000'000) {
                         const double seconds =
                             (now_us - receiver_report_started) / 1'000'000.0;
@@ -1666,20 +1633,12 @@ private:
                     continue;
                 }
                 if (message.type == MessageType::SenderReport) {
-                    if (message.generation == current_generation) {
-                        SetSenderReport(message);
-                        const std::uint64_t now_us = MonotonicMicroseconds();
-                        if (!first_frame_rendered && now_us >= next_first_frame_keyframe) {
-                            RequestKeyframe(connected, current_generation);
-                            next_first_frame_keyframe = now_us + 250'000;
-                        }
-                    }
+                    if (message.generation == current_generation) SetSenderReport(message);
                     continue;
                 }
                 if (message.type == MessageType::StreamEnd) {
                     const std::string reason(message.payload.begin(), message.payload.end());
-                    preserve_last_frame = reason.find("secure_desktop") != std::string::npos;
-                    throw std::runtime_error(preserve_last_frame
+                    throw std::runtime_error(reason.find("secure_desktop") != std::string::npos
                         ? "secure desktop requires MJPEG fallback"
                         : "native video stream ended");
                 }
@@ -1693,7 +1652,7 @@ private:
         const SOCKET socket = socket_.exchange(INVALID_SOCKET);
         if (socket != INVALID_SOCKET) closesocket(socket);
         decoder_.reset();
-        if (!preserve_last_frame) renderer_.reset();
+        renderer_.reset();
         if (mf_initialized) MFShutdown();
         if (com_initialized) CoUninitialize();
         WSACleanup();

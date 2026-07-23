@@ -49,51 +49,6 @@ def find_window(title: str) -> int:
     return int(result.value or 0)
 
 
-def child_window_texts(parent: int) -> list[str]:
-    results: list[str] = []
-    callback_type = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
-
-    @callback_type
-    def callback(window: int, _: int) -> bool:
-        length = ctypes.windll.user32.GetWindowTextLengthW(window)
-        if length > 0:
-            text = ctypes.create_unicode_buffer(length + 1)
-            ctypes.windll.user32.GetWindowTextW(window, text, len(text))
-            if text.value:
-                results.append(text.value)
-        return True
-
-    ctypes.windll.user32.EnumChildWindows(parent, callback, 0)
-    return results
-
-
-def process_windows(process_id: int) -> list[tuple[int, str, bool, list[str]]]:
-    results: list[tuple[int, str, bool, list[str]]] = []
-    callback_type = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
-
-    @callback_type
-    def callback(window: int, _: int) -> bool:
-        owner = wintypes.DWORD()
-        ctypes.windll.user32.GetWindowThreadProcessId(window, ctypes.byref(owner))
-        if int(owner.value) != process_id:
-            return True
-        length = ctypes.windll.user32.GetWindowTextLengthW(window)
-        text = ctypes.create_unicode_buffer(max(1, length + 1))
-        ctypes.windll.user32.GetWindowTextW(window, text, len(text))
-        results.append(
-            (
-                int(window),
-                text.value,
-                bool(ctypes.windll.user32.IsWindowVisible(window)),
-                child_window_texts(window),
-            )
-        )
-        return True
-
-    ctypes.windll.user32.EnumWindows(callback, 0)
-    return results
-
-
 def window_rect(window: int) -> tuple[int, int, int, int]:
     rect = wintypes.RECT()
     if not ctypes.windll.user32.GetWindowRect(window, ctypes.byref(rect)):
@@ -172,54 +127,33 @@ def main() -> int:
                     "monitor": "all",
                     "fps_limit": 60,
                     "scale_mode": "fill",
-                    "surface_left": 0,
-                    "surface_top": 0,
-                    "surface_width": 900,
-                    "surface_height": 550,
+                    "surface_left": 40,
+                    "surface_top": 80,
+                    "surface_width": 800,
+                    "surface_height": 450,
                 }
                 html = f"""<!doctype html><meta charset=utf-8><title>{WINDOW_TITLE}</title>
-<style>
-html,body{{margin:0;width:100%;height:100%;overflow:hidden;background:#101116;color:white;font-family:Segoe UI}}
-#stage{{position:absolute;left:0;top:0;width:900px;height:550px;background:#ff0033}}
-#webTitlebar{{position:fixed;z-index:40;top:0;left:0;right:0;height:40px;display:flex;align-items:center;padding:0 13px;box-sizing:border-box;background:rgba(15,17,21,.94);border-bottom:1px solid rgba(255,255,255,.09);font-size:12px;font-weight:600}}
-#webToolbar{{position:fixed;z-index:41;top:48px;left:50%;width:420px;height:42px;transform:translateX(-50%);display:flex;align-items:center;gap:5px;padding:4px 8px;box-sizing:border-box;border:1px solid rgba(238,244,248,.34);border-radius:13px;background:linear-gradient(180deg,rgba(113,116,122,.72),rgba(42,45,51,.64));box-shadow:0 10px 30px rgba(0,0,0,.26),inset 0 1px rgba(255,255,255,.22);backdrop-filter:blur(22px) saturate(145%)}}
-#webToolbar button{{height:31px;border:0;border-radius:9px;background:rgba(255,255,255,.08);color:#e5e8eb;padding:0 12px}}#webStatus{{position:absolute;right:12px;width:10px;height:10px;border-radius:50%;background:#39bf86;box-shadow:0 0 0 3px rgba(57,191,134,.18)}}
-</style>
-<div id=stage></div><header id=webTitlebar>NATIVE-E2E · 控制</header><div id=webToolbar><button>⌃</button><button>显示器</button><button>60 FPS</button><button>键盘</button><button>剪贴板</button><span id=webStatus></span></div><script>
+<style>html,body{{margin:0;background:#101116;color:white;font-family:Segoe UI}}#stage{{position:absolute;left:40px;top:80px;width:800px;height:450px;background:#ff0033}}</style>
+<div id=stage></div><script>
 async function startNativeHostTest() {{
  try {{
   await window.pywebview.api.set_window_title({json.dumps(WINDOW_TITLE)});
   const config = {json.dumps(config)};
   const started = await window.pywebview.api.configure_native_video(config);
-  let surfaced = false;
-  let hiddenRenderedFrames = -1;
+  await window.pywebview.api.set_native_video_layout({{...config, visible:true}});
+  await window.pywebview.api.set_native_overlay_state({{
+    visible:true, collapsed:false, unlock_visible:false, view_only:false,
+    fps:60, scale_mode:'fill', keyboard:true, clipboard:true, fullscreen:false,
+    status_error:false, monitors:[{{id:'all',label:'全部显示器'}}]
+  }});
   for (let attempt=0; attempt<300; attempt++) {{
     const status = await window.pywebview.api.native_video_status();
     if (!started || status.state === 'failed') {{
       await fetch('/result', {{method:'POST', body:JSON.stringify(status)}});
       return;
     }}
-    if (!surfaced && Number(status.decoded_frames || 0) > 0) {{
-      hiddenRenderedFrames = Number(status.rendered_frames || 0);
-      if (hiddenRenderedFrames !== 0) {{
-        await fetch('/result', {{method:'POST', body:JSON.stringify({{
-          ...status, state:'failed', error:'hidden native surface was presented',
-          hidden_rendered_frames:hiddenRenderedFrames
-        }})}});
-        return;
-      }}
-      const titlebar = document.getElementById('webTitlebar').getBoundingClientRect();
-      const toolbar = document.getElementById('webToolbar').getBoundingClientRect();
-      await window.pywebview.api.set_native_video_layout({{...config, visible:true, exclusions:[
-        {{left:titlebar.left,top:titlebar.top,width:titlebar.width,height:titlebar.height}},
-        {{left:toolbar.left,top:toolbar.top,width:toolbar.width,height:toolbar.height}}
-      ]}});
-      surfaced = true;
-    }}
     if (status.state === 'streaming' && Number(status.rendered_frames || 0) >= 30) {{
-      await fetch('/result', {{method:'POST', body:JSON.stringify({{
-        ...status, hidden_rendered_frames:hiddenRenderedFrames
-      }})}});
+      await fetch('/result', {{method:'POST', body:JSON.stringify(status)}});
       return;
     }}
     await new Promise(resolve => setTimeout(resolve, 50));
@@ -271,13 +205,10 @@ else window.addEventListener('pywebviewready', startNativeHostTest, {{once:true}
                 raise RuntimeError(
                     "packaged native control host did not report video readiness "
                     f"(page_requested={page_event.is_set()}, process_exit={process.poll()}, "
-                    f"window={find_window(WINDOW_TITLE)}, "
-                    f"process_windows={process_windows(process.pid)})"
+                    f"window={find_window(WINDOW_TITLE)})"
                 )
             if report.get("state") != "streaming" or int(report.get("rendered_frames", 0)) < 30:
                 raise RuntimeError(f"packaged native control host failed: {report}")
-            if int(report.get("hidden_rendered_frames", -1)) != 0:
-                raise RuntimeError(f"hidden native surface was presented: {report}")
             window = find_window(WINDOW_TITLE)
             if not window:
                 raise RuntimeError("packaged native control host window was not visible")
@@ -291,22 +222,14 @@ else window.addEventListener('pywebviewready', startNativeHostTest, {{once:true}
             left, top, right, bottom = window_rect(window)
             time.sleep(0.25)
             owned = visible_owned_windows(window)
-            if owned:
-                raise RuntimeError(f"legacy native overlay windows are still visible: {owned}")
+            if not any(
+                owned_right - owned_left >= 300 and 30 <= owned_bottom - owned_top <= 120
+                for owned_left, owned_top, owned_right, owned_bottom in owned
+            ):
+                raise RuntimeError(f"native glass toolbar was not visible above the D3D surface: {owned}")
             first = ImageGrab.grab(bbox=(left, top, right, bottom)).convert("RGB")
-            preview_path = Path(__file__).resolve().parents[1] / "build" / "web-toolbar-over-d3d-e2e.png"
+            preview_path = Path(__file__).resolve().parents[1] / "build" / "native-glass-toolbar-e2e.png"
             first.save(preview_path)
-            green_toolbar_pixels = 0
-            for sample_y in range(min(first.height, 260)):
-                for sample_x in range(first.width):
-                    red, green, blue = first.getpixel((sample_x, sample_y))
-                    if green > 130 and green > red * 1.45 and green > blue * 1.25:
-                        green_toolbar_pixels += 1
-            if green_toolbar_pixels < 80:
-                raise RuntimeError(
-                    "historical Web toolbar was not visible through the D3D exclusion region; "
-                    f"green_pixels={green_toolbar_pixels}, screenshot={preview_path}"
-                )
             time.sleep(0.35)
             second = ImageGrab.grab(bbox=(left, top, right, bottom)).convert("RGB")
             difference = ImageChops.difference(first, second)

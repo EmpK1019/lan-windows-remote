@@ -32,7 +32,6 @@ import tempfile
 import threading
 import time
 import uuid
-from contextlib import contextmanager
 from dataclasses import dataclass, field
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -61,15 +60,13 @@ if platform.system() == "Windows":
 
 
 APP_NAME = "Windows LAN Remote"
-APP_VERSION = "1.0.12"
+APP_VERSION = "1.0.2"
 GITHUB_REPOSITORY = "EmpK1019/lan-windows-remote"
 GITHUB_LATEST_RELEASE_API = f"https://api.github.com/repos/{GITHUB_REPOSITORY}/releases/latest"
 DEFAULT_PORT = 8765
 DEFAULT_DISCOVERY_PORT = 8766
 SECURE_HELPER_PORT = 8767
 ELEVATED_INPUT_HELPER_PORT = 8768
-SERVICE_SESSION_STATE_MAX_AGE_SECONDS = 8.0
-SERVICE_SESSION_STATE_CACHE_SECONDS = 0.1
 DISCOVERY_MAGIC = "windows-lan-remote-v1"
 DISCOVERY_TTL_SECONDS = 9
 ACTIVE_REMOTE_SESSION_TTL_SECONDS = 8
@@ -120,20 +117,10 @@ AUTH_FAILURE_LIMIT = 6
 AUTH_FAILURE_WINDOW_SECONDS = 60
 AUTH_FAILURE_BLOCK_SECONDS = 30
 UPDATE_INSTALL_RETRY_SECONDS = 20
-UNLOCK_WAKE_ATTEMPTS = 2
-UNLOCK_WAKE_POLL_SECONDS = 0.2
-UNLOCK_WAKE_POLLS_PER_ATTEMPT = 8
+UNLOCK_WAKE_DELAY_SECONDS = 1.2
 UNLOCK_CHARACTER_DELAY_SECONDS = 0.055
 UNLOCK_SUBMIT_DELAY_SECONDS = 0.18
-UNLOCK_RESULT_POLL_SECONDS = 0.25
-UNLOCK_RESULT_POLLS = 24
 UNLOCK_SEQUENCE_TIMEOUT_SECONDS = 12.0
-UNLOCK_PROVIDER_REQUEST_TTL_SECONDS = 30
-UNLOCK_PROVIDER_EVENT_NAME = "Global\\WindowsLANRemoteUnlockPending"
-UNLOCK_PROVIDER_REGISTRY_PATH = r"SOFTWARE\Windows LAN Remote\PendingUnlock"
-DESKTOP_READOBJECTS = 0x0001
-DESKTOP_WRITEOBJECTS = 0x0080
-DESKTOP_SWITCHDESKTOP = 0x0100
 LOCAL_DESKTOP_PATHS = frozenset(
     {
         "/api/devices",
@@ -155,15 +142,12 @@ SCREEN_LOCK = threading.Lock()
 INPUT_LOCK = threading.Lock()
 REMOTE_INPUT_DISPATCH_LOCK = threading.Lock()
 ELEVATED_INPUT_HELPER_STATE_LOCK = threading.Lock()
-SERVICE_SESSION_STATE_CACHE_LOCK = threading.Lock()
 CLIPBOARD_LOCK = threading.Lock()
 GDIPLUS_LOCK = threading.Lock()
 FILE_UPLOAD_LOCK = threading.Lock()
 ACTIVE_FILE_UPLOADS: set[Path] = set()
 GDIPLUS_TOKEN = ctypes.c_void_p()
 GDIPLUS_STARTED = False
-SERVICE_SESSION_STATE_CACHE_AT = 0.0
-SERVICE_SESSION_STATE_CACHE_VALUE: bool | None = None
 ELEVATED_INPUT_HELPER_RETRY_AFTER = 0.0
 
 
@@ -298,146 +282,6 @@ def native_video_encoder_path() -> Path | None:
     return None
 
 
-@dataclass
-class NativeVideoEncoderProcess:
-    process: subprocess.Popen[bytes]
-    diagnostics: list[str]
-    diagnostics_lock: threading.Lock
-
-
-class NativeVideoControlTarget:
-    """Routes controller feedback to whichever local encoder is active."""
-
-    def __init__(self) -> None:
-        self._lock = threading.Lock()
-        self._stream: Any = None
-
-    def set_stream(self, stream: Any) -> None:
-        with self._lock:
-            self._stream = stream
-
-    def write(self, payload: bytes) -> bool:
-        with self._lock:
-            stream = self._stream
-            if stream is None:
-                return False
-            try:
-                stream.write(payload)
-                stream.flush()
-                return True
-            except (BrokenPipeError, OSError, ValueError):
-                if self._stream is stream:
-                    self._stream = None
-                return False
-
-
-def _read_exact(stream: Any, length: int) -> bytes | None:
-    chunks = bytearray()
-    while len(chunks) < length:
-        chunk = stream.read(length - len(chunks))
-        if not chunk:
-            return None
-        chunks.extend(chunk)
-    return bytes(chunks)
-
-
-def read_native_video_packet(stream: Any) -> tuple[NativeVideoMessage, bytes] | None:
-    header = _read_exact(stream, NATIVE_VIDEO_HEADER.size)
-    if header is None:
-        return None
-    fields = NATIVE_VIDEO_HEADER.unpack(header)
-    payload_length = int(fields[7])
-    message_type = int(fields[2])
-    payload_limit = (
-        NATIVE_VIDEO_MAX_ACCESS_UNIT_BYTES
-        if message_type == NATIVE_VIDEO_MESSAGE_ACCESS_UNIT
-        else NATIVE_VIDEO_MAX_CONFIG_BYTES
-    )
-    if payload_length > payload_limit:
-        raise ValueError("native video payload is too large")
-    payload = _read_exact(stream, payload_length)
-    if payload is None:
-        return None
-    packed = header + payload
-    return unpack_native_video_message(packed), packed
-
-
-def start_native_video_encoder(
-    monitor_id: str,
-    fps_limit: int,
-    generation: int,
-) -> NativeVideoEncoderProcess:
-    encoder_path = native_video_encoder_path()
-    if encoder_path is None:
-        raise RuntimeError("native H.264 encoder unavailable")
-    command = [
-        str(encoder_path),
-        "--monitor",
-        monitor_id,
-        "--fps",
-        str(fps_limit),
-        "--generation",
-        str(generation),
-    ]
-    if os.environ.get("LAN_REMOTE_NATIVE_VIDEO_TEST_PATTERN") == "1":
-        command.append("--test-pattern")
-    process = subprocess.Popen(
-        command,
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        bufsize=0,
-        close_fds=True,
-        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-    )
-    source = NativeVideoEncoderProcess(process, [], threading.Lock())
-
-    def read_diagnostics() -> None:
-        if process.stderr is None:
-            return
-        try:
-            for raw_line in iter(process.stderr.readline, b""):
-                line = raw_line.decode("utf-8", "replace").strip()
-                if not line:
-                    continue
-                with source.diagnostics_lock:
-                    source.diagnostics.append(line[:512])
-                    del source.diagnostics[:-8]
-                if os.environ.get("LAN_REMOTE_NATIVE_VIDEO_DEBUG") == "1" and sys.stderr is not None:
-                    print(f"[native-video] {line[:512]}", file=sys.stderr, flush=True)
-        except OSError:
-            return
-
-    threading.Thread(
-        target=read_diagnostics,
-        name="lan-remote-native-video-diagnostics",
-        daemon=True,
-    ).start()
-    return source
-
-
-def stop_native_video_encoder(source: NativeVideoEncoderProcess) -> None:
-    process = source.process
-    if process.stdin is not None:
-        try:
-            process.stdin.close()
-        except OSError:
-            pass
-    if process.poll() is None:
-        process.terminate()
-        try:
-            process.wait(timeout=2)
-        except subprocess.TimeoutExpired:
-            process.kill()
-            process.wait(timeout=2)
-    for stream in (process.stdout, process.stderr):
-        if stream is not None:
-            try:
-                stream.close()
-            except OSError:
-                pass
-
-
 def video_capabilities() -> list[str]:
     capabilities = [MJPEG_VIDEO_CAPABILITY]
     if native_video_encoder_path() is not None:
@@ -521,39 +365,6 @@ def dpapi_unprotect(value: str) -> str:
         raise ctypes.WinError()
     try:
         return ctypes.string_at(data_out.pbData, data_out.cbData).decode("utf-8")
-    finally:
-        ctypes.windll.kernel32.LocalFree(data_out.pbData)
-
-
-def dpapi_protect_machine(value: str) -> bytes:
-    """Protect a short-lived secret for the LocalSystem credential provider."""
-    data = value.encode("utf-16-le")
-    buffer = ctypes.create_string_buffer(data)
-    data_in = DATA_BLOB(len(data), ctypes.cast(buffer, ctypes.POINTER(ctypes.c_ubyte)))
-    data_out = DATA_BLOB()
-    crypt32 = ctypes.windll.crypt32
-    crypt32.CryptProtectData.argtypes = [
-        ctypes.POINTER(DATA_BLOB),
-        wintypes.LPCWSTR,
-        ctypes.POINTER(DATA_BLOB),
-        ctypes.c_void_p,
-        ctypes.c_void_p,
-        wintypes.DWORD,
-        ctypes.POINTER(DATA_BLOB),
-    ]
-    crypt32.CryptProtectData.restype = wintypes.BOOL
-    if not crypt32.CryptProtectData(
-        ctypes.byref(data_in),
-        "LAN Remote pending workstation unlock",
-        None,
-        None,
-        None,
-        0x1 | 0x4,  # CRYPTPROTECT_UI_FORBIDDEN | CRYPTPROTECT_LOCAL_MACHINE
-        ctypes.byref(data_out),
-    ):
-        raise ctypes.WinError()
-    try:
-        return ctypes.string_at(data_out.pbData, data_out.cbData)
     finally:
         ctypes.windll.kernel32.LocalFree(data_out.pbData)
 
@@ -900,20 +711,6 @@ class ServerState:
     update_install_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
     remote_pointer_target: tuple[str, float, float, float] | None = field(default=None, repr=False)
     remote_pointer_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
-    lock_transition_until: float = field(default=0.0, repr=False)
-    lock_transition_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
-
-    def begin_lock_transition(self) -> None:
-        with self.lock_transition_lock:
-            self.lock_transition_until = time.monotonic() + LOCK_TRANSITION_NATIVE_HOLD_SECONDS
-
-    def clear_lock_transition(self) -> None:
-        with self.lock_transition_lock:
-            self.lock_transition_until = 0.0
-
-    def lock_transition_active(self) -> bool:
-        with self.lock_transition_lock:
-            return time.monotonic() < self.lock_transition_until
 
     def note_remote_pointer(self, payload: dict[str, Any]) -> None:
         if not str(payload.get("type", "")).startswith("mouse_"):
@@ -1857,9 +1654,6 @@ HIGH_FPS_MAX_HEIGHT = 576
 LOW_LATENCY_JPEG_QUALITY = 55
 HIGH_FPS_JPEG_QUALITY = 48
 SCREEN_STREAM_BOUNDARY = "lan-remote-frame"
-LOCK_TRANSITION_NATIVE_HOLD_SECONDS = 4.0
-LOCK_TRANSITION_DARK_FRAME_MAX_SECONDS = 1.5
-LOCK_TRANSITION_DARK_FRAME_MEAN_THRESHOLD = 8.0
 REMOTE_CURSOR_STREAM_FPS = 120
 MAX_DESKTOP_BACKGROUND_BYTES = 128 * 1024 * 1024
 
@@ -1888,10 +1682,6 @@ def configure_win32_signatures() -> None:
     user32.SetCursorPos.restype = wintypes.BOOL
     user32.GetCursorInfo.argtypes = [ctypes.POINTER(CURSORINFO)]
     user32.GetCursorInfo.restype = wintypes.BOOL
-    user32.GetForegroundWindow.argtypes = []
-    user32.GetForegroundWindow.restype = wintypes.HWND
-    user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
-    user32.GetWindowThreadProcessId.restype = wintypes.DWORD
     user32.GetIconInfo.argtypes = [wintypes.HANDLE, ctypes.POINTER(ICONINFO)]
     user32.GetIconInfo.restype = wintypes.BOOL
     user32.DrawIconEx.argtypes = [
@@ -1912,12 +1702,6 @@ def configure_win32_signatures() -> None:
     user32.keybd_event.restype = None
     user32.MapVirtualKeyW.argtypes = [wintypes.UINT, wintypes.UINT]
     user32.MapVirtualKeyW.restype = wintypes.UINT
-    user32.MapVirtualKeyExW.argtypes = [wintypes.UINT, wintypes.UINT, wintypes.HANDLE]
-    user32.MapVirtualKeyExW.restype = wintypes.UINT
-    user32.VkKeyScanExW.argtypes = [wintypes.WCHAR, wintypes.HANDLE]
-    user32.VkKeyScanExW.restype = ctypes.c_short
-    user32.GetKeyboardLayout.argtypes = [wintypes.DWORD]
-    user32.GetKeyboardLayout.restype = wintypes.HANDLE
     user32.SendInput.argtypes = [wintypes.UINT, ctypes.POINTER(INPUT), ctypes.c_int]
     user32.SendInput.restype = wintypes.UINT
     user32.OpenClipboard.argtypes = [wintypes.HWND]
@@ -1948,8 +1732,6 @@ def configure_win32_signatures() -> None:
     user32.GetUserObjectInformationW.restype = wintypes.BOOL
     user32.GetThreadDesktop.argtypes = [wintypes.DWORD]
     user32.GetThreadDesktop.restype = wintypes.HANDLE
-    user32.SetThreadDesktop.argtypes = [wintypes.HANDLE]
-    user32.SetThreadDesktop.restype = wintypes.BOOL
     kernel32.GetCurrentThreadId.argtypes = []
     kernel32.GetCurrentThreadId.restype = wintypes.DWORD
     kernel32.GetCurrentProcessId.argtypes = []
@@ -2587,17 +2369,6 @@ def capture_low_latency_screen(
         return data, content_type, width, height
 
 
-def encoded_frame_is_dark(data: bytes) -> bool:
-    """Cheaply reject transient all-black frames while Windows switches desktops."""
-    try:
-        with Image.open(io.BytesIO(data)) as image:
-            sample = image.convert("L").resize((32, 18))
-            mean = sum(sample.get_flattened_data()) / (32 * 18)
-        return mean < LOCK_TRANSITION_DARK_FRAME_MEAN_THRESHOLD
-    except (OSError, ValueError, TypeError):
-        return False
-
-
 def open_clipboard_with_retry() -> None:
     for _ in range(12):
         if ctypes.windll.user32.OpenClipboard(None):
@@ -2760,11 +2531,6 @@ def service_secret_path() -> Path:
     return program_data / "Windows LAN Remote" / "service-token.txt"
 
 
-def service_session_state_path() -> Path:
-    program_data = Path(os.environ.get("PROGRAMDATA", r"C:\ProgramData"))
-    return program_data / "Windows LAN Remote" / "session-state.json"
-
-
 def read_service_secret(path: str | Path | None = None) -> str:
     target = Path(path) if path else service_secret_path()
     try:
@@ -2773,185 +2539,17 @@ def read_service_secret(path: str | Path | None = None) -> str:
         return ""
 
 
-def current_process_session_id() -> int | None:
-    kernel32 = ctypes.windll.kernel32
-    session_id = wintypes.DWORD()
-    if not kernel32.ProcessIdToSessionId(kernel32.GetCurrentProcessId(), ctypes.byref(session_id)):
-        return None
-    return int(session_id.value)
-
-
-def active_session_account(session_id: int | None = None) -> tuple[str, str]:
-    """Return the domain and username attached to the interactive session."""
-    resolved_session = current_process_session_id() if session_id is None else session_id
-    if resolved_session is None:
-        raise OSError("interactive session is unavailable")
-    wtsapi32 = ctypes.windll.wtsapi32
-
-    def query(info_class: int) -> str:
-        buffer = ctypes.c_void_p()
-        returned = wintypes.DWORD()
-        if not wtsapi32.WTSQuerySessionInformationW(
-            None,
-            resolved_session,
-            info_class,
-            ctypes.byref(buffer),
-            ctypes.byref(returned),
-        ):
-            raise ctypes.WinError()
-        try:
-            if not buffer.value or returned.value < ctypes.sizeof(wintypes.WCHAR):
-                return ""
-            return ctypes.wstring_at(buffer.value).strip()
-        finally:
-            wtsapi32.WTSFreeMemory(buffer)
-
-    username = query(5)  # WTSUserName
-    domain = query(7)  # WTSDomainName
-    if not username:
-        raise OSError("interactive session account is unavailable")
-    return domain, username
-
-
-def _harden_pending_unlock_registry_key(key: Any) -> None:
-    """Restrict a machine-DPAPI unlock blob to LocalSystem and administrators."""
-    advapi32 = ctypes.windll.advapi32
-    descriptor = ctypes.c_void_p()
-    sddl = "O:SYG:SYD:P(A;;GA;;;SY)(A;;GA;;;BA)"
-    advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW.argtypes = [
-        wintypes.LPCWSTR,
-        wintypes.DWORD,
-        ctypes.POINTER(ctypes.c_void_p),
-        ctypes.POINTER(wintypes.DWORD),
-    ]
-    advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW.restype = wintypes.BOOL
-    advapi32.RegSetKeySecurity.argtypes = [wintypes.HKEY, wintypes.DWORD, ctypes.c_void_p]
-    advapi32.RegSetKeySecurity.restype = wintypes.LONG
-    if not advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW(
-        sddl,
-        1,
-        ctypes.byref(descriptor),
-        None,
-    ):
-        raise ctypes.WinError()
-    try:
-        result = advapi32.RegSetKeySecurity(
-            int(key.handle),
-            0x00000004 | 0x80000000,  # DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION
-            descriptor,
-        )
-        if result:
-            raise OSError(result, "could not protect pending unlock registry key")
-    finally:
-        ctypes.windll.kernel32.LocalFree(descriptor)
-
-
-def queue_credential_provider_unlock(password: str) -> dict[str, Any]:
-    """Publish one short-lived password to the registered Winlogon provider."""
-    if platform.system() != "Windows":
-        raise OSError("credential provider unlock is available only on Windows")
-    if not 1 <= len(password) <= 128 or "\0" in password:
-        raise ValueError("lock credential length is invalid")
-    domain, username = active_session_account()
-    protected_password = dpapi_protect_machine(password)
-    nonce = secrets.token_hex(16)
-    expires_at_ms = int((time.time() + UNLOCK_PROVIDER_REQUEST_TTL_SECONDS) * 1000)
-    access = winreg.KEY_SET_VALUE | 0x00040000 | winreg.KEY_WOW64_64KEY  # WRITE_DAC
-    with winreg.CreateKeyEx(
-        winreg.HKEY_LOCAL_MACHINE,
-        UNLOCK_PROVIDER_REGISTRY_PATH,
-        0,
-        access,
-    ) as key:
-        _harden_pending_unlock_registry_key(key)
-        winreg.SetValueEx(key, "Version", 0, winreg.REG_DWORD, 1)
-        winreg.SetValueEx(key, "Domain", 0, winreg.REG_SZ, domain)
-        winreg.SetValueEx(key, "Username", 0, winreg.REG_SZ, username)
-        winreg.SetValueEx(key, "ProtectedPassword", 0, winreg.REG_BINARY, protected_password)
-        winreg.SetValueEx(key, "ExpiresAtMs", 0, winreg.REG_QWORD, expires_at_ms)
-        winreg.SetValueEx(key, "Nonce", 0, winreg.REG_SZ, nonce)
-
-    kernel32 = ctypes.windll.kernel32
-    kernel32.CreateEventW.argtypes = [ctypes.c_void_p, wintypes.BOOL, wintypes.BOOL, wintypes.LPCWSTR]
-    kernel32.CreateEventW.restype = wintypes.HANDLE
-    kernel32.SetEvent.argtypes = [wintypes.HANDLE]
-    kernel32.SetEvent.restype = wintypes.BOOL
-    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
-    kernel32.CloseHandle.restype = wintypes.BOOL
-    event = kernel32.CreateEventW(None, False, False, UNLOCK_PROVIDER_EVENT_NAME)
-    if not event:
-        raise ctypes.WinError()
-    try:
-        if not kernel32.SetEvent(event):
-            raise ctypes.WinError()
-    finally:
-        kernel32.CloseHandle(event)
-    return {"ok": True, "status": "queued", "nonce": nonce, "expires_at": expires_at_ms}
-
-
-def service_session_locked(
-    path: str | Path | None = None,
-    *,
-    now_ms: int | None = None,
-    session_id: int | None = None,
-) -> bool | None:
-    """Read the service-owned session state, rejecting stale or mismatched data."""
-    global SERVICE_SESSION_STATE_CACHE_AT, SERVICE_SESSION_STATE_CACHE_VALUE
-
-    use_cache = path is None and now_ms is None and session_id is None
-    if use_cache:
-        checked_at = time.monotonic()
-        with SERVICE_SESSION_STATE_CACHE_LOCK:
-            if checked_at - SERVICE_SESSION_STATE_CACHE_AT <= SERVICE_SESSION_STATE_CACHE_SECONDS:
-                return SERVICE_SESSION_STATE_CACHE_VALUE
-
-    target = Path(path) if path is not None else service_session_state_path()
-    expected_session = session_id if session_id is not None else current_process_session_id()
-    value: bool | None = None
-    try:
-        payload = json.loads(target.read_text(encoding="utf-8"))
-        if not isinstance(payload, dict):
-            raise ValueError("service session state must be an object")
-        updated_at_ms = payload.get("updated_at_ms")
-        state_session = payload.get("session_id")
-        locked = payload.get("locked")
-        known = payload.get("known")
-        if isinstance(updated_at_ms, bool) or not isinstance(updated_at_ms, (int, float)):
-            raise ValueError("service session state timestamp is invalid")
-        current_time_ms = now_ms if now_ms is not None else int(time.time() * 1000)
-        age_ms = current_time_ms - int(updated_at_ms)
-        if (
-            payload.get("version") == 1
-            and expected_session is not None
-            and isinstance(state_session, int)
-            and not isinstance(state_session, bool)
-            and state_session == int(expected_session)
-            and isinstance(locked, bool)
-            and known is True
-            and -5000 <= age_ms <= int(SERVICE_SESSION_STATE_MAX_AGE_SECONDS * 1000)
-        ):
-            value = locked
-    except (OSError, TypeError, ValueError, json.JSONDecodeError):
-        value = None
-
-    if use_cache:
-        with SERVICE_SESSION_STATE_CACHE_LOCK:
-            SERVICE_SESSION_STATE_CACHE_AT = time.monotonic()
-            SERVICE_SESSION_STATE_CACHE_VALUE = value
-    return value
-
-
-def input_desktop_name() -> str | None:
-    """Return the active input desktop name, or None when Windows will not reveal it."""
+def secure_desktop_active() -> bool:
+    """Return True when the input desktop is Winlogon/UAC rather than Default."""
     user32 = ctypes.windll.user32
     desktop = user32.OpenInputDesktop(0, False, 0x0001)
     if not desktop:
-        return None
+        return True
     try:
         required = wintypes.DWORD()
         user32.GetUserObjectInformationW(desktop, 2, None, 0, ctypes.byref(required))
         if required.value <= 2:
-            return None
+            return False
         buffer = ctypes.create_unicode_buffer(required.value // ctypes.sizeof(wintypes.WCHAR) + 1)
         if not user32.GetUserObjectInformationW(
             desktop,
@@ -2960,83 +2558,10 @@ def input_desktop_name() -> str | None:
             ctypes.sizeof(buffer),
             ctypes.byref(required),
         ):
-            return None
-        return buffer.value or None
+            return True
+        return buffer.value.casefold() != "default"
     finally:
         user32.CloseDesktop(desktop)
-
-
-def input_desktop_is_secure() -> bool:
-    """Return True when capture/input needs the secure helper; unknown is fail-safe."""
-    desktop_name = input_desktop_name()
-    return desktop_name is None or desktop_name.casefold() != "default"
-
-
-def secure_desktop_active() -> bool:
-    """Return True only when the active input desktop needs the secure helper."""
-    return input_desktop_is_secure()
-
-
-def secure_video_source_required() -> bool:
-    """Return True while video must be captured from the SYSTEM/Winlogon source."""
-    return current_session_locked() or secure_desktop_active()
-
-
-def foreground_process_name() -> str | None:
-    """Return the executable owning the foreground window, when queryable."""
-    user32 = ctypes.windll.user32
-    kernel32 = ctypes.windll.kernel32
-    user32.GetForegroundWindow.restype = wintypes.HWND
-    user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
-    user32.GetWindowThreadProcessId.restype = wintypes.DWORD
-    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
-    kernel32.OpenProcess.restype = wintypes.HANDLE
-    kernel32.QueryFullProcessImageNameW.argtypes = [
-        wintypes.HANDLE,
-        wintypes.DWORD,
-        wintypes.LPWSTR,
-        ctypes.POINTER(wintypes.DWORD),
-    ]
-    kernel32.QueryFullProcessImageNameW.restype = wintypes.BOOL
-
-    window = user32.GetForegroundWindow()
-    if not window:
-        return None
-    process_id = wintypes.DWORD()
-    if not user32.GetWindowThreadProcessId(window, ctypes.byref(process_id)) or not process_id.value:
-        return None
-    process = kernel32.OpenProcess(0x1000, False, process_id.value)
-    if not process:
-        return None
-    try:
-        buffer = ctypes.create_unicode_buffer(32768)
-        length = wintypes.DWORD(len(buffer))
-        if not kernel32.QueryFullProcessImageNameW(process, 0, buffer, ctypes.byref(length)):
-            return None
-        return Path(buffer.value).name or None
-    finally:
-        kernel32.CloseHandle(process)
-
-
-def session_ui_state(
-    session_locked: bool,
-    desktop_name: str | None,
-    foreground_process: str | None = None,
-) -> str:
-    """Classify observable Windows session UI without guessing that a field has focus."""
-    normalized = desktop_name.casefold() if desktop_name else ""
-    foreground = foreground_process.casefold() if foreground_process else ""
-    if not normalized:
-        return "unknown"
-    if not session_locked:
-        return "unlocked" if normalized == "default" else "secure_prompt"
-    if foreground == "lockapp.exe":
-        return "lock_screen"
-    if normalized == "default":
-        return "lock_screen"
-    if normalized == "winlogon" and foreground == "logonui.exe":
-        return "credential_ui"
-    return "locked_transition"
 
 
 def current_thread_desktop_name() -> str:
@@ -3055,45 +2580,12 @@ def current_thread_desktop_name() -> str:
     return buffer.value
 
 
-@contextmanager
-def active_input_desktop() -> Any:
-    """Temporarily bind a helper request thread to the current interactive desktop."""
-    if platform.system() != "Windows":
-        yield current_thread_desktop_name()
-        return
-
-    user32 = ctypes.windll.user32
-    kernel32 = ctypes.windll.kernel32
-    original = user32.GetThreadDesktop(kernel32.GetCurrentThreadId())
-    desktop = user32.OpenInputDesktop(
-        0,
-        False,
-        DESKTOP_READOBJECTS | DESKTOP_WRITEOBJECTS | DESKTOP_SWITCHDESKTOP,
-    )
-    if not desktop:
-        raise ctypes.WinError()
-    switched = False
-    try:
-        if not user32.SetThreadDesktop(desktop):
-            raise ctypes.WinError()
-        switched = True
-        yield current_thread_desktop_name()
-    finally:
-        if switched and original and not user32.SetThreadDesktop(original):
-            # The request thread is about to exit, so restoration failure is safe to ignore.
-            pass
-        user32.CloseDesktop(desktop)
-
-
 def current_session_locked() -> bool:
     """Return the lock state of the current interactive Windows session."""
-    service_state = service_session_locked()
-    if service_state is not None:
-        return service_state
-
+    kernel32 = ctypes.windll.kernel32
     wtsapi32 = ctypes.windll.wtsapi32
-    session_id = current_process_session_id()
-    if session_id is None:
+    session_id = wintypes.DWORD()
+    if not kernel32.ProcessIdToSessionId(kernel32.GetCurrentProcessId(), ctypes.byref(session_id)):
         return False
     buffer = ctypes.c_void_p()
     returned = wintypes.DWORD()
@@ -3101,7 +2593,7 @@ def current_session_locked() -> bool:
     # and 1 when unlocked on supported Windows 10/11 systems.
     if not wtsapi32.WTSQuerySessionInformationW(
         None,
-        session_id,
+        session_id.value,
         25,
         ctypes.byref(buffer),
         ctypes.byref(returned),
@@ -3178,94 +2670,6 @@ def secure_helper_available() -> bool:
         return False
 
 
-def secure_native_video_available() -> bool:
-    try:
-        data, _ = secure_helper_request("/secure/health", timeout=0.8)
-        payload = json.loads(data.decode("utf-8"))
-        return bool(payload.get("ok") and payload.get("native_video"))
-    except (RuntimeError, ValueError, UnicodeDecodeError):
-        return False
-
-
-def open_secure_native_video_stream(
-    monitor_id: str,
-    fps_limit: int,
-    generation: int,
-    *,
-    timeout: float = 4.0,
-) -> Any:
-    secret = read_service_secret()
-    if not secret:
-        raise RuntimeError("安全桌面服务尚未安装")
-    path = (
-        f"/secure/video-stream?monitor={quote(monitor_id, safe='')}"
-        f"&fps={fps_limit}&generation={generation}"
-    )
-    request = Request(
-        f"http://127.0.0.1:{SECURE_HELPER_PORT}{path}",
-        method="GET",
-        headers={"X-Secure-Token": secret},
-    )
-    try:
-        response = urlopen(request, timeout=timeout)
-        # The timeout above only bounds the helper connection. A static lock screen
-        # may legitimately produce no new access unit for an arbitrary duration.
-        # Keep that idle period from being mistaken for a failed secure source.
-        try:
-            response_socket = response.fp.raw._sock
-            response_socket.settimeout(None)
-            response._lan_remote_socket = response_socket
-        except (AttributeError, OSError):
-            pass
-        return response
-    except HTTPError as exc:
-        try:
-            message = json.loads(exc.read().decode("utf-8")).get("error", "安全桌面 H.264 不可用")
-        except Exception:
-            message = "安全桌面 H.264 不可用"
-        raise RuntimeError(str(message)) from exc
-    except (URLError, TimeoutError, OSError) as exc:
-        raise RuntimeError("安全桌面 H.264 服务未就绪") from exc
-
-
-def abort_secure_native_video_stream(stream: Any) -> None:
-    """Invalidate a helper socket without blocking the video source-switch loop."""
-    response_socket = getattr(stream, "_lan_remote_socket", None)
-    if response_socket is None:
-        try:
-            response_socket = stream.fp.raw._sock
-        except AttributeError:
-            response_socket = None
-    if response_socket is not None:
-        try:
-            response_socket.shutdown(socket.SHUT_RDWR)
-        except OSError:
-            pass
-        try:
-            response_socket.close()
-        except OSError:
-            pass
-
-    def close_buffered_response() -> None:
-        try:
-            stream.close()
-        except OSError:
-            pass
-
-    if response_socket is None:
-        close_buffered_response()
-        return
-    # HTTPResponse.close() takes the same buffered-reader lock as read(). On
-    # Windows it can remain blocked until the peer writes or closes even after
-    # shutdown(), which would stall the source-switch loop again. The socket is
-    # already invalidated; let the reader and response dispose off the hot path.
-    threading.Thread(
-        target=close_buffered_response,
-        name="lan-remote-secure-source-close",
-        daemon=True,
-    ).start()
-
-
 def capture_secure_desktop(monitor_id: str = "all", include_cursor: bool = True) -> tuple[bytes, str]:
     cursor_value = "1" if include_cursor else "0"
     return secure_helper_request(
@@ -3293,18 +2697,6 @@ def secure_desktop_cursor_payload(monitor_id: str = "all") -> dict[str, Any]:
 def send_secure_input(payload: dict[str, Any]) -> None:
     timeout = UNLOCK_SEQUENCE_TIMEOUT_SECONDS if payload.get("type") == "text_sequence" else 2.0
     secure_helper_request("/secure/input", payload=payload, timeout=timeout)
-
-
-def request_credential_provider_unlock(password: str) -> dict[str, Any]:
-    data, _ = secure_helper_request(
-        "/secure/unlock-request",
-        payload={"password": password},
-        timeout=4.0,
-    )
-    result = json.loads(data.decode("utf-8"))
-    if not isinstance(result, dict) or not result.get("ok"):
-        raise RuntimeError("Windows 凭据解锁服务拒绝请求")
-    return result
 
 
 def try_send_elevated_input(payload: dict[str, Any]) -> bool:
@@ -3596,62 +2988,6 @@ def send_unicode_text_sequence(text: str) -> None:
             time.sleep(UNLOCK_CHARACTER_DELAY_SECONDS)
 
 
-def send_physical_character(character: str) -> bool:
-    """Send one layout-aware hardware-style key chord, returning False when unmappable."""
-    if len(character) != 1:
-        return False
-    user32 = ctypes.windll.user32
-    foreground = user32.GetForegroundWindow()
-    foreground_thread = user32.GetWindowThreadProcessId(foreground, None) if foreground else 0
-    layout = user32.GetKeyboardLayout(foreground_thread)
-    mapping = int(user32.VkKeyScanExW(character, layout))
-    if mapping == -1:
-        return False
-    virtual_key = mapping & 0xFF
-    modifier_state = (mapping >> 8) & 0xFF
-    modifier_keys = [
-        virtual_key
-        for bit, virtual_key in ((1, 0x10), (2, 0x11), (4, 0x12))
-        if modifier_state & bit
-    ]
-    key_sequence = [*(key for key in modifier_keys), virtual_key]
-    inputs: list[INPUT] = []
-    for key in key_sequence:
-        scan_code = int(user32.MapVirtualKeyExW(key, 0, layout))
-        if not scan_code:
-            return False
-        inputs.append(
-            INPUT(
-                type=1,
-                ki=KEYBDINPUT(0, scan_code, 0x0008, 0, REMOTE_INPUT_EXTRA_INFO),
-            )
-        )
-    for key in reversed(key_sequence):
-        scan_code = int(user32.MapVirtualKeyExW(key, 0, layout))
-        inputs.append(
-            INPUT(
-                type=1,
-                ki=KEYBDINPUT(0, scan_code, 0x0008 | 0x0002, 0, REMOTE_INPUT_EXTRA_INFO),
-            )
-        )
-    array_type = INPUT * len(inputs)
-    sent = user32.SendInput(len(inputs), array_type(*inputs), ctypes.sizeof(INPUT))
-    if sent != len(inputs):
-        raise ctypes.WinError()
-    return True
-
-
-def send_physical_text_sequence(text: str) -> None:
-    """Type credentials as physical key chords, with Unicode only as a per-key fallback."""
-    if not text or len(text) > 128:
-        raise ValueError("credential text length is invalid")
-    for index, character in enumerate(text):
-        if not send_physical_character(character):
-            send_unicode_text(character)
-        if index + 1 < len(text):
-            time.sleep(UNLOCK_CHARACTER_DELAY_SECONDS)
-
-
 def validate_remote_input_payload(payload: dict[str, Any]) -> None:
     input_type = payload.get("type")
     if input_type not in {"mouse_move", "mouse_down", "mouse_up", "mouse_wheel", "mouse_hwheel", "key_down", "key_up", "key_press", "native_key_down", "native_key_up", "text", "text_sequence"}:
@@ -3709,16 +3045,6 @@ def handle_remote_input(payload: dict[str, Any]) -> None:
             send_unicode_text(str(payload.get("text", "")))
         elif input_type == "text_sequence":
             send_unicode_text_sequence(str(payload.get("text", "")))
-
-
-def handle_secure_desktop_input(payload: dict[str, Any]) -> None:
-    """Use hardware-style credential input on Winlogon while retaining normal input semantics."""
-    validate_remote_input_payload(payload)
-    if payload.get("type") != "text_sequence":
-        handle_remote_input(payload)
-        return
-    with INPUT_LOCK:
-        send_physical_text_sequence(str(payload.get("text", "")))
 
 
 class SecureDesktopControlDisabled(RuntimeError):
@@ -3783,167 +3109,40 @@ class SecureDesktopHandler(BaseHTTPRequestHandler):
             return False
         return True
 
-    def _serve_native_video_stream(self, parsed: Any) -> None:
-        session_was_locked = current_session_locked()
-        if not (session_was_locked or secure_desktop_active()):
-            json_response(
-                self,
-                HTTPStatus.LOCKED,
-                {"ok": False, "error": "secure desktop is not active"},
-                False,
-            )
-            return
-        query = parse_qs(parsed.query)
-        monitor_id = query.get("monitor", ["all"])[0]
-        try:
-            fps_limit = int(query.get("fps", [str(LOW_LATENCY_STREAM_FPS)])[0])
-            generation = int(query.get("generation", ["0"])[0])
-        except (TypeError, ValueError):
-            fps_limit = 0
-            generation = 0
-        if fps_limit not in CONTROL_STREAM_FPS_OPTIONS or not 1 <= generation <= 0xFFFFFFFF:
-            json_response(
-                self,
-                HTTPStatus.BAD_REQUEST,
-                {"ok": False, "error": "invalid native video configuration"},
-                False,
-            )
-            return
-        try:
-            screen_rect(monitor_id)
-            source = start_native_video_encoder(monitor_id, fps_limit, generation)
-        except ValueError as exc:
-            json_response(self, HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(exc)}, False)
-            return
-        except (OSError, RuntimeError) as exc:
-            json_response(
-                self,
-                HTTPStatus.SERVICE_UNAVAILABLE,
-                {"ok": False, "error": str(exc)},
-                False,
-            )
-            return
-
-        self.send_response(HTTPStatus.OK)
-        self.send_header("Content-Type", "application/x-lan-remote-video")
-        self.send_header("Cache-Control", "no-store")
-        self.send_header("Connection", "close")
-        self.send_header("X-LAN-Video-Protocol", str(NATIVE_VIDEO_PROTOCOL_VERSION))
-        self.end_headers()
-        self.wfile.flush()
-        packet_queue: queue.Queue[Any] = queue.Queue(maxsize=32)
-
-        def read_encoder_packets() -> None:
-            try:
-                if source.process.stdout is None:
-                    packet_queue.put(None)
-                    return
-                while True:
-                    packet = read_native_video_packet(source.process.stdout)
-                    packet_queue.put(packet)
-                    if packet is None or packet[0].message_type in {
-                        NATIVE_VIDEO_MESSAGE_STREAM_END,
-                        NATIVE_VIDEO_MESSAGE_ERROR,
-                    }:
-                        return
-            except (OSError, TimeoutError, ValueError, struct.error) as exc:
-                packet_queue.put(exc)
-
-        threading.Thread(
-            target=read_encoder_packets,
-            name="lan-remote-secure-video-reader",
-            daemon=True,
-        ).start()
-
-        def secure_source_still_required() -> bool:
-            # A helper created for a locked workstation can remain attached to
-            # the Winlogon desktop after Windows has unlocked the session. In
-            # that case OpenInputDesktop may continue to report a secure
-            # desktop from inside this helper even though the interactive
-            # session is already back on Default. The WTS lock state is the
-            # authoritative lifetime for a lock/login capture. UAC-only
-            # captures still follow the active secure desktop instead.
-            return current_session_locked() if session_was_locked else secure_desktop_active()
-
-        try:
-            while secure_source_still_required():
-                try:
-                    packet = packet_queue.get(timeout=0.1)
-                except queue.Empty:
-                    continue
-                if isinstance(packet, BaseException):
-                    raise packet
-                if packet is None:
-                    with source.diagnostics_lock:
-                        diagnostic_text = " | ".join(source.diagnostics)
-                    if diagnostic_text:
-                        error_message = NativeVideoMessage(
-                            message_type=NATIVE_VIDEO_MESSAGE_ERROR,
-                            flags=0,
-                            generation=generation,
-                            sequence=0,
-                            timestamp_us=int(time.monotonic_ns() // 1000),
-                            width=0,
-                            height=0,
-                            fps_limit=0,
-                            payload=diagnostic_text.encode("utf-8")[:NATIVE_VIDEO_MAX_CONFIG_BYTES],
-                        )
-                        self.wfile.write(pack_native_video_message(error_message))
-                        self.wfile.flush()
-                    return
-                message, packed = packet
-                self.wfile.write(packed)
-                self.wfile.flush()
-                if message.message_type in {
-                    NATIVE_VIDEO_MESSAGE_STREAM_END,
-                    NATIVE_VIDEO_MESSAGE_ERROR,
-                }:
-                    return
-        except (BrokenPipeError, ConnectionResetError, OSError, TimeoutError, ValueError, struct.error):
-            return
-        finally:
-            self.close_connection = True
-            stop_native_video_encoder(source)
-
     def do_GET(self) -> None:
         if not self.authorized():
             return
         parsed = urlparse(self.path)
         path = parsed.path
-        if path == "/secure/video-stream":
-            self._serve_native_video_stream(parsed)
+        if path == "/secure/health":
+            json_response(
+                self,
+                HTTPStatus.OK,
+                {
+                    "ok": True,
+                    "desktop": current_thread_desktop_name(),
+                    "secure_input_active": secure_desktop_active(),
+                },
+                False,
+            )
+            return
+        if path == "/secure/cursor":
+            try:
+                monitor_id = parse_qs(parsed.query).get("monitor", ["all"])[0]
+                payload = desktop_cursor_payload(monitor_id)
+            except (OSError, ValueError) as exc:
+                json_response(self, HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(exc)}, False)
+                return
+            json_response(self, HTTPStatus.OK, {"ok": True, **payload}, False)
+            return
+        if path != "/secure/screen":
+            json_response(self, HTTPStatus.NOT_FOUND, {"ok": False, "error": "not found"}, False)
             return
         try:
-            with active_input_desktop() as desktop_name:
-                if path == "/secure/health":
-                    json_response(
-                        self,
-                        HTTPStatus.OK,
-                        {
-                            "ok": True,
-                            "desktop": desktop_name,
-                            "secure_input_active": secure_desktop_active(),
-                            "foreground_process": foreground_process_name() or "unknown",
-                            "native_video": native_video_encoder_path() is not None,
-                        },
-                        False,
-                    )
-                    return
-                if path == "/secure/cursor":
-                    monitor_id = parse_qs(parsed.query).get("monitor", ["all"])[0]
-                    payload = desktop_cursor_payload(monitor_id)
-                    json_response(self, HTTPStatus.OK, {"ok": True, **payload}, False)
-                    return
-                if path != "/secure/screen":
-                    json_response(self, HTTPStatus.NOT_FOUND, {"ok": False, "error": "not found"}, False)
-                    return
-                query = parse_qs(parsed.query)
-                monitor_id = query.get("monitor", ["all"])[0]
-                include_cursor = query.get("cursor", ["1"])[0] != "0"
-                data, content_type = capture_screen_image(monitor_id, include_cursor)
-        except ValueError as exc:
-            json_response(self, HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(exc)}, False)
-            return
+            query = parse_qs(parsed.query)
+            monitor_id = query.get("monitor", ["all"])[0]
+            include_cursor = query.get("cursor", ["1"])[0] != "0"
+            data, content_type = capture_screen_image(monitor_id, include_cursor)
         except Exception as exc:
             json_response(self, HTTPStatus.INTERNAL_SERVER_ERROR, {"ok": False, "error": str(exc)}, False)
             return
@@ -3958,8 +3157,7 @@ class SecureDesktopHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         if not self.authorized():
             return
-        request_path = urlparse(self.path).path
-        if request_path not in {"/secure/input", "/secure/unlock-request"}:
+        if urlparse(self.path).path != "/secure/input":
             json_response(self, HTTPStatus.NOT_FOUND, {"ok": False, "error": "not found"}, False)
             return
         try:
@@ -3974,15 +3172,7 @@ class SecureDesktopHandler(BaseHTTPRequestHandler):
             payload = json.loads(raw_body.decode("utf-8"))
             if not isinstance(payload, dict):
                 raise ValueError("object required")
-            if request_path == "/secure/unlock-request":
-                password = payload.get("password")
-                if not isinstance(password, str):
-                    raise ValueError("lock credential required")
-                result = queue_credential_provider_unlock(password)
-            else:
-                with active_input_desktop():
-                    handle_secure_desktop_input(payload)
-                result = {"ok": True}
+            handle_remote_input(payload)
         except (OSError, TimeoutError):
             json_response(self, HTTPStatus.REQUEST_TIMEOUT, {"ok": False, "error": "request body timed out"}, False)
             return
@@ -3992,7 +3182,7 @@ class SecureDesktopHandler(BaseHTTPRequestHandler):
         except Exception as exc:
             json_response(self, HTTPStatus.INTERNAL_SERVER_ERROR, {"ok": False, "error": str(exc)}, False)
             return
-        json_response(self, HTTPStatus.OK, result, False)
+        json_response(self, HTTPStatus.OK, {"ok": True}, False)
 
 
 def run_secure_desktop_helper(port: int, secret_file: str) -> int:
@@ -4183,113 +3373,26 @@ class DesktopApi:
                 if device_id in self._unlock_attempts and not force:
                     return {"ok": True, "status": "already_attempted"}
                 self._unlock_attempts.add(device_id)
-
-            def clear_attempt() -> None:
+            # First dismiss the Windows lock screen. Winlogon's transition to
+            # the credential provider is animated, so typing immediately after
+            # Enter can silently discard the complete password.
+            self._remote_json(device, "/input", access_password, {"type": "key_press", "key": "Enter", "code": "Enter"})
+            time.sleep(UNLOCK_WAKE_DELAY_SECONDS)
+            status = self._remote_json(device, "/api/session-status", access_password)
+            if not status.get("session_locked"):
                 with self._unlock_lock:
                     self._unlock_attempts.discard(device_id)
-
-            def observed_ui_state(value: dict[str, Any]) -> str | None:
-                ui_state = value.get("session_ui_state")
-                return ui_state if ui_state in {
-                    "unlocked",
-                    "secure_prompt",
-                    "lock_screen",
-                    "credential_ui",
-                    "locked_transition",
-                    "unknown",
-                } else None
-
-            ui_state = observed_ui_state(status)
-            if ui_state is None:
-                return {"ok": False, "status": "state_unavailable"}
-
-            # Adapt to the observable Windows UI. Enter is only a wake action
-            # while the lock-screen cover is active. If Winlogon is already in
-            # front, skip it so an empty credential is never submitted.
-            wake_attempts = 0
-            transition_waits = 0
-            while status.get("session_locked") and ui_state != "credential_ui":
-                if ui_state == "lock_screen":
-                    if wake_attempts >= UNLOCK_WAKE_ATTEMPTS:
-                        return {"ok": False, "status": "wake_unresponsive"}
-                    try:
-                        self._remote_json(
-                            device,
-                            "/input",
-                            access_password,
-                            {"type": "key_press", "key": "Enter", "code": "Enter"},
-                        )
-                    except HTTPError as exc:
-                        # LockApp can switch to Winlogon between status sampling and
-                        # input dispatch. A secure-desktop 5xx in that narrow race is
-                        # harmless; the following status polls determine the result.
-                        if exc.code < 500:
-                            raise
-                    except (OSError, URLError, TimeoutError):
-                        # The same transition can close the old desktop input path.
-                        # Never type a password until Winlogon is positively observed.
-                        pass
-                    wake_attempts += 1
-                else:
-                    transition_waits += 1
-                    if transition_waits > UNLOCK_WAKE_ATTEMPTS:
-                        result_status = (
-                            "state_unavailable"
-                            if ui_state in {"unknown", "secure_prompt"}
-                            else "transition_timeout"
-                        )
-                        return {"ok": False, "status": result_status}
-
-                state_changed = False
-                for _ in range(UNLOCK_WAKE_POLLS_PER_ATTEMPT):
-                    time.sleep(UNLOCK_WAKE_POLL_SECONDS)
-                    refreshed = self._remote_json(device, "/api/session-status", access_password)
-                    if not refreshed.get("session_locked"):
-                        clear_attempt()
-                        return {"ok": True, "status": "not_locked"}
-                    refreshed_ui_state = observed_ui_state(refreshed)
-                    if refreshed_ui_state is None:
-                        return {"ok": False, "status": "state_unavailable"}
-                    status = refreshed
-                    if refreshed_ui_state != ui_state:
-                        ui_state = refreshed_ui_state
-                        state_changed = True
-                        break
-                if not state_changed and ui_state == "lock_screen":
-                    # The next loop performs the bounded second wake attempt.
-                    continue
-
-            queued = self._remote_json(
+                return {"ok": True, "status": "not_locked"}
+            self._remote_json(
                 device,
-                "/api/credential-provider-unlock",
+                "/input",
                 access_password,
-                {"password": lock_password},
+                {"type": "text_sequence", "text": lock_password},
                 timeout=UNLOCK_SEQUENCE_TIMEOUT_SECONDS,
             )
-            if not queued.get("ok") or queued.get("status") not in {"queued", "not_locked"}:
-                return {"ok": False, "status": "provider_unavailable"}
-            if queued.get("status") == "not_locked":
-                clear_attempt()
-                return {"ok": True, "status": "not_locked"}
-
-            last_ui_state = ui_state
-            for _ in range(UNLOCK_RESULT_POLLS):
-                time.sleep(UNLOCK_RESULT_POLL_SECONDS)
-                status = self._remote_json(device, "/api/session-status", access_password)
-                if not status.get("session_locked"):
-                    clear_attempt()
-                    return {"ok": True, "status": "unlocked"}
-                refreshed_ui_state = observed_ui_state(status)
-                if refreshed_ui_state is not None:
-                    last_ui_state = refreshed_ui_state
-
-            if last_ui_state == "credential_ui":
-                return {"ok": False, "status": "still_locked"}
-            if last_ui_state == "lock_screen":
-                return {"ok": False, "status": "returned_to_lock_screen"}
-            if last_ui_state == "unknown":
-                return {"ok": False, "status": "result_unknown"}
-            return {"ok": True, "status": "submitted", "session_ui_state": last_ui_state}
+            time.sleep(UNLOCK_SUBMIT_DELAY_SECONDS)
+            self._remote_json(device, "/input", access_password, {"type": "key_press", "key": "Enter", "code": "Enter"})
+            return {"ok": True, "status": "submitted"}
         except HTTPError as exc:
             return {"ok": False, "status": "access_denied" if exc.code == 401 else "remote_error", "error": str(exc)}
         except (OSError, ValueError, URLError, TimeoutError) as exc:
@@ -4580,10 +3683,10 @@ class RemoteHandler(BaseHTTPRequestHandler):
 
     def _forward_native_video_controls(
         self,
-        target: NativeVideoControlTarget,
+        process: subprocess.Popen[bytes],
     ) -> None:
         try:
-            while True:
+            while process.poll() is None:
                 try:
                     header = self._read_stream_bytes(NATIVE_VIDEO_HEADER.size)
                 except TimeoutError:
@@ -4611,11 +3714,17 @@ class RemoteHandler(BaseHTTPRequestHandler):
                         NATIVE_VIDEO_MESSAGE_RECEIVER_REPORT,
                     }:
                         return
-                    target.write(pack_native_video_message(message))
-                except (OSError, ValueError, struct.error):
+                    if process.stdin is None:
+                        return
+                    process.stdin.write(pack_native_video_message(message))
+                    process.stdin.flush()
+                except (BrokenPipeError, OSError, ValueError, struct.error):
                     return
         except (ConnectionError, OSError):
             return
+        finally:
+            if process.poll() is None:
+                process.terminate()
 
     def _serve_native_video_stream(self, parsed: Any) -> None:
         token = self.headers.get("X-Remote-Token", "")
@@ -4639,227 +3748,96 @@ class RemoteHandler(BaseHTTPRequestHandler):
         except ValueError as exc:
             json_response(self, HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(exc)})
             return
-        secure_requested = self.server.state.lock_transition_active() or secure_video_source_required()
-        if secure_requested and not secure_native_video_available():
+        if secure_desktop_active():
             json_response(
                 self,
                 HTTPStatus.LOCKED,
                 {"ok": False, "error": "secure desktop requires the MJPEG compatibility path"},
             )
             return
-        if not secure_requested and native_video_encoder_path() is None:
+        encoder_path = native_video_encoder_path()
+        if encoder_path is None:
             json_response(self, HTTPStatus.SERVICE_UNAVAILABLE, {"ok": False, "error": "native H.264 encoder unavailable"})
             return
 
-        initial_generation = secrets.randbits(32) or 1
+        generation = secrets.randbits(32) or 1
+        creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        diagnostics: list[str] = []
+        diagnostics_lock = threading.Lock()
+        try:
+            encoder_command = [
+                str(encoder_path),
+                "--monitor",
+                monitor_id,
+                "--fps",
+                str(fps_limit),
+                "--generation",
+                str(generation),
+            ]
+            if os.environ.get("LAN_REMOTE_NATIVE_VIDEO_TEST_PATTERN") == "1":
+                encoder_command.append("--test-pattern")
+            process = subprocess.Popen(
+                encoder_command,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                bufsize=0,
+                close_fds=True,
+                creationflags=creation_flags,
+            )
+        except OSError as exc:
+            json_response(self, HTTPStatus.SERVICE_UNAVAILABLE, {"ok": False, "error": str(exc)})
+            return
+
+        def read_diagnostics() -> None:
+            if process.stderr is None:
+                return
+            try:
+                for raw_line in iter(process.stderr.readline, b""):
+                    line = raw_line.decode("utf-8", "replace").strip()
+                    if not line:
+                        continue
+                    with diagnostics_lock:
+                        diagnostics.append(line[:512])
+                        del diagnostics[:-8]
+                    if os.environ.get("LAN_REMOTE_NATIVE_VIDEO_DEBUG") == "1" and sys.stderr is not None:
+                        print(f"[native-video] {line[:512]}", file=sys.stderr, flush=True)
+            except OSError:
+                return
+
+        diagnostic_thread = threading.Thread(
+            target=read_diagnostics,
+            name="lan-remote-native-video-diagnostics",
+            daemon=True,
+        )
+        diagnostic_thread.start()
+
         self.send_response(HTTPStatus.OK)
         self.send_header("Connection", "keep-alive")
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-LAN-Video-Protocol", str(NATIVE_VIDEO_PROTOCOL_VERSION))
         self.send_header("X-LAN-Video-Capability", NATIVE_VIDEO_CAPABILITY)
-        self.send_header("X-LAN-Video-Generation", str(initial_generation))
+        self.send_header("X-LAN-Video-Generation", str(generation))
         self.end_headers()
         self.wfile.flush()
 
-        control_target = NativeVideoControlTarget()
         control_thread = threading.Thread(
             target=self._forward_native_video_controls,
-            args=(control_target,),
+            args=(process,),
             name="lan-remote-native-video-control",
             daemon=True,
         )
         control_thread.start()
         next_authentication = time.monotonic() + 1.0
-
-        def authenticate_periodically() -> bool:
-            nonlocal next_authentication
-            now = time.monotonic()
-            if now < next_authentication:
-                return True
-            if self.server.state.authenticate(token, self.client_address[0]) is None:
-                return False
-            next_authentication = now + 1.0
-            return True
-
-        def send_compatibility_fallback(generation: int, reason: str) -> None:
-            stream_end = NativeVideoMessage(
-                message_type=NATIVE_VIDEO_MESSAGE_STREAM_END,
-                flags=0,
-                generation=generation,
-                sequence=0,
-                timestamp_us=int(time.monotonic_ns() // 1000),
-                width=0,
-                height=0,
-                fps_limit=0,
-                payload=json.dumps(
-                    {"reason": "secure_desktop", "fallback": "mjpeg_v1", "error": reason},
-                    separators=(",", ":"),
-                ).encode("utf-8")[:NATIVE_VIDEO_MAX_CONFIG_BYTES],
-            )
-            self.wfile.write(pack_native_video_message(stream_end))
-            self.wfile.flush()
-
-        generation = initial_generation
-        secure_source_failures = 0
         try:
+            if process.stdout is None:
+                return
             while True:
-                secure_requested = self.server.state.lock_transition_active() or secure_video_source_required()
-                generation = (generation + 1) & 0xFFFFFFFF or 1
-                if secure_requested:
-                    if not secure_native_video_available():
-                        send_compatibility_fallback(generation, "secure H.264 helper unavailable")
-                        return
-                    secure_stream = None
-                    secure_deadline = time.monotonic() + 3.0
-                    last_secure_error = "secure H.264 helper did not become ready"
-                    while secure_stream is None:
-                        if not (
-                            self.server.state.lock_transition_active() or
-                            secure_video_source_required()
-                        ):
-                            break
-                        try:
-                            secure_stream = open_secure_native_video_stream(
-                                monitor_id,
-                                fps_limit,
-                                generation,
-                                timeout=1.0,
-                            )
-                        except RuntimeError as exc:
-                            last_secure_error = str(exc)
-                            if time.monotonic() >= secure_deadline:
-                                send_compatibility_fallback(generation, last_secure_error)
-                                return
-                            time.sleep(0.08)
-                    if secure_stream is None:
-                        self.server.state.clear_lock_transition()
-                        continue
-
-                    control_target.set_stream(None)
-                    secure_was_active = False
-                    secure_delivered_frame = False
-                    secure_reader_stop = threading.Event()
-                    secure_packet_queue: queue.Queue[Any] = queue.Queue(maxsize=32)
-
-                    def enqueue_secure_packet(value: Any) -> bool:
-                        while not secure_reader_stop.is_set():
-                            try:
-                                secure_packet_queue.put(value, timeout=0.1)
-                                return True
-                            except queue.Full:
-                                continue
-                        return False
-
-                    def read_secure_packets() -> None:
-                        try:
-                            while not secure_reader_stop.is_set():
-                                packet = read_native_video_packet(secure_stream)
-                                if not enqueue_secure_packet(packet):
-                                    return
-                                if packet is None or packet[0].message_type in {
-                                    NATIVE_VIDEO_MESSAGE_STREAM_END,
-                                    NATIVE_VIDEO_MESSAGE_ERROR,
-                                }:
-                                    return
-                        except (OSError, TimeoutError, ValueError, struct.error) as exc:
-                            enqueue_secure_packet(exc)
-
-                    threading.Thread(
-                        target=read_secure_packets,
-                        name="lan-remote-secure-source-reader",
-                        daemon=True,
-                    ).start()
-                    try:
-                        while True:
-                            actual_secure = secure_video_source_required()
-                            secure_was_active = secure_was_active or actual_secure
-                            if not actual_secure:
-                                self.server.state.clear_lock_transition()
-                                break
-                            try:
-                                packet = secure_packet_queue.get(timeout=0.1)
-                            except queue.Empty:
-                                if not authenticate_periodically():
-                                    return
-                                continue
-                            if isinstance(packet, BaseException):
-                                raise packet
-                            if packet is None:
-                                break
-                            message, packed = packet
-                            if not authenticate_periodically():
-                                return
-                            if message.message_type == NATIVE_VIDEO_MESSAGE_ERROR:
-                                last_secure_error = message.payload.decode("utf-8", "replace")[:512]
-                                break
-                            if message.message_type == NATIVE_VIDEO_MESSAGE_ACCESS_UNIT:
-                                secure_delivered_frame = True
-                            self.wfile.write(packed)
-                            self.wfile.flush()
-                            if message.message_type == NATIVE_VIDEO_MESSAGE_STREAM_END:
-                                break
-                    finally:
-                        secure_reader_stop.set()
-                        abort_secure_native_video_stream(secure_stream)
-                    if secure_was_active and not secure_video_source_required():
-                        self.server.state.clear_lock_transition()
-                    if secure_video_source_required():
-                        secure_source_failures = 0 if secure_delivered_frame else secure_source_failures + 1
-                        if secure_source_failures >= 3:
-                            send_compatibility_fallback(generation, last_secure_error)
-                            return
-                        time.sleep(0.05)
-                    continue
-
-                secure_source_failures = 0
-                try:
-                    source = start_native_video_encoder(monitor_id, fps_limit, generation)
-                except (OSError, RuntimeError) as exc:
-                    error_message = NativeVideoMessage(
-                        message_type=NATIVE_VIDEO_MESSAGE_ERROR,
-                        flags=0,
-                        generation=generation,
-                        sequence=0,
-                        timestamp_us=int(time.monotonic_ns() // 1000),
-                        width=0,
-                        height=0,
-                        fps_limit=0,
-                        payload=str(exc).encode("utf-8")[:NATIVE_VIDEO_MAX_CONFIG_BYTES],
-                    )
-                    self.wfile.write(pack_native_video_message(error_message))
-                    self.wfile.flush()
-                    return
-                control_target.set_stream(source.process.stdin)
-                source_ended = False
-                try:
-                    if source.process.stdout is None:
-                        return
-                    while True:
-                        packet = read_native_video_packet(source.process.stdout)
-                        if packet is None:
-                            source_ended = True
-                            break
-                        message, packed = packet
-                        if not authenticate_periodically():
-                            return
-                        if self.server.state.lock_transition_active() or secure_video_source_required():
-                            break
-                        self.wfile.write(packed)
-                        self.wfile.flush()
-                        if message.message_type in {
-                            NATIVE_VIDEO_MESSAGE_STREAM_END,
-                            NATIVE_VIDEO_MESSAGE_ERROR,
-                        }:
-                            source_ended = True
-                            break
-                finally:
-                    control_target.set_stream(None)
-                    stop_native_video_encoder(source)
-                if self.server.state.lock_transition_active() or secure_video_source_required():
-                    continue
-                if source_ended:
-                    with source.diagnostics_lock:
-                        diagnostic_text = " | ".join(source.diagnostics)
+                header = self._read_pipe_bytes(process.stdout, NATIVE_VIDEO_HEADER.size)
+                if header is None:
+                    process.wait(timeout=1)
+                    with diagnostics_lock:
+                        diagnostic_text = " | ".join(diagnostics)
                     if diagnostic_text:
                         error_message = NativeVideoMessage(
                             message_type=NATIVE_VIDEO_MESSAGE_ERROR,
@@ -4875,19 +3853,73 @@ class RemoteHandler(BaseHTTPRequestHandler):
                         self.wfile.write(pack_native_video_message(error_message))
                         self.wfile.flush()
                     return
-        except (
-            BrokenPipeError,
-            ConnectionResetError,
-            ConnectionAbortedError,
-            OSError,
-            TimeoutError,
-            ValueError,
-            struct.error,
-        ):
+                try:
+                    fields = NATIVE_VIDEO_HEADER.unpack(header)
+                    payload_length = int(fields[7])
+                    message_type = int(fields[2])
+                    payload_limit = (
+                        NATIVE_VIDEO_MAX_ACCESS_UNIT_BYTES
+                        if message_type == NATIVE_VIDEO_MESSAGE_ACCESS_UNIT
+                        else NATIVE_VIDEO_MAX_CONFIG_BYTES
+                    )
+                    if payload_length > payload_limit:
+                        return
+                    payload = self._read_pipe_bytes(process.stdout, payload_length)
+                    if payload is None:
+                        return
+                    packed = header + payload
+                    message = unpack_native_video_message(packed)
+                except (OSError, ValueError, struct.error):
+                    return
+
+                now = time.monotonic()
+                if now >= next_authentication:
+                    if self.server.state.authenticate(token, self.client_address[0]) is None:
+                        return
+                    next_authentication = now + 1.0
+                if secure_desktop_active():
+                    stream_end = NativeVideoMessage(
+                        message_type=NATIVE_VIDEO_MESSAGE_STREAM_END,
+                        flags=0,
+                        generation=generation,
+                        sequence=message.sequence,
+                        timestamp_us=int(time.monotonic_ns() // 1000),
+                        width=0,
+                        height=0,
+                        fps_limit=0,
+                        payload=b'{"reason":"secure_desktop","fallback":"mjpeg_v1"}',
+                    )
+                    self.wfile.write(pack_native_video_message(stream_end))
+                    self.wfile.flush()
+                    return
+                self.wfile.write(packed)
+                self.wfile.flush()
+                if message.message_type in {
+                    NATIVE_VIDEO_MESSAGE_STREAM_END,
+                    NATIVE_VIDEO_MESSAGE_ERROR,
+                }:
+                    return
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, OSError, TimeoutError):
             return
         finally:
-            control_target.set_stream(None)
             self.close_connection = True
+            if process.stdin is not None:
+                try:
+                    process.stdin.close()
+                except OSError:
+                    pass
+            if process.poll() is None:
+                process.terminate()
+                try:
+                    process.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=2)
+            if process.stderr is not None:
+                try:
+                    process.stderr.close()
+                except OSError:
+                    pass
 
     def _read_stream_bytes(self, length: int) -> bytes | None:
         chunks = bytearray()
@@ -4909,7 +3941,6 @@ class RemoteHandler(BaseHTTPRequestHandler):
         query = parse_qs(parsed.query)
         monitor_id = query.get("monitor", ["all"])[0]
         include_cursor = query.get("cursor", ["0"])[0] != "0"
-        secure_transition = query.get("secure_transition", ["0"])[0] == "1"
         try:
             fps_limit = int(query.get("fps", [str(LOW_LATENCY_STREAM_FPS)])[0])
         except (TypeError, ValueError):
@@ -4943,40 +3974,15 @@ class RemoteHandler(BaseHTTPRequestHandler):
         interval = 1.0 / fps_limit
         next_frame_at = time.perf_counter()
         frame_number = 0
-        last_session_locked = False
-        locked_frame_started_at = 0.0
-        locked_frame_ready = False
         try:
             while True:
                 if frame_number and frame_number % fps_limit == 0:
                     if self.server.state.authenticate(supplied_token, self.client_address[0]) is None:
                         return
-                session_locked = current_session_locked()
-                if session_locked and not last_session_locked:
-                    locked_frame_started_at = time.monotonic()
-                    locked_frame_ready = False
-                elif not session_locked:
-                    locked_frame_started_at = 0.0
-                    locked_frame_ready = False
-                last_session_locked = session_locked
-
-                # A controller-initiated lock switch starts this stream before
-                # Windows publishes SessionLock. Keep the native last frame on
-                # screen instead of sending the old/black desktop meanwhile.
-                if secure_transition and not session_locked:
-                    time.sleep(0.04)
-                    next_frame_at = time.perf_counter()
-                    continue
                 if secure_desktop_active():
                     if not self.server.state.settings.values["secure_desktop_enabled"]:
                         return
                     data, content_type = capture_secure_desktop(monitor_id, include_cursor)
-                    _, _, source_width, source_height = screen_rect(monitor_id)
-                elif session_locked:
-                    # LockApp can remain on the Default desktop, but DXGI is
-                    # already invalidated by the locked session. Use the old
-                    # GDI path until Winlogon becomes the active input desktop.
-                    data, content_type = capture_screen_image(monitor_id, include_cursor)
                     _, _, source_width, source_height = screen_rect(monitor_id)
                 elif include_cursor:
                     data, content_type = capture_screen_image(monitor_id, True)
@@ -4986,14 +3992,6 @@ class RemoteHandler(BaseHTTPRequestHandler):
                         monitor_id,
                         fps_limit,
                     )
-
-                if session_locked and not locked_frame_ready:
-                    dark_frame_deadline = locked_frame_started_at + LOCK_TRANSITION_DARK_FRAME_MAX_SECONDS
-                    if time.monotonic() < dark_frame_deadline and encoded_frame_is_dark(data):
-                        time.sleep(0.04)
-                        next_frame_at = time.perf_counter()
-                        continue
-                    locked_frame_ready = True
 
                 part_header = (
                     b"--"
@@ -5221,39 +4219,14 @@ class RemoteHandler(BaseHTTPRequestHandler):
             authentication = self.authenticate_request(parsed)
             if authentication is None:
                 return
-            session_locked = current_session_locked()
-            desktop_name = input_desktop_name()
-            foreground_process = foreground_process_name()
-            if session_locked and (desktop_name is None or desktop_name.casefold() != "default"):
-                try:
-                    helper_data, _ = secure_helper_request("/secure/health", timeout=0.35)
-                    helper_status = json.loads(helper_data.decode("utf-8"))
-                    helper_desktop = helper_status.get("desktop")
-                    helper_foreground = helper_status.get("foreground_process")
-                    if (
-                        desktop_name is None
-                        and isinstance(helper_desktop, str)
-                        and helper_desktop.casefold() != "unknown"
-                    ):
-                        desktop_name = helper_desktop
-                    if isinstance(helper_foreground, str) and helper_foreground.casefold() != "unknown":
-                        foreground_process = helper_foreground
-                except (RuntimeError, ValueError, UnicodeDecodeError):
-                    pass
-            ui_state = session_ui_state(session_locked, desktop_name, foreground_process)
-            secure_active = desktop_name is None or desktop_name.casefold() != "default"
+            secure_active = secure_desktop_active()
             json_response(
                 self,
                 HTTPStatus.OK,
                 {
                     "ok": True,
                     "secure_desktop_active": secure_active,
-                    "session_locked": session_locked,
-                    "session_ui_state": ui_state,
-                    "credential_ui_ready": ui_state == "credential_ui",
-                    "input_desktop": desktop_name or "unknown",
-                    "foreground_process": foreground_process or "unknown",
-                    "lock_transition": self.server.state.lock_transition_active(),
+                    "session_locked": bool(secure_active and current_session_locked()),
                     **authentication,
                 },
             )
@@ -5425,28 +4398,13 @@ class RemoteHandler(BaseHTTPRequestHandler):
                 query = parse_qs(parsed.query)
                 monitor_id = query.get("monitor", ["all"])[0]
                 include_cursor = query.get("cursor", ["1"])[0] != "0"
-                secure_transition = query.get("secure_transition", ["0"])[0] == "1"
-                transition_deadline = time.monotonic() + LOCK_TRANSITION_DARK_FRAME_MAX_SECONDS
-                while True:
-                    session_locked = current_session_locked()
-                    if secure_transition and not session_locked and time.monotonic() < transition_deadline:
-                        time.sleep(0.04)
-                        continue
-                    if secure_desktop_active():
-                        if not self.server.state.settings.values["secure_desktop_enabled"]:
-                            json_response(self, HTTPStatus.LOCKED, {"ok": False, "error": "secure desktop control disabled"})
-                            return
-                        data, content_type = capture_secure_desktop(monitor_id, include_cursor)
-                    else:
-                        data, content_type = capture_screen_image(monitor_id, include_cursor)
-                    if (
-                        secure_transition and
-                        time.monotonic() < transition_deadline and
-                        encoded_frame_is_dark(data)
-                    ):
-                        time.sleep(0.04)
-                        continue
-                    break
+                if secure_desktop_active():
+                    if not self.server.state.settings.values["secure_desktop_enabled"]:
+                        json_response(self, HTTPStatus.LOCKED, {"ok": False, "error": "secure desktop control disabled"})
+                        return
+                    data, content_type = capture_secure_desktop(monitor_id, include_cursor)
+                else:
+                    data, content_type = capture_screen_image(monitor_id, include_cursor)
             except ValueError as exc:
                 json_response(self, HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(exc)})
                 return
@@ -5830,43 +4788,15 @@ class RemoteHandler(BaseHTTPRequestHandler):
             if self.server.state.view_only:
                 json_response(self, HTTPStatus.FORBIDDEN, {"ok": False, "error": "server is view-only"})
                 return
-            if current_session_locked() or secure_desktop_active():
+            if secure_desktop_active():
                 json_response(self, HTTPStatus.OK, {"ok": True, "status": "already_secure"})
                 return
-            self.server.state.begin_lock_transition()
             try:
                 lock_remote_workstation()
             except OSError as exc:
-                self.server.state.clear_lock_transition()
                 json_response(self, HTTPStatus.CONFLICT, {"ok": False, "error": str(exc)})
                 return
             json_response(self, HTTPStatus.OK, {"ok": True, "status": "locked"})
-            return
-        if parsed.path == "/api/credential-provider-unlock":
-            payload = self.read_json_payload()
-            if payload is None:
-                return
-            if self.authenticate_request(parsed, payload) is None:
-                return
-            if self.server.state.view_only:
-                json_response(self, HTTPStatus.FORBIDDEN, {"ok": False, "error": "server is view-only"})
-                return
-            if not self.server.state.settings.values["secure_desktop_enabled"]:
-                json_response(self, HTTPStatus.LOCKED, {"ok": False, "error": "secure desktop control disabled"})
-                return
-            password = payload.get("password")
-            if not isinstance(password, str) or not 1 <= len(password) <= 128:
-                json_response(self, HTTPStatus.BAD_REQUEST, {"ok": False, "error": "lock credential required"})
-                return
-            if not current_session_locked():
-                json_response(self, HTTPStatus.OK, {"ok": True, "status": "not_locked"})
-                return
-            try:
-                result = request_credential_provider_unlock(password)
-            except (OSError, RuntimeError, ValueError) as exc:
-                json_response(self, HTTPStatus.SERVICE_UNAVAILABLE, {"ok": False, "error": str(exc)})
-                return
-            json_response(self, HTTPStatus.OK, result)
             return
         if parsed.path != "/input":
             json_response(self, HTTPStatus.NOT_FOUND, {"ok": False, "error": "not found"})

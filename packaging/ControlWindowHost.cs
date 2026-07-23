@@ -2,6 +2,7 @@ using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Drawing;
+using System.Drawing.Drawing2D;
 using System.IO;
 using System.Net;
 using System.Net.Sockets;
@@ -81,22 +82,620 @@ namespace WindowsLANRemoteControlHost
         }
     }
 
+    internal enum GlassIcon
+    {
+        None,
+        Chevron,
+        Grip,
+        Monitor,
+        Keyboard,
+        Clipboard,
+        Folder,
+        Lock,
+        Fullscreen,
+        Minimize,
+        Maximize,
+        Close
+    }
+
+    internal sealed class GlassToolButton : Control
+    {
+        private bool hovered;
+        private bool pressed;
+        private bool active;
+        private GlassIcon icon;
+        private string caption = String.Empty;
+
+        public GlassToolButton()
+        {
+            SetStyle(
+                ControlStyles.AllPaintingInWmPaint |
+                ControlStyles.OptimizedDoubleBuffer |
+                ControlStyles.ResizeRedraw |
+                ControlStyles.SupportsTransparentBackColor |
+                ControlStyles.UserPaint,
+                true);
+            BackColor = Color.Transparent;
+            ForeColor = Color.FromArgb(242, 246, 250);
+            Font = new Font("Segoe UI", 8.5f, FontStyle.Bold, GraphicsUnit.Point);
+            Cursor = Cursors.Hand;
+            TabStop = false;
+            Size = new Size(32, 31);
+        }
+
+        public GlassIcon IconKind
+        {
+            get { return icon; }
+            set { icon = value; Invalidate(); }
+        }
+
+        public string Caption
+        {
+            get { return caption; }
+            set { caption = value ?? String.Empty; Invalidate(); }
+        }
+
+        public bool Active
+        {
+            get { return active; }
+            set { active = value; Invalidate(); }
+        }
+
+        protected override void OnMouseEnter(EventArgs e)
+        {
+            hovered = true;
+            Invalidate();
+            base.OnMouseEnter(e);
+        }
+
+        protected override void OnMouseLeave(EventArgs e)
+        {
+            hovered = false;
+            pressed = false;
+            Invalidate();
+            base.OnMouseLeave(e);
+        }
+
+        protected override void OnMouseDown(MouseEventArgs e)
+        {
+            if (e.Button == MouseButtons.Left)
+            {
+                pressed = true;
+                Invalidate();
+            }
+            base.OnMouseDown(e);
+        }
+
+        protected override void OnMouseUp(MouseEventArgs e)
+        {
+            pressed = false;
+            Invalidate();
+            base.OnMouseUp(e);
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+            Rectangle bounds = new Rectangle(1, 1, Math.Max(1, Width - 2), Math.Max(1, Height - 2));
+            if (active || hovered || pressed)
+            {
+                Color fill = active
+                    ? Color.FromArgb(94, 45, 151, 113)
+                    : Color.FromArgb(pressed ? 74 : 48, 255, 255, 255);
+                using (GraphicsPath background = RoundedRectangle(bounds, 8))
+                using (SolidBrush brush = new SolidBrush(fill))
+                {
+                    e.Graphics.FillPath(brush, background);
+                }
+            }
+
+            Color color = Enabled
+                ? (active ? Color.FromArgb(164, 244, 209) : ForeColor)
+                : Color.FromArgb(120, 225, 230, 236);
+            if (!String.IsNullOrEmpty(caption))
+            {
+                Rectangle textBounds = bounds;
+                if (icon != GlassIcon.None)
+                {
+                    textBounds.X += 23;
+                    textBounds.Width -= 25;
+                    DrawIcon(e.Graphics, icon, new Rectangle(bounds.X + 6, bounds.Y + 6, 18, 18), color);
+                }
+                TextRenderer.DrawText(
+                    e.Graphics,
+                    caption,
+                    Font,
+                    textBounds,
+                    color,
+                    TextFormatFlags.HorizontalCenter |
+                    TextFormatFlags.VerticalCenter |
+                    TextFormatFlags.NoPadding |
+                    TextFormatFlags.SingleLine);
+            }
+            else
+            {
+                DrawIcon(e.Graphics, icon, bounds, color);
+            }
+        }
+
+        private static void DrawIcon(Graphics graphics, GlassIcon value, Rectangle bounds, Color color)
+        {
+            float centerX = bounds.Left + bounds.Width / 2.0f;
+            float centerY = bounds.Top + bounds.Height / 2.0f;
+            using (Pen pen = new Pen(color, 1.7f))
+            {
+                pen.StartCap = LineCap.Round;
+                pen.EndCap = LineCap.Round;
+                switch (value)
+                {
+                    case GlassIcon.Chevron:
+                        graphics.DrawLines(pen, new[] {
+                            new PointF(centerX - 5, centerY - 2),
+                            new PointF(centerX, centerY + 3),
+                            new PointF(centerX + 5, centerY - 2)
+                        });
+                        break;
+                    case GlassIcon.Grip:
+                        using (SolidBrush dot = new SolidBrush(color))
+                        {
+                            for (int x = -2; x <= 2; x += 4)
+                            {
+                                for (int y = -5; y <= 5; y += 5)
+                                {
+                                    graphics.FillEllipse(dot, centerX + x - 1, centerY + y - 1, 2, 2);
+                                }
+                            }
+                        }
+                        break;
+                    case GlassIcon.Monitor:
+                        graphics.DrawRectangle(pen, centerX - 7, centerY - 6, 14, 10);
+                        graphics.DrawLine(pen, centerX, centerY + 4, centerX, centerY + 7);
+                        graphics.DrawLine(pen, centerX - 4, centerY + 7, centerX + 4, centerY + 7);
+                        break;
+                    case GlassIcon.Keyboard:
+                        graphics.DrawRectangle(pen, centerX - 8, centerY - 5, 16, 10);
+                        for (int x = -5; x <= 5; x += 5)
+                        {
+                            graphics.DrawLine(pen, centerX + x, centerY - 2, centerX + x + 1, centerY - 2);
+                        }
+                        graphics.DrawLine(pen, centerX - 4, centerY + 2, centerX + 4, centerY + 2);
+                        break;
+                    case GlassIcon.Clipboard:
+                        graphics.DrawRectangle(pen, centerX - 6, centerY - 6, 12, 13);
+                        graphics.DrawRectangle(pen, centerX - 3, centerY - 8, 6, 3);
+                        graphics.DrawLine(pen, centerX - 3, centerY - 1, centerX + 3, centerY - 1);
+                        graphics.DrawLine(pen, centerX - 3, centerY + 3, centerX + 2, centerY + 3);
+                        break;
+                    case GlassIcon.Folder:
+                        PointF[] folder = {
+                            new PointF(centerX - 8, centerY - 5),
+                            new PointF(centerX - 2, centerY - 5),
+                            new PointF(centerX, centerY - 2),
+                            new PointF(centerX + 8, centerY - 2),
+                            new PointF(centerX + 7, centerY + 6),
+                            new PointF(centerX - 8, centerY + 6)
+                        };
+                        graphics.DrawPolygon(pen, folder);
+                        break;
+                    case GlassIcon.Lock:
+                        graphics.DrawRectangle(pen, centerX - 6, centerY - 1, 12, 9);
+                        graphics.DrawArc(pen, centerX - 4, centerY - 7, 8, 10, 180, -180);
+                        break;
+                    case GlassIcon.Fullscreen:
+                        graphics.DrawLines(pen, new[] { new PointF(centerX - 2, centerY - 7), new PointF(centerX - 7, centerY - 7), new PointF(centerX - 7, centerY - 2) });
+                        graphics.DrawLines(pen, new[] { new PointF(centerX + 2, centerY - 7), new PointF(centerX + 7, centerY - 7), new PointF(centerX + 7, centerY - 2) });
+                        graphics.DrawLines(pen, new[] { new PointF(centerX - 7, centerY + 2), new PointF(centerX - 7, centerY + 7), new PointF(centerX - 2, centerY + 7) });
+                        graphics.DrawLines(pen, new[] { new PointF(centerX + 7, centerY + 2), new PointF(centerX + 7, centerY + 7), new PointF(centerX + 2, centerY + 7) });
+                        break;
+                    case GlassIcon.Minimize:
+                        graphics.DrawLine(pen, centerX - 6, centerY + 4, centerX + 6, centerY + 4);
+                        break;
+                    case GlassIcon.Maximize:
+                        graphics.DrawRectangle(pen, centerX - 6, centerY - 6, 12, 12);
+                        break;
+                    case GlassIcon.Close:
+                        graphics.DrawLine(pen, centerX - 5, centerY - 5, centerX + 5, centerY + 5);
+                        graphics.DrawLine(pen, centerX + 5, centerY - 5, centerX - 5, centerY + 5);
+                        break;
+                }
+            }
+        }
+
+        private static GraphicsPath RoundedRectangle(Rectangle bounds, int radius)
+        {
+            GraphicsPath path = new GraphicsPath();
+            int diameter = Math.Max(2, radius * 2);
+            Rectangle arc = new Rectangle(bounds.Left, bounds.Top, diameter, diameter);
+            path.AddArc(arc, 180, 90);
+            arc.X = bounds.Right - diameter;
+            path.AddArc(arc, 270, 90);
+            arc.Y = bounds.Bottom - diameter;
+            path.AddArc(arc, 0, 90);
+            arc.X = bounds.Left;
+            path.AddArc(arc, 90, 90);
+            path.CloseFigure();
+            return path;
+        }
+    }
+
+    internal sealed class NativeGlassToolbar : Form
+    {
+        private const int WsExToolWindow = 0x00000080;
+        private const int WsExNoActivate = 0x08000000;
+        private const int CsDropShadow = 0x00020000;
+        private readonly Action<string, string> action;
+        private readonly ToolTip tips = new ToolTip();
+        private readonly List<GlassToolButton> expandedButtons = new List<GlassToolButton>();
+        private readonly List<KeyValuePair<string, string>> monitors = new List<KeyValuePair<string, string>>();
+        private readonly GlassToolButton grip;
+        private readonly GlassToolButton monitor;
+        private readonly GlassToolButton fps;
+        private readonly GlassToolButton scale;
+        private readonly GlassToolButton keyboard;
+        private readonly GlassToolButton clipboard;
+        private readonly GlassToolButton files;
+        private readonly GlassToolButton remoteLock;
+        private readonly GlassToolButton fullscreen;
+        private readonly GlassToolButton status;
+        private readonly GlassToolButton minimize;
+        private readonly GlassToolButton maximize;
+        private readonly GlassToolButton close;
+        private readonly GlassToolButton collapse;
+        private bool collapsed;
+        private bool viewOnly;
+
+        public NativeGlassToolbar(Action<string, string> actionCallback)
+        {
+            action = actionCallback;
+            AutoScaleMode = AutoScaleMode.None;
+            BackColor = Color.FromArgb(43, 46, 51);
+            DoubleBuffered = true;
+            FormBorderStyle = FormBorderStyle.None;
+            Opacity = 0.90;
+            ShowInTaskbar = false;
+            StartPosition = FormStartPosition.Manual;
+            TopMost = false;
+
+            grip = AddButton(GlassIcon.Grip, String.Empty, "拖动控制窗口", "drag", 17);
+            monitor = AddButton(GlassIcon.Monitor, String.Empty, "选择远端显示器", "monitor_menu", 32);
+            fps = AddButton(GlassIcon.None, "60", "最高帧率", "fps_menu", 42);
+            scale = AddButton(GlassIcon.None, "适应", "画面显示方式", "scale_menu", 46);
+            keyboard = AddButton(GlassIcon.Keyboard, String.Empty, "键盘控制", "keyboard", 32);
+            clipboard = AddButton(GlassIcon.Clipboard, String.Empty, "剪贴板同步", "clipboard", 32);
+            files = AddButton(GlassIcon.Folder, String.Empty, "远程文件", "files", 32);
+            remoteLock = AddButton(GlassIcon.Lock, String.Empty, "锁定远端电脑", "lock", 32);
+            fullscreen = AddButton(GlassIcon.Fullscreen, String.Empty, "全屏", "fullscreen", 32);
+            status = AddButton(GlassIcon.None, "●", "远程画面已连接", "noop", 18);
+            status.Cursor = Cursors.Default;
+            minimize = AddButton(GlassIcon.Minimize, String.Empty, "最小化", "minimize", 32);
+            maximize = AddButton(GlassIcon.Maximize, String.Empty, "最大化/还原", "maximize", 32);
+            close = AddButton(GlassIcon.Close, String.Empty, "断开并关闭", "close", 32);
+            collapse = AddButton(GlassIcon.Chevron, String.Empty, "收起工具栏", "toolbar_toggle", 30);
+            expandedButtons.AddRange(new[] {
+                grip, monitor, fps, scale, keyboard, clipboard, files, remoteLock,
+                fullscreen, status, minimize, maximize, close
+            });
+            LayoutButtons();
+        }
+
+        protected override bool ShowWithoutActivation { get { return true; } }
+
+        protected override CreateParams CreateParams
+        {
+            get
+            {
+                CreateParams value = base.CreateParams;
+                value.ExStyle |= WsExToolWindow | WsExNoActivate;
+                value.ClassStyle |= CsDropShadow;
+                return value;
+            }
+        }
+
+        public void UpdateState(Dictionary<string, object> values)
+        {
+            if (values == null) return;
+            collapsed = ReadBoolean(values, "collapsed", collapsed);
+            viewOnly = ReadBoolean(values, "view_only", viewOnly);
+            fps.Caption = ReadInteger(values, "fps", 60).ToString();
+            scale.Caption = String.Equals(ReadString(values, "scale_mode"), "fill", StringComparison.Ordinal)
+                ? "填充"
+                : "适应";
+            keyboard.Active = ReadBoolean(values, "keyboard", false);
+            clipboard.Active = ReadBoolean(values, "clipboard", false);
+            fullscreen.Active = ReadBoolean(values, "fullscreen", false);
+            bool statusError = ReadBoolean(values, "status_error", false);
+            status.ForeColor = statusError ? Color.FromArgb(255, 118, 132) : Color.FromArgb(91, 230, 172);
+            tips.SetToolTip(status, statusError ? "远程画面异常" : "远程画面已连接");
+            collapse.IconKind = GlassIcon.Chevron;
+            tips.SetToolTip(collapse, collapsed ? "展开工具栏" : "收起工具栏");
+            ReadMonitors(values);
+            LayoutButtons();
+        }
+
+        protected override void OnPaintBackground(PaintEventArgs e)
+        {
+            Rectangle bounds = ClientRectangle;
+            if (bounds.Width < 1 || bounds.Height < 1) return;
+            using (LinearGradientBrush brush = new LinearGradientBrush(
+                bounds,
+                Color.FromArgb(78, 83, 91),
+                Color.FromArgb(37, 40, 46),
+                LinearGradientMode.Vertical))
+            {
+                e.Graphics.FillRectangle(brush, bounds);
+            }
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+            Rectangle border = new Rectangle(0, 0, Math.Max(1, Width - 1), Math.Max(1, Height - 1));
+            using (GraphicsPath path = RoundedRectangle(border, collapsed ? 11 : 13))
+            using (Pen pen = new Pen(Color.FromArgb(104, 238, 244, 249), 1.0f))
+            {
+                e.Graphics.DrawPath(pen, path);
+            }
+            using (Pen highlight = new Pen(Color.FromArgb(62, 255, 255, 255), 1.0f))
+            {
+                e.Graphics.DrawLine(highlight, 8, 1, Math.Max(8, Width - 9), 1);
+            }
+            base.OnPaint(e);
+        }
+
+        protected override void OnSizeChanged(EventArgs e)
+        {
+            base.OnSizeChanged(e);
+            if (Width < 1 || Height < 1) return;
+            using (GraphicsPath path = RoundedRectangle(
+                new Rectangle(0, 0, Width, Height),
+                collapsed ? 11 : 13))
+            {
+                Region = new Region(path);
+            }
+        }
+
+        private GlassToolButton AddButton(
+            GlassIcon icon,
+            string caption,
+            string tooltip,
+            string actionName,
+            int width)
+        {
+            GlassToolButton button = new GlassToolButton
+            {
+                IconKind = icon,
+                Caption = caption,
+                Width = width,
+                Height = 31,
+                AccessibleName = tooltip
+            };
+            tips.SetToolTip(button, tooltip);
+            button.Click += delegate
+            {
+                if (String.Equals(actionName, "monitor_menu", StringComparison.Ordinal)) ShowMonitorMenu(button);
+                else if (String.Equals(actionName, "fps_menu", StringComparison.Ordinal)) ShowChoiceMenu(
+                    button,
+                    new[] { new KeyValuePair<string, string>("30", "最高 30 FPS"), new KeyValuePair<string, string>("60", "最高 60 FPS"), new KeyValuePair<string, string>("120", "最高 120 FPS") },
+                    "fps");
+                else if (String.Equals(actionName, "scale_menu", StringComparison.Ordinal)) ShowChoiceMenu(
+                    button,
+                    new[] { new KeyValuePair<string, string>("fit", "适应 · 完整画面"), new KeyValuePair<string, string>("fill", "填充 · 无黑边") },
+                    "scale_mode");
+                else if (String.Equals(actionName, "noop", StringComparison.Ordinal)) return;
+                else action(actionName, String.Empty);
+            };
+            Controls.Add(button);
+            return button;
+        }
+
+        private void LayoutButtons()
+        {
+            if (collapsed)
+            {
+                foreach (GlassToolButton button in expandedButtons) button.Visible = false;
+                collapse.Visible = true;
+                collapse.Bounds = new Rectangle(6, 1, 32, 22);
+                ClientSize = new Size(44, 24);
+                return;
+            }
+
+            grip.Visible = true;
+            monitor.Visible = true;
+            fps.Visible = true;
+            scale.Visible = true;
+            keyboard.Visible = !viewOnly;
+            clipboard.Visible = !viewOnly;
+            files.Visible = !viewOnly;
+            remoteLock.Visible = !viewOnly;
+            fullscreen.Visible = true;
+            minimize.Visible = true;
+            maximize.Visible = true;
+            close.Visible = true;
+            collapse.Visible = true;
+
+            int x = 6;
+            foreach (GlassToolButton button in expandedButtons)
+            {
+                bool include = !viewOnly ||
+                    (button != keyboard && button != clipboard && button != files && button != remoteLock);
+                button.Visible = include;
+                if (!include) continue;
+                button.Location = new Point(x, 6);
+                x += button.Width + 3;
+            }
+            collapse.Location = new Point(x, 6);
+            x += collapse.Width + 6;
+            ClientSize = new Size(x, 43);
+        }
+
+        private void ReadMonitors(Dictionary<string, object> values)
+        {
+            object raw;
+            if (!values.TryGetValue("monitors", out raw) || raw == null || raw is string) return;
+            IEnumerable items = raw as IEnumerable;
+            if (items == null) return;
+            monitors.Clear();
+            foreach (object item in items)
+            {
+                Dictionary<string, object> entry = item as Dictionary<string, object>;
+                if (entry == null) continue;
+                string id = ReadString(entry, "id");
+                string label = ReadString(entry, "label");
+                if (!String.IsNullOrWhiteSpace(id)) monitors.Add(new KeyValuePair<string, string>(id, String.IsNullOrWhiteSpace(label) ? id : label));
+            }
+        }
+
+        private void ShowMonitorMenu(Control anchor)
+        {
+            List<KeyValuePair<string, string>> options = monitors.Count > 0
+                ? new List<KeyValuePair<string, string>>(monitors)
+                : new List<KeyValuePair<string, string>> { new KeyValuePair<string, string>("all", "全部显示器") };
+            ShowChoiceMenu(anchor, options.ToArray(), "monitor");
+        }
+
+        private void ShowChoiceMenu(
+            Control anchor,
+            KeyValuePair<string, string>[] options,
+            string actionName)
+        {
+            ContextMenuStrip menu = new ContextMenuStrip
+            {
+                BackColor = Color.FromArgb(37, 39, 45),
+                ForeColor = Color.FromArgb(239, 242, 246),
+                ShowImageMargin = false,
+                ShowCheckMargin = false,
+                Font = new Font("Segoe UI", 9.0f, FontStyle.Regular, GraphicsUnit.Point)
+            };
+            foreach (KeyValuePair<string, string> option in options)
+            {
+                ToolStripMenuItem item = new ToolStripMenuItem(option.Value) { Tag = option.Key };
+                item.Click += delegate(object sender, EventArgs args)
+                {
+                    ToolStripMenuItem selected = sender as ToolStripMenuItem;
+                    action(actionName, Convert.ToString(selected == null ? null : selected.Tag));
+                };
+                menu.Items.Add(item);
+            }
+            menu.Closed += delegate { menu.Dispose(); };
+            menu.Show(anchor, new Point(0, anchor.Height + 4));
+        }
+
+        private static bool ReadBoolean(Dictionary<string, object> values, string key, bool fallback)
+        {
+            object value;
+            if (!values.TryGetValue(key, out value) || value == null) return fallback;
+            try { return Convert.ToBoolean(value); }
+            catch { return fallback; }
+        }
+
+        private static int ReadInteger(Dictionary<string, object> values, string key, int fallback)
+        {
+            object value;
+            if (!values.TryGetValue(key, out value) || value == null) return fallback;
+            try { return Convert.ToInt32(value); }
+            catch { return fallback; }
+        }
+
+        private static string ReadString(Dictionary<string, object> values, string key)
+        {
+            object value;
+            return values.TryGetValue(key, out value) && value != null ? Convert.ToString(value) : String.Empty;
+        }
+
+        private static GraphicsPath RoundedRectangle(Rectangle bounds, int radius)
+        {
+            GraphicsPath path = new GraphicsPath();
+            int diameter = Math.Max(2, radius * 2);
+            Rectangle arc = new Rectangle(bounds.Left, bounds.Top, diameter, diameter);
+            path.AddArc(arc, 180, 90);
+            arc.X = bounds.Right - diameter;
+            path.AddArc(arc, 270, 90);
+            arc.Y = bounds.Bottom - diameter;
+            path.AddArc(arc, 0, 90);
+            arc.X = bounds.Left;
+            path.AddArc(arc, 90, 90);
+            path.CloseFigure();
+            return path;
+        }
+    }
+
+    internal sealed class NativeGlassAction : Form
+    {
+        private const int WsExToolWindow = 0x00000080;
+        private const int WsExNoActivate = 0x08000000;
+        private readonly GlassToolButton button;
+
+        public NativeGlassAction(Action action)
+        {
+            AutoScaleMode = AutoScaleMode.None;
+            BackColor = Color.FromArgb(58, 91, 139);
+            DoubleBuffered = true;
+            FormBorderStyle = FormBorderStyle.None;
+            Opacity = 0.90;
+            ShowInTaskbar = false;
+            StartPosition = FormStartPosition.Manual;
+            ClientSize = new Size(166, 44);
+            button = new GlassToolButton
+            {
+                IconKind = GlassIcon.Lock,
+                Caption = "解锁被控电脑",
+                Bounds = new Rectangle(4, 4, 158, 36),
+                Active = false,
+                AccessibleName = "解锁被控电脑"
+            };
+            button.Click += delegate { action(); };
+            Controls.Add(button);
+        }
+
+        protected override bool ShowWithoutActivation { get { return true; } }
+
+        protected override CreateParams CreateParams
+        {
+            get
+            {
+                CreateParams value = base.CreateParams;
+                value.ExStyle |= WsExToolWindow | WsExNoActivate;
+                return value;
+            }
+        }
+
+        protected override void OnPaintBackground(PaintEventArgs e)
+        {
+            Rectangle bounds = ClientRectangle;
+            using (LinearGradientBrush brush = new LinearGradientBrush(
+                bounds,
+                Color.FromArgb(85, 135, 199),
+                Color.FromArgb(48, 76, 122),
+                LinearGradientMode.Vertical))
+            {
+                e.Graphics.FillRectangle(brush, bounds);
+            }
+        }
+
+        protected override void OnSizeChanged(EventArgs e)
+        {
+            base.OnSizeChanged(e);
+            using (GraphicsPath path = new GraphicsPath())
+            {
+                int diameter = 20;
+                Rectangle arc = new Rectangle(0, 0, diameter, diameter);
+                path.AddArc(arc, 180, 90);
+                arc.X = Width - diameter;
+                path.AddArc(arc, 270, 90);
+                arc.Y = Height - diameter;
+                path.AddArc(arc, 0, 90);
+                arc.X = 0;
+                path.AddArc(arc, 90, 90);
+                path.CloseFigure();
+                Region = new Region(path);
+            }
+        }
+    }
+
     internal sealed class ControlWindow : Form
     {
-        private const int WmNcHitTest = 0x0084;
         private const int WmNcLButtonDown = 0x00A1;
-        private const int HtClient = 0x0001;
         private const int HtCaption = 0x0002;
-        private const int HtLeft = 0x000A;
-        private const int HtRight = 0x000B;
-        private const int HtTop = 0x000C;
-        private const int HtTopLeft = 0x000D;
-        private const int HtTopRight = 0x000E;
-        private const int HtBottom = 0x000F;
-        private const int HtBottomLeft = 0x0010;
-        private const int HtBottomRight = 0x0011;
-        private const int ResizeGrip = 8;
-        private const int WsThickFrame = 0x00040000;
         private const int WhKeyboardLl = 13;
         private const int WhMouseLl = 14;
         private const int WmKeyDown = 0x0100;
@@ -137,7 +736,6 @@ namespace WindowsLANRemoteControlHost
         private IntPtr mouseHook = IntPtr.Zero;
         private LowLevelMouseProc mouseHookProc;
         private volatile bool keyboardCaptureEnabled;
-        private volatile bool nativeWindowResizeActive;
         private readonly object nativeInputLock = new object();
         private readonly Queue<NativeInputMessage> nativeInputQueue = new Queue<NativeInputMessage>();
         private readonly AutoResetEvent nativeInputSignal = new AutoResetEvent(false);
@@ -153,6 +751,10 @@ namespace WindowsLANRemoteControlHost
         private bool nativeTransportFailed;
         private IntPtr nativeVideoHandle = IntPtr.Zero;
         private string nativeVideoUnavailableReason = "native video DLL unavailable";
+        private NativeGlassToolbar nativeToolbar;
+        private NativeGlassAction nativeUnlockAction;
+        private bool nativeOverlayRequestedVisible;
+        private bool nativeUnlockRequestedVisible;
 
         [DllImport("WindowsLANRemoteVideo.dll", CallingConvention = CallingConvention.StdCall)]
         private static extern IntPtr LANRemoteVideoCreate(IntPtr parent);
@@ -210,16 +812,6 @@ namespace WindowsLANRemoteControlHost
         [DllImport("WindowsLANRemoteVideo.dll", CallingConvention = CallingConvention.StdCall)]
         private static extern void LANRemoteVideoDestroy(IntPtr handle);
 
-        protected override CreateParams CreateParams
-        {
-            get
-            {
-                CreateParams value = base.CreateParams;
-                value.Style |= WsThickFrame;
-                return value;
-            }
-        }
-
         [DllImport("user32.dll")]
         private static extern bool ReleaseCapture();
 
@@ -240,11 +832,6 @@ namespace WindowsLANRemoteControlHost
 
         [DllImport("user32.dll")]
         private static extern IntPtr GetForegroundWindow();
-
-        [DllImport("user32.dll", SetLastError = true)]
-        private static extern bool PhysicalToLogicalPointForPerMonitorDPI(
-            IntPtr window,
-            ref NativePoint point);
 
         [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
         private static extern IntPtr GetModuleHandle(string moduleName);
@@ -563,11 +1150,12 @@ namespace WindowsLANRemoteControlHost
             }
             else
             {
-                Deactivate += delegate
+                nativeToolbar = new NativeGlassToolbar(SendNativeOverlayAction);
+                nativeUnlockAction = new NativeGlassAction(delegate
                 {
-                    nativeWindowResizeActive = false;
-                    ReleaseNativePressedInputs();
-                };
+                    SendNativeOverlayAction("unlock", String.Empty);
+                });
+                Deactivate += delegate { ReleaseNativePressedInputs(); };
             }
 
             Shown += async delegate
@@ -746,47 +1334,8 @@ namespace WindowsLANRemoteControlHost
             {
                 return CallNextHookEx(mouseHook, code, wParam, lParam);
             }
-            int message = wParam.ToInt32();
-            if (nativeWindowResizeActive)
-            {
-                return CallNextHookEx(mouseHook, code, wParam, lParam);
-            }
-            // The WS_THICKFRAME non-client border is outside ClientSize. Use
-            // the complete screen-space window rectangle so every physical
-            // edge and corner is classified consistently before the remote
-            // input surface gets a chance to consume the gesture.
-            NativePoint logicalInputPoint = input.Point;
-            try
-            {
-                // MSLLHOOKSTRUCT.pt is always in per-monitor-aware physical
-                // screen coordinates. WinForms may expose DPI-virtualized
-                // logical Bounds, so normalize the hook point to this HWND's
-                // coordinate space before hit testing or remote mapping.
-                PhysicalToLogicalPointForPerMonitorDPI(Handle, ref logicalInputPoint);
-            }
-            catch (EntryPointNotFoundException)
-            {
-                // Windows 10/11 provide the API. Keeping the original point is
-                // the safe fallback for older systems without per-monitor DPI.
-            }
-            int inputX = logicalInputPoint.X;
-            int inputY = logicalInputPoint.Y;
-            Rectangle windowBounds = Bounds;
-            Point windowPoint = new Point(
-                inputX - windowBounds.Left,
-                inputY - windowBounds.Top);
-            int resizeHit = BorderlessResizeHitTest(windowPoint, windowBounds.Size, ResizeGrip);
-            if (!fullscreen && WindowState == FormWindowState.Normal && resizeHit != HtClient)
-            {
-                if (message == WmLButtonDown)
-                {
-                    nativeWindowResizeActive = true;
-                    BeginInvoke(new Action(delegate { BeginNativeWindowResize(resizeHit); }));
-                    return new IntPtr(1);
-                }
-                return CallNextHookEx(mouseHook, code, wParam, lParam);
-            }
 
+            int message = wParam.ToInt32();
             bool swallow = false;
             lock (nativeInputLock)
             {
@@ -799,8 +1348,8 @@ namespace WindowsLANRemoteControlHost
                 {
                     return CallNextHookEx(mouseHook, code, wParam, lParam);
                 }
-                bool inside = session.RemoteBounds.Contains(inputX, inputY) &&
-                    !PointInExclusion(session, inputX, inputY);
+                bool inside = session.RemoteBounds.Contains(input.Point.X, input.Point.Y) &&
+                    !PointInExclusion(session, input.Point.X, input.Point.Y);
                 bool dragging = nativePressedButtons.Count > 0;
                 if (!inside && !dragging)
                 {
@@ -809,7 +1358,7 @@ namespace WindowsLANRemoteControlHost
 
                 int remoteX;
                 int remoteY;
-                MapRemotePoint(session, inputX, inputY, out remoteX, out remoteY);
+                MapRemotePoint(session, input.Point.X, input.Point.Y, out remoteX, out remoteY);
                 lastRemoteX = remoteX;
                 lastRemoteY = remoteY;
 
@@ -871,23 +1420,17 @@ namespace WindowsLANRemoteControlHost
                 : CallNextHookEx(mouseHook, code, wParam, lParam);
         }
 
-        private void BeginNativeWindowResize(int resizeHit)
-        {
-            try
-            {
-                if (fullscreen || WindowState != FormWindowState.Normal) return;
-                ReleaseCapture();
-                SendMessage(Handle, WmNcLButtonDown, new IntPtr(resizeHit), IntPtr.Zero);
-            }
-            finally
-            {
-                nativeWindowResizeActive = false;
-            }
-        }
-
         private bool PointInExclusion(NativeInputSession session, int x, int y)
         {
             Point point = new Point(x, y);
+            if (nativeToolbar != null && nativeToolbar.Visible && nativeToolbar.Bounds.Contains(point))
+            {
+                return true;
+            }
+            if (nativeUnlockAction != null && nativeUnlockAction.Visible && nativeUnlockAction.Bounds.Contains(point))
+            {
+                return true;
+            }
             RectangleF[] exclusions = session.Exclusions ?? new RectangleF[0];
             for (int index = 0; index < exclusions.Length; index++)
             {
@@ -1283,24 +1826,78 @@ namespace WindowsLANRemoteControlHost
                 surface.Width,
                 surface.Height,
                 ReadBoolean(values, "visible", true) ? 1 : 0);
-            RectangleF[] exclusions = ReadExclusions(values);
-            int[] nativeExclusions = new int[exclusions.Length * 4];
-            for (int index = 0; index < exclusions.Length; index++)
-            {
-                Point topLeft = PointToClient(Point.Round(exclusions[index].Location));
-                Point bottomRight = PointToClient(Point.Round(new PointF(
-                    exclusions[index].Right,
-                    exclusions[index].Bottom)));
-                nativeExclusions[index * 4] = topLeft.X;
-                nativeExclusions[index * 4 + 1] = topLeft.Y;
-                nativeExclusions[index * 4 + 2] = Math.Max(0, bottomRight.X - topLeft.X);
-                nativeExclusions[index * 4 + 3] = Math.Max(0, bottomRight.Y - topLeft.Y);
-            }
-            LANRemoteVideoSetExclusions(nativeVideoHandle, nativeExclusions, exclusions.Length);
+            LANRemoteVideoSetExclusions(nativeVideoHandle, new int[0], 0);
             LANRemoteVideoSetScaleMode(
                 nativeVideoHandle,
                 String.Equals(ReadString(values, "scale_mode"), "fill", StringComparison.Ordinal) ? 1 : 0);
             return true;
+        }
+
+        private bool SetNativeOverlayState(object payload)
+        {
+            Dictionary<string, object> values = payload as Dictionary<string, object>;
+            if (!remoteWindow || values == null || nativeToolbar == null || nativeUnlockAction == null)
+            {
+                return false;
+            }
+            nativeOverlayRequestedVisible = ReadBoolean(values, "visible", false);
+            nativeUnlockRequestedVisible = nativeOverlayRequestedVisible && ReadBoolean(values, "unlock_visible", false);
+            nativeToolbar.UpdateState(values);
+            UpdateNativeOverlayVisibility();
+            return true;
+        }
+
+        private void UpdateNativeOverlayVisibility()
+        {
+            if (!remoteWindow || nativeToolbar == null || nativeUnlockAction == null) return;
+            bool ownerVisible = Visible && WindowState != FormWindowState.Minimized;
+            if (nativeOverlayRequestedVisible && ownerVisible)
+            {
+                if (!nativeToolbar.Visible) nativeToolbar.Show(this);
+                if (nativeUnlockRequestedVisible)
+                {
+                    if (!nativeUnlockAction.Visible) nativeUnlockAction.Show(this);
+                }
+                else if (nativeUnlockAction.Visible)
+                {
+                    nativeUnlockAction.Hide();
+                }
+                PositionNativeOverlays();
+                nativeToolbar.BringToFront();
+                if (nativeUnlockAction.Visible) nativeUnlockAction.BringToFront();
+            }
+            else
+            {
+                if (nativeToolbar.Visible) nativeToolbar.Hide();
+                if (nativeUnlockAction.Visible) nativeUnlockAction.Hide();
+            }
+        }
+
+        private void PositionNativeOverlays()
+        {
+            if (!IsHandleCreated || nativeToolbar == null || nativeUnlockAction == null) return;
+            Point origin = PointToScreen(Point.Empty);
+            nativeToolbar.Location = new Point(
+                origin.X + Math.Max(0, (ClientSize.Width - nativeToolbar.Width) / 2),
+                origin.Y + (fullscreen ? 8 : 7));
+            nativeUnlockAction.Location = new Point(
+                origin.X + Math.Max(0, (ClientSize.Width - nativeUnlockAction.Width) / 2),
+                origin.Y + Math.Max(0, ClientSize.Height - nativeUnlockAction.Height - 20));
+        }
+
+        private void SendNativeOverlayAction(string action, string value)
+        {
+            if (String.Equals(action, "drag", StringComparison.Ordinal))
+            {
+                ReleaseCapture();
+                SendMessage(Handle, WmNcLButtonDown, new IntPtr(HtCaption), IntPtr.Zero);
+                return;
+            }
+            if (browser.CoreWebView2 == null) return;
+            string script = "window.__lanNativeOverlayAction&&window.__lanNativeOverlayAction(" +
+                serializer.Serialize(action ?? String.Empty) + "," +
+                serializer.Serialize(value ?? String.Empty) + ");";
+            browser.CoreWebView2.ExecuteScriptAsync(script);
         }
 
         private object NativeVideoStatus()
@@ -1705,6 +2302,9 @@ namespace WindowsLANRemoteControlHost
                 case "set_native_video_layout":
                     result = SetNativeVideoLayout(payload);
                     break;
+                case "set_native_overlay_state":
+                    result = SetNativeOverlayState(payload);
+                    break;
                 case "native_video_status":
                     result = NativeVideoStatus();
                     break;
@@ -1759,50 +2359,7 @@ namespace WindowsLANRemoteControlHost
                 }
                 maximized = restoredMaximized;
             }
-        }
-
-        private static int BorderlessResizeHitTest(Point point, Size clientSize, int grip)
-        {
-            if (clientSize.Width < 1 || clientSize.Height < 1 || grip < 1)
-            {
-                return HtClient;
-            }
-            bool left = point.X >= 0 && point.X < grip;
-            bool right = point.X < clientSize.Width && point.X >= clientSize.Width - grip;
-            bool top = point.Y >= 0 && point.Y < grip;
-            bool bottom = point.Y < clientSize.Height && point.Y >= clientSize.Height - grip;
-            if (top && left) return HtTopLeft;
-            if (top && right) return HtTopRight;
-            if (bottom && left) return HtBottomLeft;
-            if (bottom && right) return HtBottomRight;
-            if (left) return HtLeft;
-            if (right) return HtRight;
-            if (top) return HtTop;
-            if (bottom) return HtBottom;
-            return HtClient;
-        }
-
-        protected override void WndProc(ref Message message)
-        {
-            base.WndProc(ref message);
-            if (
-                message.Msg != WmNcHitTest ||
-                fullscreen ||
-                WindowState != FormWindowState.Normal ||
-                message.Result.ToInt32() != HtClient)
-            {
-                return;
-            }
-            long packed = message.LParam.ToInt64();
-            Point screenPoint = new Point(
-                unchecked((short)(packed & 0xFFFF)),
-                unchecked((short)((packed >> 16) & 0xFFFF)));
-            Point clientPoint = PointToClient(screenPoint);
-            int hit = BorderlessResizeHitTest(clientPoint, ClientSize, ResizeGrip);
-            if (hit != HtClient)
-            {
-                message.Result = new IntPtr(hit);
-            }
+            UpdateNativeOverlayVisibility();
         }
 
         protected override void OnSizeChanged(EventArgs e)
@@ -1812,6 +2369,19 @@ namespace WindowsLANRemoteControlHost
             {
                 maximized = WindowState == FormWindowState.Maximized;
             }
+            UpdateNativeOverlayVisibility();
+        }
+
+        protected override void OnLocationChanged(EventArgs e)
+        {
+            base.OnLocationChanged(e);
+            PositionNativeOverlays();
+        }
+
+        protected override void OnVisibleChanged(EventArgs e)
+        {
+            base.OnVisibleChanged(e);
+            UpdateNativeOverlayVisibility();
         }
 
         protected override void OnFormClosing(FormClosingEventArgs e)
@@ -1832,6 +2402,16 @@ namespace WindowsLANRemoteControlHost
         protected override void OnFormClosed(FormClosedEventArgs e)
         {
             keyboardCaptureEnabled = false;
+            if (nativeToolbar != null)
+            {
+                nativeToolbar.Dispose();
+                nativeToolbar = null;
+            }
+            if (nativeUnlockAction != null)
+            {
+                nativeUnlockAction.Dispose();
+                nativeUnlockAction = null;
+            }
             if (nativeVideoHandle != IntPtr.Zero)
             {
                 LANRemoteVideoDestroy(nativeVideoHandle);
@@ -1911,6 +2491,7 @@ namespace WindowsLANRemoteControlHost
     release_native_input: () => call('release_native_input'),
     configure_native_video: (config) => call('configure_native_video', config || {enabled: false}),
     set_native_video_layout: (layout) => call('set_native_video_layout', layout || {}),
+    set_native_overlay_state: (state) => call('set_native_overlay_state', state || {visible: false}),
     native_video_status: () => call('native_video_status'),
     set_native_video_cursor: (cursor) => call('set_native_video_cursor', cursor || {}),
     close_window: () => call('close'),

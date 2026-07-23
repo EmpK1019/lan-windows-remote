@@ -1,5 +1,5 @@
 param(
-    [string]$Version = "1.0.12",
+    [string]$Version = "1.0.2",
     [switch]$SkipDependencyInstall
 )
 
@@ -25,8 +25,6 @@ $ControlHostPath = Join-Path $PortableDir "WindowsLANRemoteControlHost.exe"
 $NativeBuildDir = Join-Path $BuildDir "native"
 $NativeVideoDll = Join-Path $NativeBuildDir "WindowsLANRemoteVideo.dll"
 $NativeVideoEncoder = Join-Path $NativeBuildDir "WindowsLANRemoteVideoEncoder.exe"
-$CredentialProviderDll = Join-Path $NativeBuildDir "WindowsLANRemoteCredentialProvider.dll"
-$CredentialProviderName = "WindowsLANRemoteCredentialProvider-$Version.dll"
 
 function Assert-Tool {
     param([string]$Name)
@@ -104,10 +102,9 @@ foreach ($NativeFps in @(30, 60, 120)) {
     --fps 30 `
     --measure-seconds 1 `
     --native-dir $NativeBuildDir `
-    --exercise-secure-transition `
-    --force-gdi
+    --exercise-secure-transition
 if ($LASTEXITCODE -ne 0) {
-    throw "Native secure-desktop H.264 source-switch E2E failed with exit code $LASTEXITCODE."
+    throw "Native secure-desktop fallback/recovery E2E failed with exit code $LASTEXITCODE."
 }
 
 & powershell.exe `
@@ -178,7 +175,6 @@ if (-not (Test-Path -LiteralPath $PortableExecutable)) {
 
 Copy-Item -LiteralPath $NativeVideoDll -Destination $PortableDir -Force
 Copy-Item -LiteralPath $NativeVideoEncoder -Destination $PortableDir -Force
-Copy-Item -LiteralPath $CredentialProviderDll -Destination (Join-Path $PortableDir $CredentialProviderName) -Force
 
 & $CscPath `
     /nologo `
@@ -249,14 +245,6 @@ if ($LASTEXITCODE -ne 0) {
     --native-dir $PortableDir
 if ($LASTEXITCODE -ne 0) {
     throw "Packaged WebView2/native H.264 host E2E failed with exit code $LASTEXITCODE."
-}
-
-& $VenvPython `
-    (Join-Path $Root "tests\packaged_unlock_video_recovery_e2e.py") `
-    --control-host $ControlHostPath `
-    --native-dir $PortableDir
-if ($LASTEXITCODE -ne 0) {
-    throw "Packaged locked-to-unlocked native video recovery E2E failed with exit code $LASTEXITCODE."
 }
 
 foreach ($InteractiveTest in @(
@@ -375,8 +363,7 @@ $RequiredPortableFiles = @(
     (Join-Path $PortableDir "Microsoft.Web.WebView2.WinForms.dll"),
     (Join-Path $PortableDir "WebView2Loader.dll"),
     (Join-Path $PortableDir "WindowsLANRemoteVideo.dll"),
-    (Join-Path $PortableDir "WindowsLANRemoteVideoEncoder.exe"),
-    (Join-Path $PortableDir $CredentialProviderName)
+    (Join-Path $PortableDir "WindowsLANRemoteVideoEncoder.exe")
 )
 foreach ($RequiredFile in $RequiredPortableFiles) {
     if (-not (Test-Path -LiteralPath $RequiredFile)) {

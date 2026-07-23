@@ -10,37 +10,12 @@ import tempfile
 import threading
 import time
 import tkinter as tk
-from ctypes import wintypes
 from pathlib import Path
 
-from PIL import ImageChops, ImageGrab, ImageStat
+from PIL import ImageChops, ImageGrab
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import lan_remote
-
-
-def find_child_window(parent: int, class_name: str) -> int:
-    result = ctypes.c_void_p()
-    callback_type = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
-
-    @callback_type
-    def callback(window: int, _: int) -> bool:
-        name = ctypes.create_unicode_buffer(256)
-        ctypes.windll.user32.GetClassNameW(window, name, len(name))
-        if name.value == class_name:
-            result.value = window
-            return False
-        return True
-
-    ctypes.windll.user32.EnumChildWindows(parent, callback, 0)
-    return int(result.value or 0)
-
-
-def window_rect(window: int) -> tuple[int, int, int, int]:
-    rect = wintypes.RECT()
-    if not ctypes.windll.user32.GetWindowRect(window, ctypes.byref(rect)):
-        raise RuntimeError("could not read the native video child bounds")
-    return rect.left, rect.top, rect.right, rect.bottom
 
 
 def display_refresh_hz() -> int:
@@ -65,7 +40,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--native-dir", type=Path)
     parser.add_argument("--enforce-performance", action="store_true")
     parser.add_argument("--exercise-secure-transition", action="store_true")
-    parser.add_argument("--force-gdi", action="store_true")
     return parser.parse_args()
 
 
@@ -79,46 +53,17 @@ def main() -> int:
         raise RuntimeError("build native video components before running the E2E test")
     lan_remote.native_video_encoder_path = lambda: encoder_path
     original_secure_desktop_active = lan_remote.secure_desktop_active
-    original_secure_video_source_required = lan_remote.secure_video_source_required
-    original_secure_native_video_available = lan_remote.secure_native_video_available
-    original_open_secure_native_video_stream = lan_remote.open_secure_native_video_stream
     secure_state = {"active": False}
-    secure_sources: list[object] = []
     if args.exercise_secure_transition:
         lan_remote.secure_desktop_active = lambda: secure_state["active"]
-        lan_remote.secure_video_source_required = lambda: secure_state["active"]
-        lan_remote.secure_native_video_available = lambda: True
-
-        class EncoderStream:
-            def __init__(self, monitor: str, fps: int, generation: int) -> None:
-                self.source = lan_remote.start_native_video_encoder(monitor, fps, generation)
-                secure_sources.append(self)
-
-            def read(self, length: int) -> bytes:
-                if self.source.process.stdout is None:
-                    return b""
-                return self.source.process.stdout.read(length)
-
-            def close(self) -> None:
-                if self.source is None:
-                    return
-                source, self.source = self.source, None
-                lan_remote.stop_native_video_encoder(source)
-
-        lan_remote.open_secure_native_video_stream = (
-            lambda monitor, fps, generation, timeout=4.0: EncoderStream(monitor, fps, generation)
-        )
 
     with tempfile.TemporaryDirectory() as appdata:
         previous_appdata = os.environ.get("APPDATA")
         previous_video_debug = os.environ.get("LAN_REMOTE_NATIVE_VIDEO_DEBUG")
         previous_test_pattern = os.environ.get("LAN_REMOTE_NATIVE_VIDEO_TEST_PATTERN")
-        previous_force_gdi = os.environ.get("LAN_REMOTE_NATIVE_VIDEO_FORCE_GDI")
         os.environ["APPDATA"] = appdata
         os.environ["LAN_REMOTE_NATIVE_VIDEO_DEBUG"] = "1"
         os.environ["LAN_REMOTE_NATIVE_VIDEO_TEST_PATTERN"] = "1"
-        if args.force_gdi:
-            os.environ["LAN_REMOTE_NATIVE_VIDEO_FORCE_GDI"] = "1"
         settings = lan_remote.SettingsStore()
         state = lan_remote.ServerState(
             token="TEST-TEMP-CODE",
@@ -144,8 +89,6 @@ def main() -> int:
         window.attributes("-topmost", True)
         activity = tk.Label(window, text="FRAME 0", bg="#ff264f", fg="white", font=("Segoe UI", 16, "bold"))
         activity.place(x=0, y=0, width=900, height=42)
-        video_backing = tk.Frame(window, bg="#000000")
-        video_backing.place(x=40, y=50, width=820, height=460)
         window.update()
 
         dll = ctypes.WinDLL(str(dll_path))
@@ -184,11 +127,7 @@ def main() -> int:
             error = ctypes.create_unicode_buffer(2048)
             dll.LANRemoteVideoGetLastError(error, len(error))
             raise RuntimeError(f"native video DLL did not create a child surface: {error.value}")
-        video_window = find_child_window(window.winfo_id(), "LANRemoteNativeVideoSurfaceV1")
-        if not video_window:
-            raise RuntimeError("native video DLL did not expose its D3D child surface")
         try:
-            configure_started = time.monotonic()
             started = dll.LANRemoteVideoConfigure(
                 handle,
                 "127.0.0.1",
@@ -209,7 +148,6 @@ def main() -> int:
             deadline = time.monotonic() + 20
             first_image = None
             first_rendered = 0
-            first_render_ms: float | None = None
             measurement_started = 0.0
             measurement_start_rendered = 0
             measurement_start_decoded = 0
@@ -236,8 +174,6 @@ def main() -> int:
                 if final_status.get("state") == "failed":
                     raise RuntimeError(str(final_status.get("error") or "native video failed"))
                 rendered = int(final_status.get("rendered_frames", 0))
-                if rendered > 0 and first_render_ms is None:
-                    first_render_ms = (time.monotonic() - configure_started) * 1000
                 if measurement_started:
                     metric_samples.append({
                         key: float(final_status.get(key, 0) or 0)
@@ -277,7 +213,6 @@ def main() -> int:
                         )
                     )
                     if ImageChops.difference(first_image, second_image).getbbox() is not None:
-                        measurement_finished = time.monotonic()
                         break
                 time.sleep(0.02)
             else:
@@ -285,78 +220,11 @@ def main() -> int:
 
             if not color_changed or int(final_status.get("rendered_frames", 0)) < 20:
                 raise RuntimeError(f"too few native video frames were rendered: {final_status}")
-            if first_render_ms is None or first_render_ms > 2500:
-                raise RuntimeError(
-                    "native first frame exceeded the 2500 ms startup gate: "
-                    f"first_render_ms={first_render_ms}, status={final_status}"
-                )
-            final_status["first_render_ms"] = round(first_render_ms, 2)
             if final_status.get("transport") != "native_h264_v1":
                 raise RuntimeError(f"unexpected video transport: {final_status}")
             if final_status.get("scale_mode") != "fill":
                 raise RuntimeError(f"native fill scale mode was not applied: {final_status}")
-
-            # Reproduce a visibly letterboxed Fit layout and inspect the real
-            # D3D child surface. The BGRA output background must be RGB black;
-            # treating the color union as YCbCr turns these bands green.
-            fit_rendered_start = int(final_status.get("rendered_frames", 0))
-            dll.LANRemoteVideoSetLayout(handle, 200, 50, 480, 460, 1)
-            dll.LANRemoteVideoSetScaleMode(handle, 0)
-            fit_deadline = time.monotonic() + 3
-            while time.monotonic() < fit_deadline:
-                window.update()
-                buffer = ctypes.create_unicode_buffer(4096)
-                dll.LANRemoteVideoGetStatus(handle, buffer, len(buffer))
-                fit_status = json.loads(buffer.value or "{}")
-                if (
-                    fit_status.get("scale_mode") == "fit"
-                    and int(fit_status.get("rendered_frames", 0)) >= fit_rendered_start + 12
-                ):
-                    break
-                time.sleep(0.02)
-            else:
-                raise RuntimeError(f"native Fit letterbox did not render in time: {fit_status}")
-            time.sleep(0.2)
-            window.update()
-            fit_bounds = window_rect(video_window)
-            fit_image = ImageGrab.grab(bbox=fit_bounds).convert("RGB")
-            fit_width, fit_height = fit_image.size
-            if fit_width < 400 or fit_height < 400:
-                raise RuntimeError(f"native Fit child has unexpected bounds: {fit_bounds}")
-            top_band = fit_image.crop((20, 4, fit_width - 20, 20))
-            bottom_band = fit_image.crop((20, fit_height - 20, fit_width - 20, fit_height - 4))
-            letterbox_mean = [
-                round(value, 2)
-                for value in ImageStat.Stat(top_band).mean + ImageStat.Stat(bottom_band).mean
-            ]
-            if max(letterbox_mean) > 12:
-                failure_image = root_path / "build" / "native-fit-letterbox-failure.png"
-                failure_image.parent.mkdir(parents=True, exist_ok=True)
-                fit_image.save(failure_image)
-                raise RuntimeError(
-                    "native Fit letterbox is not neutral black: "
-                    f"RGB means={letterbox_mean}, screenshot={failure_image}, status={fit_status}"
-                )
-            final_status["fit_letterbox_rgb_means"] = letterbox_mean
-            restore_rendered_start = int(fit_status.get("rendered_frames", 0))
-            dll.LANRemoteVideoSetLayout(handle, 40, 50, 820, 460, 1)
-            dll.LANRemoteVideoSetScaleMode(handle, 1)
-            restore_deadline = time.monotonic() + 3
-            while time.monotonic() < restore_deadline:
-                window.update()
-                buffer = ctypes.create_unicode_buffer(4096)
-                dll.LANRemoteVideoGetStatus(handle, buffer, len(buffer))
-                restored_status = json.loads(buffer.value or "{}")
-                if (
-                    restored_status.get("scale_mode") == "fill"
-                    and int(restored_status.get("rendered_frames", 0)) >= restore_rendered_start + 12
-                ):
-                    break
-                time.sleep(0.02)
-            else:
-                raise RuntimeError(f"native Fill layout was not restored in time: {restored_status}")
-
-            measured_seconds = max(0.001, measurement_finished - measurement_started)
+            measured_seconds = max(0.001, time.monotonic() - measurement_started)
             final_status["measured_seconds"] = round(measured_seconds, 3)
             final_status["measured_decode_fps"] = round(
                 (int(final_status.get("decoded_frames", 0)) - measurement_start_decoded) /
@@ -405,42 +273,27 @@ def main() -> int:
                     )
             if args.exercise_secure_transition:
                 initial_generation = int(final_status.get("generation", 0))
-                initial_rendered = int(final_status.get("rendered_frames", 0))
                 secure_state["active"] = True
-                transition_deadline = time.monotonic() + 10
-                secure_generation = 0
+                transition_deadline = time.monotonic() + 5
                 while time.monotonic() < transition_deadline:
                     window.update()
                     buffer = ctypes.create_unicode_buffer(4096)
                     dll.LANRemoteVideoGetStatus(handle, buffer, len(buffer))
                     transition_status = json.loads(buffer.value or "{}")
                     if transition_status.get("state") == "failed":
-                        raise RuntimeError(f"secure H.264 transition failed: {transition_status}")
-                    secure_generation = int(transition_status.get("generation", 0))
-                    if (
-                        transition_status.get("state") == "streaming"
-                        and secure_generation not in (0, initial_generation)
-                        and int(transition_status.get("rendered_frames", 0)) > initial_rendered
-                    ):
+                        if "secure desktop" not in str(transition_status.get("error", "")).lower():
+                            raise RuntimeError(f"unexpected secure transition failure: {transition_status}")
                         break
                     time.sleep(0.02)
                 else:
-                    raise RuntimeError("native stream did not switch to the secure H.264 source")
-                window.update()
-                held_frame = ImageGrab.grab(
-                    bbox=(
-                        window.winfo_rootx() + 40,
-                        window.winfo_rooty() + 50,
-                        window.winfo_rootx() + 860,
-                        window.winfo_rooty() + 510,
-                    )
-                ).convert("L").resize((32, 18))
-                held_mean = sum(held_frame.get_flattened_data()) / (32 * 18)
-                if held_mean < 8.0:
-                    raise RuntimeError("secure H.264 transition exposed a black frame")
-                final_status["secure_transition_held_frame_mean"] = round(held_mean, 2)
-                final_status["secure_h264_generation"] = secure_generation
+                    raise RuntimeError("native stream did not enter secure-desktop fallback")
                 secure_state["active"] = False
+                if not dll.LANRemoteVideoConfigure(
+                    handle, "127.0.0.1", state.port, "TEST-TEMP-CODE", "all",
+                    args.fps, 40, 50, 820, 460,
+                ):
+                    raise RuntimeError("native stream could not restart after secure desktop")
+                dll.LANRemoteVideoSetLayout(handle, 40, 50, 820, 460, 1)
                 recovery_deadline = time.monotonic() + 10
                 while time.monotonic() < recovery_deadline:
                     window.update()
@@ -449,9 +302,8 @@ def main() -> int:
                     recovered = json.loads(buffer.value or "{}")
                     if (
                         recovered.get("state") == "streaming"
-                        and int(recovered.get("generation", 0)) not in
-                            (initial_generation, secure_generation)
-                        and int(recovered.get("rendered_frames", 0)) > initial_rendered
+                        and int(recovered.get("generation", 0)) != initial_generation
+                        and int(recovered.get("rendered_frames", 0)) > 0
                     ):
                         final_status["secure_transition_recovered"] = True
                         break
@@ -479,16 +331,7 @@ def main() -> int:
                 os.environ.pop("LAN_REMOTE_NATIVE_VIDEO_TEST_PATTERN", None)
             else:
                 os.environ["LAN_REMOTE_NATIVE_VIDEO_TEST_PATTERN"] = previous_test_pattern
-            if previous_force_gdi is None:
-                os.environ.pop("LAN_REMOTE_NATIVE_VIDEO_FORCE_GDI", None)
-            else:
-                os.environ["LAN_REMOTE_NATIVE_VIDEO_FORCE_GDI"] = previous_force_gdi
             lan_remote.secure_desktop_active = original_secure_desktop_active
-            lan_remote.secure_video_source_required = original_secure_video_source_required
-            lan_remote.secure_native_video_available = original_secure_native_video_available
-            lan_remote.open_secure_native_video_stream = original_open_secure_native_video_stream
-            for source in secure_sources:
-                source.close()
     return 0
 
 
