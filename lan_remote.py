@@ -60,13 +60,15 @@ if platform.system() == "Windows":
 
 
 APP_NAME = "Windows LAN Remote"
-APP_VERSION = "1.1.0"
+APP_VERSION = "1.0.3"
 GITHUB_REPOSITORY = "EmpK1019/lan-windows-remote"
 GITHUB_LATEST_RELEASE_API = f"https://api.github.com/repos/{GITHUB_REPOSITORY}/releases/latest"
 DEFAULT_PORT = 8765
 DEFAULT_DISCOVERY_PORT = 8766
 SECURE_HELPER_PORT = 8767
 ELEVATED_INPUT_HELPER_PORT = 8768
+SERVICE_SESSION_STATE_MAX_AGE_SECONDS = 8.0
+SERVICE_SESSION_STATE_CACHE_SECONDS = 0.1
 DISCOVERY_MAGIC = "windows-lan-remote-v1"
 DISCOVERY_TTL_SECONDS = 9
 ACTIVE_REMOTE_SESSION_TTL_SECONDS = 8
@@ -117,9 +119,13 @@ AUTH_FAILURE_LIMIT = 6
 AUTH_FAILURE_WINDOW_SECONDS = 60
 AUTH_FAILURE_BLOCK_SECONDS = 30
 UPDATE_INSTALL_RETRY_SECONDS = 20
-UNLOCK_WAKE_DELAY_SECONDS = 1.2
+UNLOCK_WAKE_ATTEMPTS = 2
+UNLOCK_WAKE_POLL_SECONDS = 0.2
+UNLOCK_WAKE_POLLS_PER_ATTEMPT = 8
 UNLOCK_CHARACTER_DELAY_SECONDS = 0.055
 UNLOCK_SUBMIT_DELAY_SECONDS = 0.18
+UNLOCK_RESULT_POLL_SECONDS = 0.25
+UNLOCK_RESULT_POLLS = 24
 UNLOCK_SEQUENCE_TIMEOUT_SECONDS = 12.0
 LOCAL_DESKTOP_PATHS = frozenset(
     {
@@ -142,12 +148,15 @@ SCREEN_LOCK = threading.Lock()
 INPUT_LOCK = threading.Lock()
 REMOTE_INPUT_DISPATCH_LOCK = threading.Lock()
 ELEVATED_INPUT_HELPER_STATE_LOCK = threading.Lock()
+SERVICE_SESSION_STATE_CACHE_LOCK = threading.Lock()
 CLIPBOARD_LOCK = threading.Lock()
 GDIPLUS_LOCK = threading.Lock()
 FILE_UPLOAD_LOCK = threading.Lock()
 ACTIVE_FILE_UPLOADS: set[Path] = set()
 GDIPLUS_TOKEN = ctypes.c_void_p()
 GDIPLUS_STARTED = False
+SERVICE_SESSION_STATE_CACHE_AT = 0.0
+SERVICE_SESSION_STATE_CACHE_VALUE: bool | None = None
 ELEVATED_INPUT_HELPER_RETRY_AFTER = 0.0
 
 
@@ -2531,6 +2540,11 @@ def service_secret_path() -> Path:
     return program_data / "Windows LAN Remote" / "service-token.txt"
 
 
+def service_session_state_path() -> Path:
+    program_data = Path(os.environ.get("PROGRAMDATA", r"C:\ProgramData"))
+    return program_data / "Windows LAN Remote" / "session-state.json"
+
+
 def read_service_secret(path: str | Path | None = None) -> str:
     target = Path(path) if path else service_secret_path()
     try:
@@ -2539,17 +2553,77 @@ def read_service_secret(path: str | Path | None = None) -> str:
         return ""
 
 
-def secure_desktop_active() -> bool:
-    """Return True when the input desktop is Winlogon/UAC rather than Default."""
+def current_process_session_id() -> int | None:
+    kernel32 = ctypes.windll.kernel32
+    session_id = wintypes.DWORD()
+    if not kernel32.ProcessIdToSessionId(kernel32.GetCurrentProcessId(), ctypes.byref(session_id)):
+        return None
+    return int(session_id.value)
+
+
+def service_session_locked(
+    path: str | Path | None = None,
+    *,
+    now_ms: int | None = None,
+    session_id: int | None = None,
+) -> bool | None:
+    """Read the service-owned session state, rejecting stale or mismatched data."""
+    global SERVICE_SESSION_STATE_CACHE_AT, SERVICE_SESSION_STATE_CACHE_VALUE
+
+    use_cache = path is None and now_ms is None and session_id is None
+    if use_cache:
+        checked_at = time.monotonic()
+        with SERVICE_SESSION_STATE_CACHE_LOCK:
+            if checked_at - SERVICE_SESSION_STATE_CACHE_AT <= SERVICE_SESSION_STATE_CACHE_SECONDS:
+                return SERVICE_SESSION_STATE_CACHE_VALUE
+
+    target = Path(path) if path is not None else service_session_state_path()
+    expected_session = session_id if session_id is not None else current_process_session_id()
+    value: bool | None = None
+    try:
+        payload = json.loads(target.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            raise ValueError("service session state must be an object")
+        updated_at_ms = payload.get("updated_at_ms")
+        state_session = payload.get("session_id")
+        locked = payload.get("locked")
+        known = payload.get("known")
+        if isinstance(updated_at_ms, bool) or not isinstance(updated_at_ms, (int, float)):
+            raise ValueError("service session state timestamp is invalid")
+        current_time_ms = now_ms if now_ms is not None else int(time.time() * 1000)
+        age_ms = current_time_ms - int(updated_at_ms)
+        if (
+            payload.get("version") == 1
+            and expected_session is not None
+            and isinstance(state_session, int)
+            and not isinstance(state_session, bool)
+            and state_session == int(expected_session)
+            and isinstance(locked, bool)
+            and known is True
+            and -5000 <= age_ms <= int(SERVICE_SESSION_STATE_MAX_AGE_SECONDS * 1000)
+        ):
+            value = locked
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        value = None
+
+    if use_cache:
+        with SERVICE_SESSION_STATE_CACHE_LOCK:
+            SERVICE_SESSION_STATE_CACHE_AT = time.monotonic()
+            SERVICE_SESSION_STATE_CACHE_VALUE = value
+    return value
+
+
+def input_desktop_name() -> str | None:
+    """Return the active input desktop name, or None when Windows will not reveal it."""
     user32 = ctypes.windll.user32
     desktop = user32.OpenInputDesktop(0, False, 0x0001)
     if not desktop:
-        return True
+        return None
     try:
         required = wintypes.DWORD()
         user32.GetUserObjectInformationW(desktop, 2, None, 0, ctypes.byref(required))
         if required.value <= 2:
-            return False
+            return None
         buffer = ctypes.create_unicode_buffer(required.value // ctypes.sizeof(wintypes.WCHAR) + 1)
         if not user32.GetUserObjectInformationW(
             desktop,
@@ -2558,10 +2632,83 @@ def secure_desktop_active() -> bool:
             ctypes.sizeof(buffer),
             ctypes.byref(required),
         ):
-            return True
-        return buffer.value.casefold() != "default"
+            return None
+        return buffer.value or None
     finally:
         user32.CloseDesktop(desktop)
+
+
+def input_desktop_is_secure() -> bool:
+    """Return True when capture/input needs the secure helper; unknown is fail-safe."""
+    desktop_name = input_desktop_name()
+    return desktop_name is None or desktop_name.casefold() != "default"
+
+
+def secure_desktop_active() -> bool:
+    """Return True only when the active input desktop needs the secure helper."""
+    return input_desktop_is_secure()
+
+
+def native_video_requires_compatibility() -> bool:
+    """DXGI capture cannot be trusted anywhere in a locked-session transition."""
+    return current_session_locked() or secure_desktop_active()
+
+
+def foreground_process_name() -> str | None:
+    """Return the executable owning the foreground window, when queryable."""
+    user32 = ctypes.windll.user32
+    kernel32 = ctypes.windll.kernel32
+    user32.GetForegroundWindow.restype = wintypes.HWND
+    user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+    user32.GetWindowThreadProcessId.restype = wintypes.DWORD
+    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.QueryFullProcessImageNameW.argtypes = [
+        wintypes.HANDLE,
+        wintypes.DWORD,
+        wintypes.LPWSTR,
+        ctypes.POINTER(wintypes.DWORD),
+    ]
+    kernel32.QueryFullProcessImageNameW.restype = wintypes.BOOL
+
+    window = user32.GetForegroundWindow()
+    if not window:
+        return None
+    process_id = wintypes.DWORD()
+    if not user32.GetWindowThreadProcessId(window, ctypes.byref(process_id)) or not process_id.value:
+        return None
+    process = kernel32.OpenProcess(0x1000, False, process_id.value)
+    if not process:
+        return None
+    try:
+        buffer = ctypes.create_unicode_buffer(32768)
+        length = wintypes.DWORD(len(buffer))
+        if not kernel32.QueryFullProcessImageNameW(process, 0, buffer, ctypes.byref(length)):
+            return None
+        return Path(buffer.value).name or None
+    finally:
+        kernel32.CloseHandle(process)
+
+
+def session_ui_state(
+    session_locked: bool,
+    desktop_name: str | None,
+    foreground_process: str | None = None,
+) -> str:
+    """Classify observable Windows session UI without guessing that a field has focus."""
+    normalized = desktop_name.casefold() if desktop_name else ""
+    foreground = foreground_process.casefold() if foreground_process else ""
+    if not normalized:
+        return "unknown"
+    if not session_locked:
+        return "unlocked" if normalized == "default" else "secure_prompt"
+    if foreground == "lockapp.exe":
+        return "lock_screen"
+    if normalized == "default":
+        return "lock_screen"
+    if normalized == "winlogon" and foreground == "logonui.exe":
+        return "credential_ui"
+    return "locked_transition"
 
 
 def current_thread_desktop_name() -> str:
@@ -2582,10 +2729,13 @@ def current_thread_desktop_name() -> str:
 
 def current_session_locked() -> bool:
     """Return the lock state of the current interactive Windows session."""
-    kernel32 = ctypes.windll.kernel32
+    service_state = service_session_locked()
+    if service_state is not None:
+        return service_state
+
     wtsapi32 = ctypes.windll.wtsapi32
-    session_id = wintypes.DWORD()
-    if not kernel32.ProcessIdToSessionId(kernel32.GetCurrentProcessId(), ctypes.byref(session_id)):
+    session_id = current_process_session_id()
+    if session_id is None:
         return False
     buffer = ctypes.c_void_p()
     returned = wintypes.DWORD()
@@ -2593,7 +2743,7 @@ def current_session_locked() -> bool:
     # and 1 when unlocked on supported Windows 10/11 systems.
     if not wtsapi32.WTSQuerySessionInformationW(
         None,
-        session_id.value,
+        session_id,
         25,
         ctypes.byref(buffer),
         ctypes.byref(returned),
@@ -3122,6 +3272,7 @@ class SecureDesktopHandler(BaseHTTPRequestHandler):
                     "ok": True,
                     "desktop": current_thread_desktop_name(),
                     "secure_input_active": secure_desktop_active(),
+                    "foreground_process": foreground_process_name() or "unknown",
                 },
                 False,
             )
@@ -3373,16 +3524,71 @@ class DesktopApi:
                 if device_id in self._unlock_attempts and not force:
                     return {"ok": True, "status": "already_attempted"}
                 self._unlock_attempts.add(device_id)
-            # First dismiss the Windows lock screen. Winlogon's transition to
-            # the credential provider is animated, so typing immediately after
-            # Enter can silently discard the complete password.
-            self._remote_json(device, "/input", access_password, {"type": "key_press", "key": "Enter", "code": "Enter"})
-            time.sleep(UNLOCK_WAKE_DELAY_SECONDS)
-            status = self._remote_json(device, "/api/session-status", access_password)
-            if not status.get("session_locked"):
+
+            def clear_attempt() -> None:
                 with self._unlock_lock:
                     self._unlock_attempts.discard(device_id)
-                return {"ok": True, "status": "not_locked"}
+
+            def observed_ui_state(value: dict[str, Any]) -> str | None:
+                ui_state = value.get("session_ui_state")
+                return ui_state if ui_state in {
+                    "unlocked",
+                    "secure_prompt",
+                    "lock_screen",
+                    "credential_ui",
+                    "locked_transition",
+                    "unknown",
+                } else None
+
+            ui_state = observed_ui_state(status)
+            if ui_state is None:
+                return {"ok": False, "status": "state_unavailable"}
+
+            # Adapt to the observable Windows UI. Enter is only a wake action
+            # while the lock-screen cover is active. If Winlogon is already in
+            # front, skip it so an empty credential is never submitted.
+            wake_attempts = 0
+            transition_waits = 0
+            while status.get("session_locked") and ui_state != "credential_ui":
+                if ui_state == "lock_screen":
+                    if wake_attempts >= UNLOCK_WAKE_ATTEMPTS:
+                        return {"ok": False, "status": "wake_unresponsive"}
+                    self._remote_json(
+                        device,
+                        "/input",
+                        access_password,
+                        {"type": "key_press", "key": "Enter", "code": "Enter"},
+                    )
+                    wake_attempts += 1
+                else:
+                    transition_waits += 1
+                    if transition_waits > UNLOCK_WAKE_ATTEMPTS:
+                        result_status = (
+                            "state_unavailable"
+                            if ui_state in {"unknown", "secure_prompt"}
+                            else "transition_timeout"
+                        )
+                        return {"ok": False, "status": result_status}
+
+                state_changed = False
+                for _ in range(UNLOCK_WAKE_POLLS_PER_ATTEMPT):
+                    time.sleep(UNLOCK_WAKE_POLL_SECONDS)
+                    refreshed = self._remote_json(device, "/api/session-status", access_password)
+                    if not refreshed.get("session_locked"):
+                        clear_attempt()
+                        return {"ok": True, "status": "not_locked"}
+                    refreshed_ui_state = observed_ui_state(refreshed)
+                    if refreshed_ui_state is None:
+                        return {"ok": False, "status": "state_unavailable"}
+                    status = refreshed
+                    if refreshed_ui_state != ui_state:
+                        ui_state = refreshed_ui_state
+                        state_changed = True
+                        break
+                if not state_changed and ui_state == "lock_screen":
+                    # The next loop performs the bounded second wake attempt.
+                    continue
+
             self._remote_json(
                 device,
                 "/input",
@@ -3392,7 +3598,25 @@ class DesktopApi:
             )
             time.sleep(UNLOCK_SUBMIT_DELAY_SECONDS)
             self._remote_json(device, "/input", access_password, {"type": "key_press", "key": "Enter", "code": "Enter"})
-            return {"ok": True, "status": "submitted"}
+
+            last_ui_state = ui_state
+            for _ in range(UNLOCK_RESULT_POLLS):
+                time.sleep(UNLOCK_RESULT_POLL_SECONDS)
+                status = self._remote_json(device, "/api/session-status", access_password)
+                if not status.get("session_locked"):
+                    clear_attempt()
+                    return {"ok": True, "status": "unlocked"}
+                refreshed_ui_state = observed_ui_state(status)
+                if refreshed_ui_state is not None:
+                    last_ui_state = refreshed_ui_state
+
+            if last_ui_state == "credential_ui":
+                return {"ok": False, "status": "still_locked"}
+            if last_ui_state == "lock_screen":
+                return {"ok": False, "status": "returned_to_lock_screen"}
+            if last_ui_state == "unknown":
+                return {"ok": False, "status": "result_unknown"}
+            return {"ok": True, "status": "submitted", "session_ui_state": last_ui_state}
         except HTTPError as exc:
             return {"ok": False, "status": "access_denied" if exc.code == 401 else "remote_error", "error": str(exc)}
         except (OSError, ValueError, URLError, TimeoutError) as exc:
@@ -3748,7 +3972,7 @@ class RemoteHandler(BaseHTTPRequestHandler):
         except ValueError as exc:
             json_response(self, HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(exc)})
             return
-        if secure_desktop_active():
+        if native_video_requires_compatibility():
             json_response(
                 self,
                 HTTPStatus.LOCKED,
@@ -3877,7 +4101,7 @@ class RemoteHandler(BaseHTTPRequestHandler):
                     if self.server.state.authenticate(token, self.client_address[0]) is None:
                         return
                     next_authentication = now + 1.0
-                if secure_desktop_active():
+                if native_video_requires_compatibility():
                     stream_end = NativeVideoMessage(
                         message_type=NATIVE_VIDEO_MESSAGE_STREAM_END,
                         flags=0,
@@ -4219,14 +4443,31 @@ class RemoteHandler(BaseHTTPRequestHandler):
             authentication = self.authenticate_request(parsed)
             if authentication is None:
                 return
-            secure_active = secure_desktop_active()
+            session_locked = current_session_locked()
+            desktop_name = input_desktop_name()
+            foreground_process = foreground_process_name()
+            if desktop_name and desktop_name.casefold() == "winlogon":
+                try:
+                    helper_data, _ = secure_helper_request("/secure/health", timeout=0.35)
+                    helper_status = json.loads(helper_data.decode("utf-8"))
+                    helper_foreground = helper_status.get("foreground_process")
+                    if isinstance(helper_foreground, str) and helper_foreground.casefold() != "unknown":
+                        foreground_process = helper_foreground
+                except (RuntimeError, ValueError, UnicodeDecodeError):
+                    pass
+            ui_state = session_ui_state(session_locked, desktop_name, foreground_process)
+            secure_active = desktop_name is None or desktop_name.casefold() != "default"
             json_response(
                 self,
                 HTTPStatus.OK,
                 {
                     "ok": True,
                     "secure_desktop_active": secure_active,
-                    "session_locked": bool(secure_active and current_session_locked()),
+                    "session_locked": session_locked,
+                    "session_ui_state": ui_state,
+                    "credential_ui_ready": ui_state == "credential_ui",
+                    "input_desktop": desktop_name or "unknown",
+                    "foreground_process": foreground_process or "unknown",
                     **authentication,
                 },
             )
@@ -4788,7 +5029,7 @@ class RemoteHandler(BaseHTTPRequestHandler):
             if self.server.state.view_only:
                 json_response(self, HTTPStatus.FORBIDDEN, {"ok": False, "error": "server is view-only"})
                 return
-            if secure_desktop_active():
+            if current_session_locked() or secure_desktop_active():
                 json_response(self, HTTPStatus.OK, {"ok": True, "status": "already_secure"})
                 return
             try:

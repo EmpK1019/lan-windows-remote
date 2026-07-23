@@ -128,6 +128,7 @@ def main() -> int:
             dll.LANRemoteVideoGetLastError(error, len(error))
             raise RuntimeError(f"native video DLL did not create a child surface: {error.value}")
         try:
+            configure_started = time.monotonic()
             started = dll.LANRemoteVideoConfigure(
                 handle,
                 "127.0.0.1",
@@ -148,6 +149,7 @@ def main() -> int:
             deadline = time.monotonic() + 20
             first_image = None
             first_rendered = 0
+            first_render_ms: float | None = None
             measurement_started = 0.0
             measurement_start_rendered = 0
             measurement_start_decoded = 0
@@ -174,6 +176,8 @@ def main() -> int:
                 if final_status.get("state") == "failed":
                     raise RuntimeError(str(final_status.get("error") or "native video failed"))
                 rendered = int(final_status.get("rendered_frames", 0))
+                if rendered > 0 and first_render_ms is None:
+                    first_render_ms = (time.monotonic() - configure_started) * 1000
                 if measurement_started:
                     metric_samples.append({
                         key: float(final_status.get(key, 0) or 0)
@@ -220,6 +224,12 @@ def main() -> int:
 
             if not color_changed or int(final_status.get("rendered_frames", 0)) < 20:
                 raise RuntimeError(f"too few native video frames were rendered: {final_status}")
+            if first_render_ms is None or first_render_ms > 2500:
+                raise RuntimeError(
+                    "native first frame exceeded the 2500 ms startup gate: "
+                    f"first_render_ms={first_render_ms}, status={final_status}"
+                )
+            final_status["first_render_ms"] = round(first_render_ms, 2)
             if final_status.get("transport") != "native_h264_v1":
                 raise RuntimeError(f"unexpected video transport: {final_status}")
             if final_status.get("scale_mode") != "fill":

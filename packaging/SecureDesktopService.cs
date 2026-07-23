@@ -23,6 +23,8 @@ namespace WindowsLANRemoteSecureDesktop
         private const int InteractiveHelperPort = 8768;
         private readonly ManualResetEvent stopEvent = new ManualResetEvent(false);
         private readonly object helperLock = new object();
+        private readonly object sessionStateLock = new object();
+        private readonly object sessionStatePublishLock = new object();
         private Thread worker;
         private Process secureHelper;
         private Process interactiveHelper;
@@ -30,6 +32,9 @@ namespace WindowsLANRemoteSecureDesktop
         private IntPtr secureHelperJob = IntPtr.Zero;
         private IntPtr interactiveHelperJob = IntPtr.Zero;
         private string lastError = String.Empty;
+        private int stateSession = -1;
+        private bool sessionLocked;
+        private bool sessionStateKnown;
 
         public SecureDesktopService()
         {
@@ -44,6 +49,8 @@ namespace WindowsLANRemoteSecureDesktop
         {
             WriteLog("Service starting.");
             stopEvent.Reset();
+            RefreshActiveSessionState();
+            PublishSessionState();
             worker = new Thread(WorkerLoop);
             worker.IsBackground = true;
             worker.Name = "LAN Remote secure desktop monitor";
@@ -58,6 +65,11 @@ namespace WindowsLANRemoteSecureDesktop
                 worker.Join(8000);
             }
             StopHelpers();
+            lock (sessionStateLock)
+            {
+                sessionStateKnown = false;
+            }
+            PublishSessionState();
             WriteLog("Service stopped.");
         }
 
@@ -69,7 +81,12 @@ namespace WindowsLANRemoteSecureDesktop
 
         protected override void OnSessionChange(SessionChangeDescription changeDescription)
         {
-            StopHelpers();
+            bool helpersNeedRefresh = UpdateSessionState(changeDescription);
+            PublishSessionState();
+            if (helpersNeedRefresh)
+            {
+                StopHelpers();
+            }
             base.OnSessionChange(changeDescription);
         }
 
@@ -79,6 +96,8 @@ namespace WindowsLANRemoteSecureDesktop
             {
                 try
                 {
+                    RefreshActiveSessionState();
+                    PublishSessionState();
                     EnsureHelpers();
                 }
                 catch (Exception ex)
@@ -92,6 +111,151 @@ namespace WindowsLANRemoteSecureDesktop
                     StopHelpers();
                 }
                 stopEvent.WaitOne(2000);
+            }
+        }
+
+        private void RefreshActiveSessionState()
+        {
+            int sessionId = unchecked((int)WTSGetActiveConsoleSessionId());
+            lock (sessionStateLock)
+            {
+                if (sessionId == stateSession)
+                {
+                    return;
+                }
+
+                stateSession = sessionId;
+                bool locked = false;
+                sessionStateKnown = sessionId != -1 && TryQuerySessionLocked(sessionId, out locked);
+                sessionLocked = sessionStateKnown && locked;
+            }
+        }
+
+        private bool UpdateSessionState(SessionChangeDescription changeDescription)
+        {
+            RefreshActiveSessionState();
+            bool helpersNeedRefresh = false;
+            bool stateChanged = false;
+            lock (sessionStateLock)
+            {
+                if (changeDescription.SessionId == stateSession)
+                {
+                    switch (changeDescription.Reason)
+                    {
+                        case SessionChangeReason.SessionLock:
+                            sessionLocked = true;
+                            sessionStateKnown = true;
+                            helpersNeedRefresh = false;
+                            stateChanged = true;
+                            break;
+                        case SessionChangeReason.SessionUnlock:
+                        case SessionChangeReason.SessionLogon:
+                            sessionLocked = false;
+                            sessionStateKnown = true;
+                            helpersNeedRefresh = changeDescription.Reason == SessionChangeReason.SessionLogon;
+                            stateChanged = true;
+                            break;
+                        case SessionChangeReason.SessionLogoff:
+                            sessionLocked = true;
+                            sessionStateKnown = true;
+                            helpersNeedRefresh = true;
+                            stateChanged = true;
+                            break;
+                        default:
+                            helpersNeedRefresh = true;
+                            break;
+                    }
+                }
+            }
+            if (stateChanged)
+            {
+                WriteLog(
+                    "Session " + changeDescription.SessionId + " state changed: " +
+                    changeDescription.Reason + ".");
+            }
+            return helpersNeedRefresh;
+        }
+
+        private void PublishSessionState()
+        {
+            int sessionId;
+            bool locked;
+            bool known;
+            lock (sessionStateLock)
+            {
+                sessionId = stateSession;
+                locked = sessionLocked;
+                known = sessionStateKnown;
+            }
+
+            lock (sessionStatePublishLock)
+            {
+                try
+                {
+                    string directory = Path.Combine(
+                        Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
+                        "Windows LAN Remote");
+                    Directory.CreateDirectory(directory);
+                    string statePath = Path.Combine(directory, "session-state.json");
+                    string temporaryPath = statePath + ".tmp";
+                    long updatedAt = (long)(DateTime.UtcNow - new DateTime(
+                        1970, 1, 1, 0, 0, 0, DateTimeKind.Utc)).TotalMilliseconds;
+                    string json =
+                        "{\"version\":1,\"session_id\":" + sessionId +
+                        ",\"locked\":" + (locked ? "true" : "false") +
+                        ",\"known\":" + (known ? "true" : "false") +
+                        ",\"updated_at_ms\":" + updatedAt + "}";
+                    File.WriteAllText(temporaryPath, json, new UTF8Encoding(false));
+                    if (File.Exists(statePath))
+                    {
+                        File.Replace(temporaryPath, statePath, null);
+                    }
+                    else
+                    {
+                        File.Move(temporaryPath, statePath);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    WriteLog("Session state publish failed: " + ex.GetType().Name + ": " + ex.Message);
+                }
+            }
+        }
+
+        private static bool TryQuerySessionLocked(int sessionId, out bool locked)
+        {
+            locked = false;
+            IntPtr buffer = IntPtr.Zero;
+            int returned = 0;
+            try
+            {
+                if (!WTSQuerySessionInformation(
+                    IntPtr.Zero,
+                    sessionId,
+                    WTS_INFO_CLASS.WTSSessionInfoEx,
+                    out buffer,
+                    out returned))
+                {
+                    return false;
+                }
+                if (buffer == IntPtr.Zero || returned < Marshal.SizeOf(typeof(WTSINFOEX)))
+                {
+                    return false;
+                }
+                WTSINFOEX info = (WTSINFOEX)Marshal.PtrToStructure(buffer, typeof(WTSINFOEX));
+                if (info.Level != 1)
+                {
+                    return false;
+                }
+                locked = info.Data.SessionFlags == 0;
+                return true;
+            }
+            finally
+            {
+                if (buffer != IntPtr.Zero)
+                {
+                    WTSFreeMemory(buffer);
+                }
             }
         }
 
@@ -375,6 +539,43 @@ namespace WindowsLANRemoteSecureDesktop
             TokenImpersonation
         }
 
+        private enum WTS_INFO_CLASS
+        {
+            WTSSessionInfoEx = 25
+        }
+
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+        private struct WTSINFOEX_LEVEL1
+        {
+            public int SessionId;
+            public int SessionState;
+            public int SessionFlags;
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 33)]
+            public string WinStationName;
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 21)]
+            public string UserName;
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 18)]
+            public string DomainName;
+            public long LogonTime;
+            public long ConnectTime;
+            public long DisconnectTime;
+            public long LastInputTime;
+            public long CurrentTime;
+            public int IncomingBytes;
+            public int OutgoingBytes;
+            public int IncomingFrames;
+            public int OutgoingFrames;
+            public int IncomingCompressedBytes;
+            public int OutgoingCompressedBytes;
+        }
+
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+        private struct WTSINFOEX
+        {
+            public int Level;
+            public WTSINFOEX_LEVEL1 Data;
+        }
+
         [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
         private struct STARTUPINFO
         {
@@ -445,6 +646,17 @@ namespace WindowsLANRemoteSecureDesktop
 
         [DllImport("kernel32.dll")]
         private static extern uint WTSGetActiveConsoleSessionId();
+
+        [DllImport("wtsapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern bool WTSQuerySessionInformation(
+            IntPtr serverHandle,
+            int sessionId,
+            WTS_INFO_CLASS infoClass,
+            out IntPtr buffer,
+            out int bytesReturned);
+
+        [DllImport("wtsapi32.dll")]
+        private static extern void WTSFreeMemory(IntPtr buffer);
 
         [DllImport("advapi32.dll", SetLastError = true)]
         private static extern bool OpenProcessToken(IntPtr processHandle, uint desiredAccess, out IntPtr tokenHandle);

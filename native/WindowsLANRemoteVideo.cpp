@@ -1550,6 +1550,9 @@ private:
 
             std::uint32_t current_generation = 0;
             bool waiting_for_keyframe = true;
+            bool first_frame_rendered = false;
+            std::uint64_t first_frame_rendered_count = rendered_frames_.load();
+            std::uint64_t next_first_frame_keyframe = 0;
             StreamConfiguration current_configuration;
             bool have_configuration = false;
             std::uint64_t receiver_report_started = MonotonicMicroseconds();
@@ -1572,6 +1575,9 @@ private:
                     SetStreamConfigurationStatus(configuration);
                     decoder_.reset();
                     waiting_for_keyframe = true;
+                    first_frame_rendered = false;
+                    first_frame_rendered_count = rendered_frames_.load();
+                    next_first_frame_keyframe = MonotonicMicroseconds() + 250'000;
                     SetStatus(
                         "connecting", "", "", false,
                         configuration.encoded_width, configuration.encoded_height);
@@ -1601,7 +1607,7 @@ private:
                             decoder_ = std::make_unique<MfH264Decoder>(
                                 renderer_.get(), current_configuration, std::move(sequence_header));
                             SetStatus(
-                                "streaming", "", decoder_->name(), decoder_->hardware(),
+                                "decoding", "", decoder_->name(), decoder_->hardware(),
                                 current_configuration.encoded_width,
                                 current_configuration.encoded_height);
                         }
@@ -1614,6 +1620,16 @@ private:
                     ++decoded_frames_;
                     decoder_->Decode(message);
                     const std::uint64_t now_us = MonotonicMicroseconds();
+                    if (!first_frame_rendered && rendered_frames_.load() > first_frame_rendered_count) {
+                        first_frame_rendered = true;
+                        SetStatus(
+                            "streaming", "", decoder_->name(), decoder_->hardware(),
+                            current_configuration.encoded_width,
+                            current_configuration.encoded_height);
+                    } else if (!first_frame_rendered && now_us >= next_first_frame_keyframe) {
+                        RequestKeyframe(connected, current_generation);
+                        next_first_frame_keyframe = now_us + 250'000;
+                    }
                     if (now_us >= receiver_report_started + 1'000'000) {
                         const double seconds =
                             (now_us - receiver_report_started) / 1'000'000.0;
@@ -1633,7 +1649,14 @@ private:
                     continue;
                 }
                 if (message.type == MessageType::SenderReport) {
-                    if (message.generation == current_generation) SetSenderReport(message);
+                    if (message.generation == current_generation) {
+                        SetSenderReport(message);
+                        const std::uint64_t now_us = MonotonicMicroseconds();
+                        if (!first_frame_rendered && now_us >= next_first_frame_keyframe) {
+                            RequestKeyframe(connected, current_generation);
+                            next_first_frame_keyframe = now_us + 250'000;
+                        }
+                    }
                     continue;
                 }
                 if (message.type == MessageType::StreamEnd) {
