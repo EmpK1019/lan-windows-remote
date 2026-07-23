@@ -111,6 +111,19 @@ class CoreFunctionTests(unittest.TestCase):
         elevated.assert_called_once_with(payload)
         secure.assert_not_called()
 
+    def test_lock_workstation_confirms_and_falls_back_to_active_session_disconnect(self) -> None:
+        with (
+            patch.object(lan_remote.platform, "system", return_value="Windows"),
+            patch.object(lan_remote, "active_console_session_id", return_value=7),
+            patch.object(lan_remote, "request_workstation_lock", return_value=True) as request_lock,
+            patch.object(lan_remote, "wait_for_windows_session_lock", side_effect=[False, True]) as wait_locked,
+            patch.object(lan_remote, "disconnect_windows_session", return_value=True) as disconnect,
+        ):
+            lan_remote.lock_remote_workstation()
+        request_lock.assert_called_once_with()
+        disconnect.assert_called_once_with(7)
+        self.assertEqual(wait_locked.call_args_list, [call(7, 1.0), call(7)])
+
     def test_lock_events_and_first_frame_gate_are_wired_into_native_paths(self) -> None:
         root = Path(__file__).resolve().parents[1]
         service = (root / "packaging" / "SecureDesktopService.cs").read_text(encoding="utf-8")
@@ -343,7 +356,9 @@ class CoreFunctionTests(unittest.TestCase):
         self.assertIn('$("clipboardReceive").checked = true;', html)
         self.assertIn("initialAutoUnlockPending: !viewOnly", html)
         self.assertIn("session.initialAutoUnlockPending = false;", html)
-        self.assertIn('id="unlockRemoteButton"', html)
+        self.assertNotIn('id="unlockRemoteButton"', html)
+        self.assertIn('state.remoteSessionLocked ? "#i-lock" : "#i-unlock"', html)
+        self.assertIn("if (state.remoteSessionLocked) requestRemoteUnlock(true);", html)
         self.assertIn("startRemoteLockMonitoring(state.session);", html)
         self.assertIn("if (locked) await requestRemoteUnlock(false);", html)
         self.assertIn('requestRemoteUnlock(true)', html)
@@ -367,6 +382,19 @@ class CoreFunctionTests(unittest.TestCase):
         native = (root / "native" / "WindowsLANRemoteVideo.cpp").read_text(encoding="utf-8")
         self.assertIn("ApplyExclusionRegion", native)
 
+    def test_remote_window_is_foregrounded_without_blocking_main_webview(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        html = (root / "web" / "index.html").read_text(encoding="utf-8")
+        host = (root / "packaging" / "ControlWindowHost.cs").read_text(encoding="utf-8")
+        self.assertIn("activate_remote_window(remoteWindowResult.process_id)", html)
+        self.assertIn('case "activate_remote_window":', host)
+        self.assertIn("await Task.Delay(50);", host)
+        self.assertIn('remoteWindow ? "ControlHostWebView2-Remote" : "ControlHostWebView2"', host)
+        self.assertIn("PromoteInitialRemoteWindow();", host)
+        self.assertIn("DwmWindowCornerPreference = 33", host)
+        self.assertIn("DwmCornerRound = 2", host)
+        self.assertIn("ApplyWindowCornerPreference();", host)
+
     def test_native_glass_toolbar_and_fill_mode_do_not_cut_video_holes(self) -> None:
         root = Path(__file__).resolve().parents[1]
         html = (root / "web" / "index.html").read_text(encoding="utf-8")
@@ -379,13 +407,49 @@ class CoreFunctionTests(unittest.TestCase):
         self.assertIn("FillMode", host)
         self.assertIn("window.__lanNativeOverlayAction", html)
         self.assertIn("set_native_overlay_state", html)
-        self.assertIn('id="scaleModeButton"', html)
+        self.assertIn("html.remote-window-root .remote-session.show", html)
+        self.assertNotIn("html.remote-window-root .remote-stage { grid-row: 2; }", html)
+        self.assertIn('id="remoteToolbarGrip" title="拖动工具栏"', html)
+        self.assertIn("toolbarDockedAtTop", html)
+        self.assertIn('action === "toolbar_docked"', html)
+        self.assertIn('$("fpsLimitMenu").classList.contains("show") ? visibleElementRect($("fpsLimitMenu")) : null', html)
+        self.assertIn("PositionForOwner", host)
+        self.assertIn('fps.Caption = ReadInteger(values, "fps", 60).ToString() + " FPS";', host)
+        self.assertIn("TextRenderingHint.AntiAliasGridFit", host)
+        self.assertNotIn("TextRenderer.DrawText(", host)
+        self.assertIn("private ContextMenuStrip activeMenu;", host)
+        self.assertIn("PositionActiveMenu();", host)
+        self.assertIn("return collapsed ? ownerBounds.Top : ownerBounds.Top + 48;", host)
+        self.assertIn("Opacity = 0.40;", host)
+        self.assertNotIn('id="scaleModeButton"', html)
         self.assertIn('scale_mode: sessionScaleMode()', html)
-        self.assertIn("#remoteScreen.scale-fill { object-fit: cover; }", html)
+        self.assertIn("#remoteScreen.scale-fill { object-fit: fill; }", html)
         self.assertNotIn("{left: 0, top: 0, width: window.innerWidth, height: 7}", html)
         self.assertIn("VideoProcessorSetStreamSourceRect", native)
+        self.assertIn("if (!fill_mode_)", native)
         self.assertIn('"fill" : "fit"', native)
-        self.assertIn("backdrop-filter: blur(20px) saturate(145%)", html)
+        self.assertIn("function positionOpenToolbarPopovers()", html)
+        self.assertIn("positionOpenToolbarPopovers();", html)
+        self.assertIn("function trackOpenToolbarPopovers(duration = 260)", html)
+        self.assertIn("trackOpenToolbarPopovers();", html)
+        self.assertIn("background: linear-gradient(180deg, rgba(122, 126, 133, .18), rgba(38, 41, 47, .10));", html)
+        self.assertIn("background: linear-gradient(180deg, rgba(122, 126, 133, .38), rgba(38, 41, 47, .28));", html)
+        self.assertIn("backdrop-filter: blur(4px) saturate(116%) brightness(1.02)", html)
+        stop_control = html.split(".preview-stop-control {", 1)[1].split("}", 1)[0]
+        self.assertIn("inset: 0;", stop_control)
+        self.assertIn("width: 100%;", stop_control)
+        self.assertIn("height: 100%;", stop_control)
+        self.assertIn("color: #f7f8fa;", stop_control)
+        self.assertIn('font-family: "PingFang SC", "Noto Sans SC", "Segoe UI Variable Text", "Microsoft YaHei UI", sans-serif;', stop_control)
+        self.assertIn("font-size: 20px;", stop_control)
+        self.assertIn("font-weight: 400;", stop_control)
+        self.assertNotIn("translate(-50%, -50%)", stop_control)
+        self.assertNotIn("busy-tag", html)
+        self.assertIn('device.busy_mode === "view" ? "观看中" : "控制中"', html)
+        self.assertNotIn('device.busy_mode === "view" ? "观看中" : "会话中"', html)
+        self.assertIn("background: linear-gradient(180deg, rgba(50, 53, 60, .62), rgba(24, 27, 32, .52));", html)
+        stop_markup = html.split('id="stopOutgoingControl"', 1)[1].split("</button>", 1)[0]
+        self.assertNotIn("<svg", stop_markup)
 
     def test_access_code_has_expected_entropy_friendly_format(self) -> None:
         values = {lan_remote.generate_access_code() for _ in range(64)}
@@ -622,6 +686,12 @@ class CoreFunctionTests(unittest.TestCase):
         self.assertIn("resetInputTransport()", html)
         self.assertIn("LONG_INPUT_REQUEST_TIMEOUT_MS", html)
         self.assertIn('id="lockRemoteButton"', html)
+        self.assertIn('title="帧率上限"', html)
+        self.assertIn("font-size: 15px;", html)
+        self.assertIn("font-weight: 400;", html)
+        self.assertIn('font-family: "PingFang SC", "Noto Sans SC", "Segoe UI Variable Text", sans-serif;', html)
+        self.assertIn("waitForRemoteLockState(true, 1800)", html)
+        self.assertIn("被控端未进入锁屏，请更新被控端后重试", html)
         self.assertIn('id="settingLockRemoteOnDisconnect"', html)
         self.assertIn('navigator.sendBeacon(endpoint("/lock")', html)
         self.assertIn('type: "text/plain;charset=UTF-8"', html)
@@ -648,7 +718,8 @@ class CoreFunctionTests(unittest.TestCase):
         self.assertIn("state.remoteFrameWidth = Number(monitor?.width) || image.naturalWidth", html)
         self.assertIn("CONTROL_STREAM_FPS_OPTIONS = new Set([30, 60, 120])", html)
         self.assertIn('id="settingControlFps"', html)
-        self.assertIn('id="fpsLimitSelect"', html)
+        self.assertIn('id="fpsLimitMenu"', html)
+        self.assertIn('class="remote-fps-option"', html)
         self.assertIn("实际帧率会随网络与设备性能自动降低", html)
         self.assertIn("session.fpsLimit = fpsLimit", html)
         self.assertIn('endpoint(\n        `/screen-stream?monitor=', html)

@@ -60,7 +60,7 @@ if platform.system() == "Windows":
 
 
 APP_NAME = "Windows LAN Remote"
-APP_VERSION = "1.0.3"
+APP_VERSION = "1.1.1"
 GITHUB_REPOSITORY = "EmpK1019/lan-windows-remote"
 GITHUB_LATEST_RELEASE_API = f"https://api.github.com/repos/{GITHUB_REPOSITORY}/releases/latest"
 DEFAULT_PORT = 8765
@@ -69,6 +69,7 @@ SECURE_HELPER_PORT = 8767
 ELEVATED_INPUT_HELPER_PORT = 8768
 SERVICE_SESSION_STATE_MAX_AGE_SECONDS = 8.0
 SERVICE_SESSION_STATE_CACHE_SECONDS = 0.1
+LOCK_CONFIRM_TIMEOUT_SECONDS = 2.5
 DISCOVERY_MAGIC = "windows-lan-remote-v1"
 DISCOVERY_TTL_SECONDS = 9
 ACTIVE_REMOTE_SESSION_TTL_SECONDS = 8
@@ -2561,6 +2562,13 @@ def current_process_session_id() -> int | None:
     return int(session_id.value)
 
 
+def active_console_session_id() -> int | None:
+    kernel32 = ctypes.windll.kernel32
+    kernel32.WTSGetActiveConsoleSessionId.restype = wintypes.DWORD
+    session_id = int(kernel32.WTSGetActiveConsoleSessionId())
+    return None if session_id == 0xFFFFFFFF else session_id
+
+
 def service_session_locked(
     path: str | Path | None = None,
     *,
@@ -2727,16 +2735,13 @@ def current_thread_desktop_name() -> str:
     return buffer.value
 
 
-def current_session_locked() -> bool:
-    """Return the lock state of the current interactive Windows session."""
-    service_state = service_session_locked()
+def windows_session_locked(session_id: int) -> bool:
+    """Return the lock state of a specific interactive Windows session."""
+    service_state = service_session_locked(session_id=session_id)
     if service_state is not None:
         return service_state
 
     wtsapi32 = ctypes.windll.wtsapi32
-    session_id = current_process_session_id()
-    if session_id is None:
-        return False
     buffer = ctypes.c_void_p()
     returned = wintypes.DWORD()
     # WTSSessionInfoEx = 25. Its level-1 SessionFlags value is 0 when locked
@@ -2756,6 +2761,14 @@ def current_session_locked() -> bool:
         return info.Level == 1 and info.Data.Level1.SessionFlags == 0
     finally:
         wtsapi32.WTSFreeMemory(buffer)
+
+
+def current_session_locked() -> bool:
+    """Return the lock state of the active interactive Windows session."""
+    session_id = active_console_session_id()
+    if session_id is None:
+        session_id = current_process_session_id()
+    return False if session_id is None else windows_session_locked(session_id)
 
 
 def desktop_helper_request(
@@ -3213,11 +3226,48 @@ def dispatch_remote_input(state: Any, payload: dict[str, Any]) -> None:
         state.note_remote_pointer(payload)
 
 
+def request_workstation_lock() -> bool:
+    return bool(ctypes.windll.user32.LockWorkStation())
+
+
+def disconnect_windows_session(session_id: int) -> bool:
+    wtsapi32 = ctypes.windll.wtsapi32
+    wtsapi32.WTSDisconnectSession.argtypes = [
+        wintypes.HANDLE,
+        wintypes.DWORD,
+        wintypes.BOOL,
+    ]
+    wtsapi32.WTSDisconnectSession.restype = wintypes.BOOL
+    return bool(wtsapi32.WTSDisconnectSession(None, session_id, False))
+
+
+def wait_for_windows_session_lock(session_id: int, timeout: float = LOCK_CONFIRM_TIMEOUT_SECONDS) -> bool:
+    deadline = time.monotonic() + max(0.0, timeout)
+    while True:
+        if windows_session_locked(session_id):
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.1)
+
+
 def lock_remote_workstation() -> None:
     if platform.system() != "Windows":
         raise OSError("remote workstation locking is only available on Windows")
-    if not ctypes.windll.user32.LockWorkStation():
+    session_id = active_console_session_id()
+    if session_id is None:
+        session_id = current_process_session_id()
+    if session_id is None:
+        raise OSError("active Windows session was not found")
+
+    request_workstation_lock()
+    if wait_for_windows_session_lock(session_id, 1.0):
+        return
+
+    if not disconnect_windows_session(session_id):
         raise ctypes.WinError()
+    if not wait_for_windows_session_lock(session_id):
+        raise OSError("Windows accepted the lock request but the active session remained unlocked")
 
 
 @dataclass(frozen=True)

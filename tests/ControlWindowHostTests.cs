@@ -25,6 +25,7 @@ internal static class ControlWindowHostTests
         {
             Assembly assembly = Assembly.LoadFrom(args[0]);
             TestUrlValidation(assembly);
+            TestRemoteWindowStartup(assembly);
             TestFullscreenRestore(assembly, false);
             TestFullscreenRestore(assembly, true);
             TestCloseToTray(assembly);
@@ -73,6 +74,39 @@ internal static class ControlWindowHostTests
         };
         if ((bool)tryReadUrl.Invoke(null, missingHandoff))
             throw new InvalidOperationException("Remote URL without handoff was accepted.");
+    }
+
+    private static void TestRemoteWindowStartup(Assembly assembly)
+    {
+        Type windowType = RequiredType(assembly, "WindowsLANRemoteControlHost.ControlWindow");
+        ConstructorInfo constructor = windowType.GetConstructor(
+            BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic,
+            null,
+            new[] { typeof(Uri) },
+            null);
+        MethodInfo dataFolder = windowType.GetMethod("BrowserDataFolder", BindingFlags.Instance | BindingFlags.NonPublic);
+        MethodInfo activate = windowType.GetMethod("ActivateRemoteWindow", BindingFlags.Instance | BindingFlags.NonPublic);
+        MethodInfo promote = windowType.GetMethod("PromoteInitialRemoteWindow", BindingFlags.Instance | BindingFlags.NonPublic);
+        if (constructor == null || dataFolder == null || activate == null || promote == null)
+            throw new InvalidOperationException("Remote startup members were not found.");
+
+        using (Form mainWindow = (Form)constructor.Invoke(new object[] {
+            new Uri("http://127.0.0.1:8765/?v=1.1.1")
+        }))
+        using (Form remoteWindow = (Form)constructor.Invoke(new object[] {
+            new Uri("http://127.0.0.1:8765/?remote=1&handoff=abcdefghijklmnop")
+        }))
+        {
+            string mainFolder = Convert.ToString(dataFolder.Invoke(mainWindow, null));
+            string remoteFolder = Convert.ToString(dataFolder.Invoke(remoteWindow, null));
+            if (String.Equals(mainFolder, remoteFolder, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException("Main and remote WebView2 windows share one user data folder.");
+
+            object taskValue = activate.Invoke(mainWindow, new object[] { 0 });
+            System.Threading.Tasks.Task<bool> task = taskValue as System.Threading.Tasks.Task<bool>;
+            if (task == null || task.GetAwaiter().GetResult())
+                throw new InvalidOperationException("Invalid remote process activation was accepted.");
+        }
     }
 
     private static void TestFullscreenRestore(Assembly assembly, bool startMaximized)
@@ -270,6 +304,11 @@ internal static class ControlWindowHostTests
     private static void TestFillModeMouseMapping(Assembly assembly)
     {
         Type windowType = RequiredType(assembly, "WindowsLANRemoteControlHost.ControlWindow");
+        MethodInfo applyCorners = windowType.GetMethod(
+            "ApplyWindowCornerPreference",
+            BindingFlags.Instance | BindingFlags.NonPublic);
+        if (applyCorners == null)
+            throw new InvalidOperationException("Main and remote windows do not expose the DWM corner preference.");
         Type sessionType = windowType.GetNestedType("NativeInputSession", BindingFlags.NonPublic);
         MethodInfo mapRemotePoint = windowType.GetMethod(
             "MapRemotePoint",
@@ -285,8 +324,8 @@ internal static class ControlWindowHostTests
 
         object[] leftEdge = { session, 0, 300, 0, 0 };
         mapRemotePoint.Invoke(null, leftEdge);
-        if (Math.Abs((int)leftEdge[3] - 240) > 1 || Math.Abs((int)leftEdge[4] - 540) > 1)
-            throw new InvalidOperationException("Fill-mode crop offset was not applied to native mouse input.");
+        if (Math.Abs((int)leftEdge[3]) > 1 || Math.Abs((int)leftEdge[4] - 540) > 1)
+            throw new InvalidOperationException("Adaptive fill-mode did not map the full left edge.");
 
         object[] center = { session, 400, 300, 0, 0 };
         mapRemotePoint.Invoke(null, center);
@@ -299,9 +338,17 @@ internal static class ControlWindowHostTests
         Type toolbarType = RequiredType(assembly, "WindowsLANRemoteControlHost.NativeGlassToolbar");
         ConstructorInfo constructor = toolbarType.GetConstructor(new[] { typeof(Action<string, string>) });
         MethodInfo updateState = toolbarType.GetMethod("UpdateState");
-        FieldInfo scaleField = toolbarType.GetField("scale", BindingFlags.Instance | BindingFlags.NonPublic);
-        if (constructor == null || updateState == null || scaleField == null)
+        MethodInfo positionForOwner = toolbarType.GetMethod("PositionForOwner");
+        MethodInfo applyUserLocation = toolbarType.GetMethod(
+            "ApplyUserLocation",
+            BindingFlags.Instance | BindingFlags.NonPublic);
+        FieldInfo fpsField = toolbarType.GetField("fps", BindingFlags.Instance | BindingFlags.NonPublic);
+        FieldInfo remoteLockField = toolbarType.GetField("remoteLock", BindingFlags.Instance | BindingFlags.NonPublic);
+        if (constructor == null || updateState == null || positionForOwner == null ||
+            applyUserLocation == null || fpsField == null || remoteLockField == null)
             throw new InvalidOperationException("Native glass toolbar members were not found.");
+        if (toolbarType.GetField("scale", BindingFlags.Instance | BindingFlags.NonPublic) != null)
+            throw new InvalidOperationException("Removed scale-mode control is still present in the native toolbar.");
 
         string observedAction = String.Empty;
         using (Form toolbar = (Form)constructor.Invoke(new object[] {
@@ -316,24 +363,55 @@ internal static class ControlWindowHostTests
                 { "scale_mode", "fill" },
                 { "keyboard", true },
                 { "clipboard", true },
+                { "unlock_visible", true },
                 { "fullscreen", false },
                 { "status_error", false },
                 { "monitors", new object[] { new Dictionary<string, object> { { "id", "all" }, { "label", "全部显示器" } } } }
             };
             updateState.Invoke(toolbar, new object[] { expanded });
-            if (toolbar.FormBorderStyle != FormBorderStyle.None || toolbar.Opacity >= 1.0)
+            if (toolbar.FormBorderStyle != FormBorderStyle.None || toolbar.Opacity > 0.42)
                 throw new InvalidOperationException("Native toolbar is not using the translucent borderless glass shell.");
-            object scaleButton = scaleField.GetValue(toolbar);
-            string caption = Convert.ToString(scaleButton.GetType().GetProperty("Caption").GetValue(scaleButton, null));
-            if (!String.Equals(caption, "填充", StringComparison.Ordinal) || toolbar.Width < 300)
+            object fpsButton = fpsField.GetValue(toolbar);
+            string fpsCaption = Convert.ToString(fpsButton.GetType().GetProperty("Caption").GetValue(fpsButton, null));
+            Font fpsFont = (Font)fpsButton.GetType().GetProperty("Font").GetValue(fpsButton, null);
+            if (!String.Equals(fpsCaption, "120 FPS", StringComparison.Ordinal) ||
+                !fpsFont.Name.Equals("Noto Sans SC", StringComparison.OrdinalIgnoreCase) ||
+                fpsFont.Size < 11.1f ||
+                fpsFont.Bold ||
+                ((Control)fpsButton).Width != 58 ||
+                toolbar.Height != 43 ||
+                toolbar.Width < 260)
                 throw new InvalidOperationException(
-                    "Native toolbar did not expose the fill mode and full controls: caption=" +
-                    caption + ", width=" + toolbar.Width.ToString());
+                    "Native toolbar did not mirror the Web toolbar controls: fps=" +
+                    fpsCaption + ", width=" + toolbar.Width.ToString());
+            object remoteLockButton = remoteLockField.GetValue(toolbar);
+            string remoteLockIcon = Convert.ToString(
+                remoteLockButton.GetType().GetProperty("IconKind").GetValue(remoteLockButton, null));
+            bool remoteLockActive = Convert.ToBoolean(
+                remoteLockButton.GetType().GetProperty("Active").GetValue(remoteLockButton, null));
+            if (!String.Equals(remoteLockIcon, "Lock", StringComparison.Ordinal) || !remoteLockActive)
+                throw new InvalidOperationException("Locked state did not switch the native toolbar to its active closed-lock icon.");
+
+            Rectangle ownerBounds = new Rectangle(100, 200, 1400, 900);
+            applyUserLocation.Invoke(toolbar, new object[] { ownerBounds, new Point(420, 360) });
+            Point floatingLocation = toolbar.Location;
+            if (floatingLocation.Y != 360 || !String.Equals(observedAction, "toolbar_docked0", StringComparison.Ordinal))
+                throw new InvalidOperationException("Floating toolbar did not preserve its freely dragged location.");
+            positionForOwner.Invoke(toolbar, new object[] { ownerBounds, new Point(600, 248) });
+            if (toolbar.Location != floatingLocation)
+                throw new InvalidOperationException("Owner layout unexpectedly reset the user-positioned toolbar.");
+
+            applyUserLocation.Invoke(toolbar, new object[] { ownerBounds, new Point(500, 247) });
+            if (toolbar.Top != ownerBounds.Top + 48 || !String.Equals(observedAction, "toolbar_docked1", StringComparison.Ordinal))
+                throw new InvalidOperationException("Toolbar did not snap and arm auto-hide below the fixed titlebar.");
 
             expanded["collapsed"] = true;
             updateState.Invoke(toolbar, new object[] { expanded });
             if (toolbar.Width > 60 || toolbar.Height > 36)
                 throw new InvalidOperationException("Collapsed native toolbar did not become a compact glass handle.");
+            positionForOwner.Invoke(toolbar, new object[] { ownerBounds, new Point(600, 248) });
+            if (toolbar.Top != ownerBounds.Top)
+                throw new InvalidOperationException("Collapsed native toolbar did not attach to the owner's top edge.");
         }
         GC.KeepAlive(observedAction);
     }

@@ -583,21 +583,7 @@ private:
 
         RECT source{0, 0, static_cast<LONG>(input_width), static_cast<LONG>(input_height)};
         RECT destination{0, 0, static_cast<LONG>(output_width_), static_cast<LONG>(output_height_)};
-        if (fill_mode_) {
-            const double input_aspect = static_cast<double>(input_width) / input_height;
-            const double output_aspect = static_cast<double>(output_width_) / output_height_;
-            if (input_aspect > output_aspect) {
-                LONG crop_width = static_cast<LONG>(input_height * output_aspect) & ~1L;
-                crop_width = (std::max)(2L, (std::min)(crop_width, static_cast<LONG>(input_width)));
-                source.left = ((static_cast<LONG>(input_width) - crop_width) / 2) & ~1L;
-                source.right = source.left + crop_width;
-            } else if (input_aspect < output_aspect) {
-                LONG crop_height = static_cast<LONG>(input_width / output_aspect) & ~1L;
-                crop_height = (std::max)(2L, (std::min)(crop_height, static_cast<LONG>(input_height)));
-                source.top = ((static_cast<LONG>(input_height) - crop_height) / 2) & ~1L;
-                source.bottom = source.top + crop_height;
-            }
-        } else {
+        if (!fill_mode_) {
             const double scale = (std::min)(
                 static_cast<double>(output_width_) / input_width,
                 static_cast<double>(output_height_) / input_height);
@@ -1372,11 +1358,17 @@ private:
             ShowWindow(cursor_window_, SW_HIDE);
             return;
         }
-        const double scale = fill_mode_
-            ? (std::max)(
-                static_cast<double>(video_width) / remote_width,
-                static_cast<double>(video_height) / remote_height)
-            : (std::min)(
+        if (fill_mode_) {
+            const double scale_x = static_cast<double>(video_width) / remote_width;
+            const double scale_y = static_cast<double>(video_height) / remote_height;
+            const int left = video.left + static_cast<int>(cursor_x_.load() * scale_x) - 2;
+            const int top = video.top + static_cast<int>(cursor_y_.load() * scale_y) - 1;
+            SetWindowPos(
+                cursor_window_, HWND_TOP, left, top, 28, 34,
+                SWP_NOACTIVATE | SWP_SHOWWINDOW);
+            return;
+        }
+        const double scale = (std::min)(
                 static_cast<double>(video_width) / remote_width,
                 static_cast<double>(video_height) / remote_height);
         const int content_width = static_cast<int>(remote_width * scale);

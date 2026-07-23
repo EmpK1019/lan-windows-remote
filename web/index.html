@@ -309,20 +309,6 @@
     }
 
     .mode-tag { border-color: #4f4936; color: #d8b56e; }
-    .busy-tag {
-      display: inline-flex;
-      align-items: center;
-      gap: 4px;
-      margin-left: 7px;
-      padding: 1px 6px;
-      border: 1px solid rgba(54, 198, 139, .38);
-      border-radius: 10px;
-      color: #79deb5;
-      background: rgba(24, 104, 74, .2);
-      font-size: 10px;
-      vertical-align: 1px;
-    }
-    .busy-tag::before { content: ""; width: 5px; height: 5px; border-radius: 50%; background: currentColor; box-shadow: 0 0 8px currentColor; }
     .cell-muted { overflow: hidden; color: #8d919d; text-overflow: ellipsis; white-space: nowrap; }
     .online { display: inline-flex; align-items: center; gap: 7px; color: #aeb1bb; }
     .online::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--green); }
@@ -512,7 +498,7 @@
     .preview-taskbar-clock i:last-child { width: 13px; margin-left: auto; opacity: .6; }
     .preview-status {
       position: absolute;
-      z-index: 4;
+      z-index: 6;
       top: 12px;
       left: 12px;
       display: inline-flex;
@@ -526,6 +512,7 @@
       font-size: 10px;
       line-height: 1;
       backdrop-filter: blur(10px);
+      pointer-events: none;
     }
     .preview-status-dot {
       width: 8px;
@@ -540,29 +527,41 @@
     .preview-stop-control {
       position: absolute;
       z-index: 5;
-      top: 50%;
-      left: 50%;
+      inset: 0;
       display: none;
-      height: 38px;
+      width: 100%;
+      height: 100%;
       align-items: center;
       justify-content: center;
-      gap: 7px;
-      padding: 0 15px;
-      border: 1px solid rgba(255, 230, 234, .38);
-      border-radius: 11px;
-      background: linear-gradient(180deg, rgba(126, 69, 79, .48), rgba(72, 43, 50, .34));
-      color: #fff;
-      font-weight: 600;
-      box-shadow: 0 12px 30px rgba(0, 0, 0, .3), inset 0 1px rgba(255, 255, 255, .18);
-      backdrop-filter: blur(20px) saturate(145%);
-      -webkit-backdrop-filter: blur(20px) saturate(145%);
-      transform: translate(-50%, -50%);
+      gap: 0;
+      padding: 0;
+      border: 1px solid rgba(238, 244, 248, .32);
+      border-radius: 16px;
+      background: linear-gradient(180deg, rgba(122, 126, 133, .38), rgba(38, 41, 47, .28));
+      color: #f7f8fa;
+      font-family: "PingFang SC", "Noto Sans SC", "Segoe UI Variable Text", "Microsoft YaHei UI", sans-serif;
+      font-size: 20px;
+      font-weight: 400;
+      letter-spacing: .2px;
+      box-shadow: 0 6px 18px rgba(0, 0, 0, .14), inset 0 1px rgba(255, 255, 255, .12);
+      backdrop-filter: blur(4px) saturate(116%) brightness(1.02);
+      -webkit-backdrop-filter: blur(4px) saturate(116%) brightness(1.02);
       cursor: pointer;
     }
     .preview-stop-control.show { display: inline-flex; }
-    .preview-stop-control:hover { border-color: rgba(255, 235, 239, .58); background: linear-gradient(180deg, rgba(161, 77, 92, .58), rgba(96, 46, 57, .46)); }
+    .preview-stop-control:hover { border-color: rgba(245, 248, 251, .42); background: linear-gradient(180deg, rgba(145, 150, 158, .46), rgba(49, 53, 61, .34)); box-shadow: 0 8px 22px rgba(0, 0, 0, .18), inset 0 1px rgba(255, 255, 255, .16); }
     .preview-stop-control:disabled { opacity: .65; cursor: wait; }
-    .preview-stop-control svg { width: 17px; height: 17px; }
+    .preview-stop-control span {
+      display: inline-flex;
+      height: 42px;
+      align-items: center;
+      padding: 0 18px;
+      border: 1px solid rgba(245, 248, 251, .18);
+      border-radius: 11px;
+      background: linear-gradient(180deg, rgba(50, 53, 60, .62), rgba(24, 27, 32, .52));
+      box-shadow: 0 5px 16px rgba(0, 0, 0, .18), inset 0 1px rgba(255, 255, 255, .1);
+      text-shadow: 0 1px 2px rgba(10, 7, 9, .48);
+    }
     .control-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 10px; }
     .control-card {
       position: relative;
@@ -570,7 +569,7 @@
       height: 72px;
       place-items: center;
       align-content: center;
-      gap: 5px;
+      gap: 3px;
       border: 1px solid #30323a;
       border-radius: 9px;
       background: #24262c;
@@ -660,6 +659,9 @@
       background: #08090c;
     }
     .remote-session.remote-titlebar-visible { --remote-titlebar-offset: 40px; }
+    html.remote-window-root .remote-session.show {
+      grid-template-rows: minmax(0, 1fr);
+    }
     .remote-titlebar {
       position: absolute;
       z-index: 40;
@@ -729,14 +731,14 @@
       max-width: calc(100vw - 20px);
       min-width: 0;
       min-height: 40px;
-      padding: 4px 6px;
+      padding: 4px;
       overflow: hidden;
-      border: 1px solid rgba(238, 244, 248, .34);
-      border-radius: 13px;
-      background: linear-gradient(180deg, rgba(113, 116, 122, .42), rgba(42, 45, 51, .3));
-      box-shadow: 0 10px 30px rgba(0,0,0,.26), inset 0 1px rgba(255,255,255,.22);
-      backdrop-filter: blur(22px) saturate(145%);
-      -webkit-backdrop-filter: blur(22px) saturate(145%);
+      border: 1px solid rgba(238, 244, 248, .24);
+      border-radius: 16px;
+      background: linear-gradient(180deg, rgba(122, 126, 133, .18), rgba(38, 41, 47, .10));
+      box-shadow: 0 6px 18px rgba(0,0,0,.14), inset 0 1px rgba(255,255,255,.12);
+      backdrop-filter: blur(2px) saturate(112%) brightness(1.04);
+      -webkit-backdrop-filter: blur(2px) saturate(112%) brightness(1.04);
       transform: translateX(-50%);
       transition: top .18s ease, width .18s ease, min-height .18s ease, padding .18s ease, gap .18s ease, border-radius .18s ease, background .18s ease;
     }
@@ -747,48 +749,80 @@
       flex: 0 0 auto;
       align-items: center;
       justify-content: center;
-      width: 34px;
-      min-width: 34px;
+      width: 31px;
+      min-width: 31px;
       height: 31px;
       padding: 0;
       border-color: transparent;
       border-radius: 9px;
-      background: rgba(255,255,255,.055);
+      background: transparent;
       color: #e5e8eb;
+      box-shadow: none;
     }
-    .remote-toolbar .button:hover { border-color: rgba(255,255,255,.16); background: rgba(255,255,255,.13); }
+    .remote-toolbar .button:hover { border-color: rgba(255,255,255,.18); background: rgba(255,255,255,.12); box-shadow: inset 0 1px rgba(255,255,255,.08); }
     .remote-toolbar .button span { display: none; }
-    .remote-toolbar .button svg { width: 17px; height: 17px; }
-    .remote-toolbar .button.active { border-color: var(--blue); background: #204f3e; color: #95d5ba; }
+    .remote-toolbar .button svg { width: 20px; height: 20px; }
+    .remote-toolbar .button.active { border-color: transparent; background: transparent; color: #81dfb7; box-shadow: none; }
+    .remote-toolbar .button.active:hover { border-color: rgba(82, 201, 153, .42); background: rgba(30, 126, 91, .22); }
     .remote-status {
-      flex: 0 0 7px;
-      width: 7px;
-      height: 7px;
-      margin: 0 2px;
+      position: relative;
+      flex: 0 0 22px;
+      width: 22px;
+      height: 31px;
+      margin: 0;
+      padding: 0;
       overflow: hidden;
-      border-radius: 50%;
-      background: #39bf86;
+      border: 0;
+      border-radius: 8px;
+      background: transparent;
       color: transparent;
       font-size: 0;
-      box-shadow: 0 0 0 3px rgba(57,191,134,.12);
+      cursor: pointer;
     }
-    .remote-status.error { background: #ff697c; box-shadow: 0 0 0 3px rgba(255,105,124,.13); }
+    .remote-status::before {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: #39bf86;
+      box-shadow: 0 0 0 3px rgba(57,191,134,.12);
+      content: "";
+      transform: translate(-50%, -50%);
+    }
+    .remote-status:hover { background: rgba(255,255,255,.1); }
+    .remote-status.error::before { background: #ff697c; box-shadow: 0 0 0 3px rgba(255,105,124,.13); }
     .remote-window-control svg { stroke-width: 2.45; }
     .remote-window-control.close:hover { border-color: #c42b3e; background: #c42b3e; color: white; }
     body.window-maximized .remote-window-control .maximize-icon { display: none; }
     .remote-window-control .restore-icon { display: none; }
     body.window-maximized .remote-window-control .restore-icon { display: block; }
     .remote-toolbar-grip {
-      width: 12px;
+      width: 10px;
       height: 24px;
-      flex: 0 0 12px;
+      flex: 0 0 10px;
       border-radius: 5px;
-      background: radial-gradient(circle, rgba(235,240,243,.48) 1.1px, transparent 1.4px) center / 4px 4px;
+      background:
+        radial-gradient(circle at 50% 6px, rgba(235,240,243,.48) 1.1px, transparent 1.4px),
+        radial-gradient(circle at 50% 12px, rgba(235,240,243,.48) 1.1px, transparent 1.4px),
+        radial-gradient(circle at 50% 18px, rgba(235,240,243,.48) 1.1px, transparent 1.4px);
+      background-repeat: no-repeat;
       cursor: move;
       opacity: .72;
     }
-    .toolbar-toggle { order: -10; width: 30px !important; min-width: 30px !important; padding: 0 !important; }
-    .toolbar-toggle svg { transition: transform .16s ease; }
+    .toolbar-toggle {
+      display: none;
+      width: 32px;
+      min-width: 32px;
+      height: 22px;
+      padding: 0;
+      border: 0;
+      background: transparent;
+      color: #e5e8eb;
+      cursor: pointer;
+    }
+    .toolbar-toggle svg { width: 16px; height: 16px; transform: rotate(180deg); }
     .remote-session.toolbar-collapsed .remote-toolbar {
       top: var(--remote-titlebar-offset);
       width: 42px;
@@ -798,29 +832,30 @@
       padding: 0;
       border-top: 0;
       border-radius: 0 0 12px 12px;
-      background: linear-gradient(180deg, rgba(116, 119, 125, .42), rgba(43, 46, 51, .28));
+      background: linear-gradient(180deg, rgba(122, 126, 133, .18), rgba(38, 41, 47, .10));
+      justify-content: center;
     }
     .remote-session.toolbar-collapsed .remote-toolbar > *:not(.toolbar-toggle) { display: none !important; }
-    .remote-session.toolbar-collapsed .remote-toolbar .toolbar-toggle { width: 40px !important; min-width: 40px !important; height: 20px; border: 0; background: transparent; }
-    .remote-session.toolbar-collapsed .toolbar-toggle svg { transform: rotate(180deg); }
+    .remote-session.toolbar-collapsed .remote-toolbar .toolbar-toggle { display: inline-flex; align-items: center; justify-content: center; }
     .remote-monitor-control {
       position: relative;
       display: inline-flex;
-      flex: 0 0 34px;
+      flex: 0 0 31px;
       align-items: center;
       justify-content: center;
-      width: 34px;
-      min-width: 34px;
+      width: 31px;
+      min-width: 31px;
       height: 31px;
       padding: 0;
       overflow: hidden;
       border: 1px solid transparent;
       border-radius: 9px;
-      background: rgba(255,255,255,.055);
+      background: transparent;
       color: #e5e8eb;
+      box-shadow: none;
     }
-    .remote-monitor-control:hover { border-color: rgba(255,255,255,.16); background: rgba(255,255,255,.13); }
-    .remote-monitor-control svg { flex: 0 0 auto; width: 17px; height: 17px; }
+    .remote-monitor-control:hover { border-color: rgba(255,255,255,.18); background: rgba(255,255,255,.12); box-shadow: inset 0 1px rgba(255,255,255,.08); }
+    .remote-monitor-control svg { flex: 0 0 auto; width: 20px; height: 20px; }
     .remote-monitor-control select {
       position: absolute;
       inset: 0;
@@ -844,25 +879,64 @@
       overflow: hidden;
       border: 1px solid transparent;
       border-radius: 9px;
-      background: rgba(255,255,255,.055);
+      background: transparent;
       color: #e5e8eb;
-      font-size: 10px;
-      font-weight: 650;
-      letter-spacing: .2px;
+      box-shadow: none;
+      font-family: "PingFang SC", "Noto Sans SC", "Segoe UI Variable Text", sans-serif;
+      font-size: 15px;
+      font-weight: 400;
+      letter-spacing: -.7px;
     }
-    .remote-fps-control:hover { border-color: rgba(255,255,255,.16); background: rgba(255,255,255,.13); }
-    .remote-fps-control span { pointer-events: none; }
-    .remote-fps-control select {
-      position: absolute;
-      inset: 0;
-      width: 100%;
-      height: 100%;
-      border: 0;
-      outline: 0;
+    .remote-fps-control:hover { border-color: rgba(255,255,255,.18); background: rgba(255,255,255,.12); box-shadow: inset 0 1px rgba(255,255,255,.08); }
+    .remote-fps-control span {
+      display: block;
+      max-width: 100%;
+      pointer-events: none;
+      transform: scaleX(.88);
+    }
+    .remote-fps-control { padding: 0; cursor: pointer; }
+    .remote-fps-menu {
+      position: fixed;
+      z-index: 36;
+      display: none;
+      width: 82px;
+      min-width: 82px;
+      padding: 3px;
+      overflow: hidden;
+      border: 1px solid rgba(238, 244, 248, .24);
+      border-radius: 6px;
+      background: linear-gradient(180deg, rgba(112, 117, 125, .28), rgba(31, 34, 40, .16));
+      box-shadow: 0 10px 26px rgba(0,0,0,.2), inset 0 1px rgba(255,255,255,.12);
+      backdrop-filter: blur(10px) saturate(115%) brightness(1.03);
+      -webkit-backdrop-filter: blur(10px) saturate(115%) brightness(1.03);
+    }
+    .remote-fps-menu.show { display: grid; gap: 2px; }
+    .remote-fps-option {
+      display: flex;
+      height: 30px;
+      align-items: center;
+      justify-content: flex-start;
+      padding: 0 5px;
+      border: 1px solid transparent;
+      border-radius: 4px;
+      background: transparent;
+      color: #e8ebee;
+      font-size: 12px;
+      font-weight: 600;
       cursor: pointer;
-      opacity: 0;
     }
-    .remote-fps-control option { background: #202228; color: #e7e8ec; }
+    .remote-fps-option:hover { border-color: rgba(255,255,255,.17); background: rgba(255,255,255,.11); }
+    .remote-fps-option.active { color: #82e0b8; }
+    .remote-fps-option::before {
+      flex: 0 0 5px;
+      width: 5px;
+      height: 5px;
+      margin-right: 6px;
+      border-radius: 50%;
+      background: transparent;
+      content: "";
+    }
+    .remote-fps-option.active::before { background: #39bf86; box-shadow: 0 0 0 3px rgba(57,191,134,.1); }
     .remote-popover {
       position: fixed;
       z-index: 36;
@@ -954,10 +1028,8 @@
       -webkit-user-drag: none;
       cursor: default !important;
     }
-    #remoteScreen.scale-fill { object-fit: cover; }
-    body.native-video-active .remote-toolbar,
-    body.native-video-active .remote-titlebar,
-    body.native-video-active .remote-unlock-action {
+    #remoteScreen.scale-fill { object-fit: fill; }
+    body.native-video-active .remote-toolbar {
       visibility: hidden !important;
       opacity: 0 !important;
       pointer-events: none !important;
@@ -989,33 +1061,6 @@
     }
     .remote-hint { position: absolute; pointer-events: none; color: #6f7380; }
     .remote-hint.hidden { display: none; }
-    .remote-unlock-action {
-      position: absolute;
-      z-index: 34;
-      bottom: 20px;
-      left: 50%;
-      display: none;
-      min-width: 138px;
-      height: 42px;
-      align-items: center;
-      justify-content: center;
-      gap: 8px;
-      border: 1px solid rgba(160, 211, 255, .55);
-      border-radius: 10px;
-      background: rgba(60, 104, 174, .82);
-      color: #fff;
-      font-weight: 600;
-      box-shadow: 0 10px 32px rgba(0, 0, 0, .36), inset 0 1px rgba(255, 255, 255, .16);
-      backdrop-filter: blur(14px) saturate(130%);
-      -webkit-backdrop-filter: blur(14px) saturate(130%);
-      transform: translateX(-50%);
-      cursor: pointer;
-    }
-    .remote-unlock-action.show { display: inline-flex; }
-    .remote-unlock-action:hover { background: rgba(71, 120, 196, .92); }
-    .remote-unlock-action:disabled { opacity: .72; cursor: wait; }
-    .remote-unlock-action svg { width: 18px; height: 18px; }
-
     .toast {
       position: fixed;
       right: 28px;
@@ -1314,7 +1359,7 @@
             <img class="preview-desktop-image" id="detailPreviewImage" alt="被控端桌面背景" draggable="false">
           </div>
           <div class="preview-status" id="detailPreviewStatus"><span class="preview-status-dot"></span><span id="detailPreviewState">在线</span></div>
-          <button class="preview-stop-control" id="stopOutgoingControl" type="button"><svg><use href="#i-x"/></svg><span>解除控制</span></button>
+          <button class="preview-stop-control" id="stopOutgoingControl" type="button"><span>解除控制</span></button>
         </div>
         <div class="control-grid">
           <button class="control-card primary" id="controlButton"><svg><use href="#i-monitor"/></svg><span>桌面控制</span></button>
@@ -1453,17 +1498,21 @@
       </div>
     </header>
     <div class="remote-toolbar">
-      <span class="remote-toolbar-grip pywebview-drag-region" id="remoteToolbarGrip" title="拖动控制窗口"></span>
+      <button class="remote-status" id="remoteStatus" type="button" aria-live="polite">正在连接…</button>
+      <span class="remote-toolbar-grip" id="remoteToolbarGrip" title="拖动工具栏"></span>
       <label class="remote-monitor-control" title="选择远端显示器"><svg><use href="#i-monitor"/></svg><select id="monitorSelect" aria-label="远端显示器"><option value="all">全部显示器</option></select></label>
-      <label class="remote-fps-control" id="fpsLimitControl" title="当前会话最高帧率；实际帧率取决于网络和设备性能"><span id="fpsLimitLabel">60 FPS</span><select id="fpsLimitSelect" aria-label="当前会话最高帧率"><option value="30">最高 30 FPS</option><option value="60">最高 60 FPS</option><option value="120">最高 120 FPS</option></select></label>
-      <button class="button" id="scaleModeButton" title="画面模式：适应"><svg><use href="#i-expand"/></svg><span>适应</span></button>
+      <button class="remote-fps-control" id="fpsLimitControl" type="button" title="帧率上限" aria-haspopup="listbox" aria-expanded="false"><span id="fpsLimitLabel">60 FPS</span></button>
       <button class="button" id="keyboardButton" title="键盘控制"><svg><use href="#i-keyboard"/></svg><span>键盘</span></button>
       <button class="button" id="clipboardButton" title="剪贴板同步"><svg><use href="#i-clipboard"/></svg><span>剪贴板</span></button>
       <button class="button" id="remoteFileButton" title="远程文件"><svg><use href="#i-folder"/></svg><span>远程文件</span></button>
-      <button class="button" id="lockRemoteButton" title="锁定远端电脑"><svg><use href="#i-lock"/></svg><span>锁屏</span></button>
+      <button class="button" id="lockRemoteButton" title="锁定远端电脑"><svg><use href="#i-unlock"/></svg><span>锁屏</span></button>
       <button class="button" id="fullscreenButton" title="全屏"><svg><use href="#i-expand"/></svg><span>全屏</span></button>
-      <span class="remote-status pywebview-drag-region" id="remoteStatus" role="status" aria-live="polite">正在连接…</span>
-      <button class="button toolbar-toggle" id="toolbarToggle" type="button" title="收起工具栏" aria-label="收起工具栏"><svg><use href="#i-chevron-up"/></svg></button>
+      <button class="toolbar-toggle" id="toolbarToggle" type="button" title="展开工具栏" aria-label="展开工具栏"><svg><use href="#i-chevron-up"/></svg></button>
+    </div>
+    <div class="remote-fps-menu" id="fpsLimitMenu" role="listbox" aria-label="当前会话最高帧率">
+      <button class="remote-fps-option" type="button" role="option" data-fps="30">30 FPS</button>
+      <button class="remote-fps-option" type="button" role="option" data-fps="60">60 FPS</button>
+      <button class="remote-fps-option" type="button" role="option" data-fps="120">120 FPS</button>
     </div>
     <div class="remote-stage" id="remoteStage" tabindex="0">
       <img id="remoteScreen" alt="远程屏幕" draggable="false">
@@ -1472,7 +1521,6 @@
       </div>
       <div class="remote-hint" id="remoteHint">正在获取远程画面…</div>
     </div>
-    <button class="remote-unlock-action" id="unlockRemoteButton" type="button"><svg><use href="#i-unlock"/></svg><span>解锁被控电脑</span></button>
   </section>
   <div class="remote-popover" id="clipboardPopover">
     <strong>纯文字剪贴板同步</strong>
@@ -1564,6 +1612,8 @@
       fileTransfer: null,
       toolbarCollapseTimer: 0,
       toolbarPointerInside: false,
+      toolbarDockedAtTop: true,
+      toolbarDragging: false,
       remoteTitlebarHideTimer: 0,
       remoteLockSentForClose: false,
       pairCredentialSource: "",
@@ -2030,10 +2080,10 @@
         <div class="device-row ${device.id === state.selectedId ? "selected" : ""}" data-id="${escapeHtml(device.id)}" role="option" aria-selected="${device.id === state.selectedId}" tabindex="0">
           <div class="device-main">
             <span class="device-platform"><svg><use href="#i-windows"/></svg></span>
-            <span class="device-name" title="${escapeHtml(device.name)}">${escapeHtml(device.name)}${device.is_self ? '<span class="local-tag">本机</span>' : ""}${device.view_only ? '<span class="mode-tag">只读</span>' : ""}${device.busy ? `<span class="busy-tag">${device.busy_mode === "view" ? "观看中" : "控制中"}</span>` : ""}</span>
+            <span class="device-name" title="${escapeHtml(device.name)}">${escapeHtml(device.name)}${device.is_self ? '<span class="local-tag">本机</span>' : ""}${device.view_only ? '<span class="mode-tag">只读</span>' : ""}</span>
           </div>
           <span class="cell-muted device-address">${escapeHtml(device.ip)}:${device.port}</span>
-          <span class="online ${device.busy ? "busy" : ""}">${device.busy ? (device.busy_mode === "view" ? "观看中" : "会话中") : "在线"}</span>
+          <span class="online ${device.busy ? "busy" : ""}">${device.busy ? (device.busy_mode === "view" ? "观看中" : "控制中") : "在线"}</span>
           <span class="row-action"><button class="icon-button quick-connect" data-id="${escapeHtml(device.id)}" title="${device.is_self ? "不能远程控制本机" : (device.busy ? "设备正在远程会话中" : "桌面控制")}" ${device.is_self || device.busy || state.localStatus?.active ? "disabled" : ""}><svg><use href="#i-monitor"/></svg></button></span>
         </div>`).join("");
       $("emptyState").classList.toggle("show", visible.length === 0);
@@ -2257,6 +2307,9 @@
           cache: "no-store"
         });
         const remoteWindowResult = await remoteWindowResponse.json().catch(() => ({}));
+        if (remoteWindowResponse.ok && remoteWindowResult.ok && window.pywebview?.api?.activate_remote_window) {
+          window.pywebview.api.activate_remote_window(remoteWindowResult.process_id).catch(() => false);
+        }
         if (!remoteWindowResponse.ok || !remoteWindowResult.ok) {
           throw new Error(remoteWindowResult.error || "无法启动独立控制窗口");
         }
@@ -2299,7 +2352,7 @@
         initialAutoUnlockPending: !viewOnly,
         monitorId: "all",
         fpsLimit: normalizeControlFps(state.settings.control_fps_limit),
-        scaleMode: "fit"
+        scaleMode: "fill"
       };
       state.loadingFrame = false;
       state.remoteFrameWidth = 0;
@@ -2318,9 +2371,9 @@
       $("remoteName").textContent = `${device.name} · ${viewOnly ? "观看" : "控制"}`;
       $("keyboardButton").style.display = viewOnly ? "none" : "inline-flex";
       $("fpsLimitControl").style.display = "inline-flex";
-      $("fpsLimitSelect").value = String(state.session.fpsLimit);
       $("fpsLimitLabel").textContent = `${state.session.fpsLimit} FPS`;
-      setRemoteScaleMode("fit", false);
+      updateFpsMenuSelection(state.session.fpsLimit);
+      setRemoteScaleMode("fill", false);
       $("clipboardButton").style.display = viewOnly ? "none" : "inline-flex";
       $("remoteFileButton").style.display = viewOnly ? "none" : "inline-flex";
       $("lockRemoteButton").style.display = viewOnly ? "none" : "inline-flex";
@@ -2382,6 +2435,7 @@
       resetClipboardSync();
       if (state.fileTransfer) state.fileTransfer.abort();
       closeRemoteFiles(false);
+      setFpsMenuVisible(false);
       state.session = null;
       state.sessionHeartbeatInFlight = false;
       state.loadingFrame = false;
@@ -2406,7 +2460,8 @@
     function setToolbarCollapsed(collapsed) {
       $("remoteSession").classList.toggle("toolbar-collapsed", collapsed);
       $("toolbarToggle").title = collapsed ? "展开工具栏" : "收起工具栏";
-      $("toolbarToggle").setAttribute("aria-label", collapsed ? "展开工具栏" : "收起工具栏");
+      $("toolbarToggle").setAttribute("aria-label", $("toolbarToggle").title);
+      if (collapsed) setFpsMenuVisible(false);
       scheduleNativeInputSync(260);
       requestAnimationFrame(syncNativeVideoLayout);
       requestAnimationFrame(syncNativeOverlayState);
@@ -2414,9 +2469,14 @@
 
     function scheduleToolbarCollapse(delay = 700) {
       clearTimeout(state.toolbarCollapseTimer);
-      if (!state.session?.connected) return;
+      if (!state.session?.connected || !state.toolbarDockedAtTop || state.toolbarDragging) return;
       state.toolbarCollapseTimer = setTimeout(() => {
-        if (state.toolbarPointerInside || $("clipboardPopover").classList.contains("show")) {
+        if (!state.toolbarDockedAtTop || state.toolbarDragging) return;
+        if (
+          state.toolbarPointerInside ||
+          $("clipboardPopover").classList.contains("show") ||
+          $("fpsLimitMenu").classList.contains("show")
+        ) {
           scheduleToolbarCollapse(700);
           return;
         }
@@ -2435,6 +2495,7 @@
       clearTimeout(state.remoteTitlebarHideTimer);
       state.remoteTitlebarHideTimer = 0;
       $("remoteSession").classList.toggle("remote-titlebar-visible", Boolean(visible));
+      trackOpenToolbarPopovers();
       scheduleNativeInputSync(260);
       requestAnimationFrame(syncNativeVideoLayout);
     }
@@ -2453,6 +2514,7 @@
     function setRemoteStatus(text, error = false) {
       $("remoteStatus").textContent = text;
       $("remoteStatus").title = text;
+      $("remoteStatus").setAttribute("aria-label", text);
       $("remoteStatus").classList.toggle("error", error);
       requestAnimationFrame(syncNativeOverlayState);
     }
@@ -2465,20 +2527,18 @@
       const next = mode === "fill" ? "fill" : "fit";
       if (state.session) state.session.scaleMode = next;
       $("remoteScreen").classList.toggle("scale-fill", next === "fill");
-      $("scaleModeButton").classList.toggle("active", next === "fill");
-      $("scaleModeButton").title = next === "fill" ? "画面模式：填充（无黑边）" : "画面模式：适应（完整画面）";
-      $("scaleModeButton").querySelector("span").textContent = next === "fill" ? "填充" : "适应";
       scheduleNativeInputSync(20);
       updateRemoteCursorOverlay();
       requestAnimationFrame(syncNativeOverlayState);
       if (announce && state.session?.connected) {
-        setRemoteStatus(next === "fill" ? "画面已填充窗口 · 边缘可能轻微裁切" : "画面已完整适应窗口");
+        setRemoteStatus(next === "fill" ? "画面已自适应窗口" : "画面已完整适应窗口");
       }
     }
 
     function nativeOverlayObscured() {
       return $("fileModal").classList.contains("show") ||
         $("clipboardPopover").classList.contains("show") ||
+        $("fpsLimitMenu").classList.contains("show") ||
         document.hidden;
     }
 
@@ -2507,7 +2567,12 @@
 
     window.__lanNativeOverlayAction = (action, value = "") => {
       if (!state.session?.connected && action !== "close") return;
-      if (action === "toolbar_toggle") {
+      if (action === "toolbar_docked") {
+        state.toolbarDockedAtTop = String(value) === "1";
+        clearTimeout(state.toolbarCollapseTimer);
+        if (state.toolbarDockedAtTop) scheduleToolbarCollapse(900);
+        else setToolbarCollapsed(false);
+      } else if (action === "toolbar_toggle") {
         const collapsed = $("remoteSession").classList.contains("toolbar-collapsed");
         if (collapsed) revealToolbar(1800);
         else {
@@ -2518,8 +2583,7 @@
         $("monitorSelect").value = String(value || "all");
         $("monitorSelect").dispatchEvent(new Event("change", {bubbles: true}));
       } else if (action === "fps") {
-        $("fpsLimitSelect").value = String(value || "60");
-        $("fpsLimitSelect").dispatchEvent(new Event("change", {bubbles: true}));
+        applyControlFps(value || "60");
       } else if (action === "scale_mode") {
         setRemoteScaleMode(value);
       } else if (action === "keyboard") {
@@ -2538,8 +2602,6 @@
         toggleWindowMaximize();
       } else if (action === "close") {
         stopSession(remoteWindowMode, true);
-      } else if (action === "unlock") {
-        requestRemoteUnlock(true);
       }
     };
 
@@ -2923,6 +2985,81 @@
       return normalizeControlFps(session?.fpsLimit || state.settings.control_fps_limit);
     }
 
+    function updateFpsMenuSelection(value) {
+      const selected = normalizeControlFps(value);
+      $("fpsLimitMenu").querySelectorAll("[data-fps]").forEach((option) => {
+        const active = Number(option.dataset.fps) === selected;
+        option.classList.toggle("active", active);
+        option.setAttribute("aria-selected", active ? "true" : "false");
+      });
+    }
+
+    function positionFpsMenu() {
+      const anchor = $("fpsLimitControl");
+      const menu = $("fpsLimitMenu");
+      const rect = anchor.getBoundingClientRect();
+      const width = menu.offsetWidth;
+      const height = menu.offsetHeight;
+      const left = Math.max(8, Math.min(window.innerWidth - width - 8, rect.left + rect.width / 2 - width / 2));
+      let top = rect.bottom + 7;
+      if (top + height > window.innerHeight - 8) top = Math.max(8, rect.top - height - 7);
+      menu.style.left = `${left}px`;
+      menu.style.top = `${top}px`;
+    }
+
+    function positionClipboardPopover() {
+      const anchor = $("clipboardButton");
+      const popover = $("clipboardPopover");
+      const rect = anchor.getBoundingClientRect();
+      const width = popover.offsetWidth || 300;
+      const left = Math.max(10, Math.min(window.innerWidth - width - 10, rect.left));
+      popover.style.left = `${left}px`;
+      popover.style.top = `${rect.bottom + 7}px`;
+    }
+
+    function positionOpenToolbarPopovers() {
+      if ($("fpsLimitMenu").classList.contains("show")) positionFpsMenu();
+      if ($("clipboardPopover").classList.contains("show")) positionClipboardPopover();
+    }
+
+    function trackOpenToolbarPopovers(duration = 260) {
+      const deadline = performance.now() + duration;
+      const track = () => {
+        positionOpenToolbarPopovers();
+        if (performance.now() < deadline) requestAnimationFrame(track);
+      };
+      requestAnimationFrame(track);
+    }
+
+    function setFpsMenuVisible(visible) {
+      const menu = $("fpsLimitMenu");
+      const show = Boolean(visible && state.session?.connected);
+      if (show) $("clipboardPopover").classList.remove("show");
+      menu.classList.toggle("show", show);
+      $("fpsLimitControl").setAttribute("aria-expanded", show ? "true" : "false");
+      if (show) {
+        updateFpsMenuSelection(sessionControlFps(state.session));
+        requestAnimationFrame(positionFpsMenu);
+      }
+      scheduleNativeInputSync(20);
+      requestAnimationFrame(syncNativeOverlayState);
+    }
+
+    function applyControlFps(value) {
+      const session = state.session;
+      if (!session?.connected) return;
+      const fpsLimit = normalizeControlFps(value);
+      $("fpsLimitLabel").textContent = `${fpsLimit} FPS`;
+      updateFpsMenuSelection(fpsLimit);
+      if (session.fpsLimit === fpsLimit) return;
+      session.fpsLimit = fpsLimit;
+      resetScreenStream();
+      $("remoteHint").classList.remove("hidden");
+      $("remoteHint").textContent = `正在切换到最高 ${fpsLimit} FPS…`;
+      setRemoteStatus(`正在切换画面帧率上限 · ${fpsLimit} FPS`);
+      refreshScreen();
+    }
+
     function releaseFrameObjectUrl() {
       if (!state.frameObjectUrl) return;
       URL.revokeObjectURL(state.frameObjectUrl);
@@ -3211,9 +3348,14 @@
       const stageRect = $("remoteStage").getBoundingClientRect();
       const remoteWidth = Number(cursor.width) || image.naturalWidth;
       const remoteHeight = Number(cursor.height) || image.naturalHeight;
-      const scale = sessionScaleMode() === "fill"
-        ? Math.max(imageRect.width / remoteWidth, imageRect.height / remoteHeight)
-        : Math.min(imageRect.width / remoteWidth, imageRect.height / remoteHeight);
+      if (sessionScaleMode() === "fill") {
+        const left = imageRect.left - stageRect.left + cursor.x / remoteWidth * imageRect.width - 2;
+        const top = imageRect.top - stageRect.top + cursor.y / remoteHeight * imageRect.height - 1.6;
+        pointer.style.transform = `translate3d(${left}px, ${top}px, 0)`;
+        pointer.classList.add("visible");
+        return;
+      }
+      const scale = Math.min(imageRect.width / remoteWidth, imageRect.height / remoteHeight);
       const contentWidth = remoteWidth * scale;
       const contentHeight = remoteHeight * scale;
       const left = imageRect.left - stageRect.left + (imageRect.width - contentWidth) / 2 + cursor.x * scale - 2;
@@ -3311,10 +3453,12 @@
 
     function setRemoteUnlockVisible(visible) {
       state.remoteSessionLocked = Boolean(visible);
-      $("unlockRemoteButton").classList.toggle(
-        "show",
-        state.remoteSessionLocked && Boolean(state.session?.connected) && !state.session?.viewOnly
-      );
+      const button = $("lockRemoteButton");
+      button.classList.toggle("active", state.remoteSessionLocked);
+      button.querySelector("use").setAttribute("href", state.remoteSessionLocked ? "#i-lock" : "#i-unlock");
+      button.querySelector("span").textContent = state.remoteSessionLocked ? "解锁" : "锁屏";
+      button.title = state.remoteSessionLocked ? "解锁被控电脑" : "锁定远端电脑";
+      button.setAttribute("aria-label", button.title);
       scheduleNativeInputSync(30);
       requestAnimationFrame(syncNativeVideoLayout);
       requestAnimationFrame(syncNativeOverlayState);
@@ -3329,8 +3473,10 @@
         !window.pywebview?.api?.try_auto_unlock
       ) return false;
       state.autoUnlockChecking = true;
-      $("unlockRemoteButton").disabled = true;
-      $("unlockRemoteButton").querySelector("span").textContent = "正在解锁…";
+      const button = $("lockRemoteButton");
+      button.disabled = true;
+      button.title = "正在解锁…";
+      button.setAttribute("aria-label", button.title);
       try {
         const result = await window.pywebview.api.try_auto_unlock(
           JSON.stringify(session.device),
@@ -3389,8 +3535,8 @@
         return false;
       } finally {
         state.autoUnlockChecking = false;
-        $("unlockRemoteButton").disabled = false;
-        $("unlockRemoteButton").querySelector("span").textContent = "解锁被控电脑";
+        button.disabled = false;
+        setRemoteUnlockVisible(state.remoteSessionLocked);
       }
     }
 
@@ -3433,9 +3579,13 @@
       const remoteHeight = state.remoteFrameHeight || image.naturalHeight;
       if (!remoteWidth || !remoteHeight) return null;
       const rect = image.getBoundingClientRect();
-      const scale = sessionScaleMode() === "fill"
-        ? Math.max(rect.width / remoteWidth, rect.height / remoteHeight)
-        : Math.min(rect.width / remoteWidth, rect.height / remoteHeight);
+      if (sessionScaleMode() === "fill") {
+        const x = (event.clientX - rect.left) / rect.width * remoteWidth;
+        const y = (event.clientY - rect.top) / rect.height * remoteHeight;
+        if (x < 0 || y < 0 || x > remoteWidth || y > remoteHeight) return null;
+        return {x: Math.round(x), y: Math.round(y)};
+      }
+      const scale = Math.min(rect.width / remoteWidth, rect.height / remoteHeight);
       const width = remoteWidth * scale;
       const height = remoteHeight * scale;
       const x = (event.clientX - rect.left - (rect.width - width) / 2) / scale;
@@ -3478,7 +3628,8 @@
       const exclusions = [
         visibleElementRect(document.querySelector(".remote-toolbar")),
         visibleElementRect($("remoteTitlebar")),
-        $("clipboardPopover").classList.contains("show") ? visibleElementRect($("clipboardPopover")) : null
+        $("clipboardPopover").classList.contains("show") ? visibleElementRect($("clipboardPopover")) : null,
+        $("fpsLimitMenu").classList.contains("show") ? visibleElementRect($("fpsLimitMenu")) : null
       ].filter(Boolean);
       return {
         content_left: contentLeft,
@@ -3653,10 +3804,13 @@
       if (!session?.connected || session.viewOnly) return false;
       const button = $("lockRemoteButton");
       button.disabled = true;
-      releaseAllRemoteInput();
+      await Promise.race([
+        releaseAllRemoteInput(),
+        new Promise((resolve) => setTimeout(resolve, 400))
+      ]);
       try {
         const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), 3500);
+        const timeout = setTimeout(() => controller.abort(), 7000);
         let response;
         try {
           response = await fetch(endpoint("/lock"), {
@@ -3671,6 +3825,9 @@
         }
         const result = await response.json().catch(() => ({}));
         if (!response.ok || !result.ok) throw new Error(result.error || `HTTP ${response.status}`);
+        const locked = await waitForRemoteLockState(true, 1800);
+        if (!locked) throw new Error("被控端未进入锁屏，请更新被控端后重试");
+        setRemoteUnlockVisible(true);
         if (notify) {
           setRemoteStatus(result.status === "already_secure" ? "远端已处于锁屏或安全桌面" : "远端电脑已锁定");
           showToast(result.status === "already_secure" ? "远端已处于锁屏或安全桌面" : "已锁定远端电脑");
@@ -3686,6 +3843,27 @@
       } finally {
         button.disabled = false;
       }
+    }
+
+    async function waitForRemoteLockState(expectedLocked, timeoutMs = 1800) {
+      const session = state.session;
+      if (!session?.connected) return false;
+      const deadline = performance.now() + Math.max(0, timeoutMs);
+      do {
+        try {
+          const response = await fetch(endpoint(`/api/session-status?t=${Date.now()}`), {
+            headers: {"X-Remote-Token": session.token},
+            cache: "no-store"
+          });
+          const status = await response.json().catch(() => ({}));
+          if (response.ok && status.ok && Boolean(status.session_locked) === Boolean(expectedLocked)) {
+            return true;
+          }
+        } catch {}
+        if (performance.now() >= deadline) break;
+        await new Promise((resolve) => setTimeout(resolve, 150));
+      } while (session === state.session && session.connected);
+      return false;
     }
 
     function remoteKeyId(key, code) {
@@ -3866,7 +4044,6 @@
       if ($("lockPasswordInput").value) $("rememberLockPassword").checked = true;
     });
     $("closeSession").addEventListener("click", () => stopSession(remoteWindowMode, true));
-    $("unlockRemoteButton").addEventListener("click", () => requestRemoteUnlock(true));
     $("monitorSelect").addEventListener("change", () => {
       if (!state.session?.connected) return;
       releaseAllRemoteInput();
@@ -3883,34 +4060,28 @@
       refreshScreen();
       refreshRemoteCursor();
     });
-    $("fpsLimitSelect").addEventListener("change", () => {
-      const session = state.session;
-      if (!session?.connected) return;
-      const fpsLimit = normalizeControlFps($("fpsLimitSelect").value);
-      $("fpsLimitSelect").value = String(fpsLimit);
-      $("fpsLimitLabel").textContent = `${fpsLimit} FPS`;
-      if (session.fpsLimit === fpsLimit) return;
-      session.fpsLimit = fpsLimit;
-      resetScreenStream();
-      $("remoteHint").classList.remove("hidden");
-      $("remoteHint").textContent = `正在切换到最高 ${fpsLimit} FPS…`;
-      setRemoteStatus(`正在切换画面帧率上限 · ${fpsLimit} FPS`);
-      refreshScreen();
+    $("fpsLimitControl").addEventListener("click", (event) => {
+      event.stopPropagation();
+      setFpsMenuVisible(!$("fpsLimitMenu").classList.contains("show"));
     });
-    $("scaleModeButton").addEventListener("click", () => {
-      setRemoteScaleMode(sessionScaleMode() === "fill" ? "fit" : "fill");
+    $("fpsLimitMenu").addEventListener("click", (event) => {
+      const option = event.target.closest("[data-fps]");
+      if (!option) return;
+      applyControlFps(option.dataset.fps);
+      setFpsMenuVisible(false);
     });
+    document.addEventListener("pointerdown", (event) => {
+      if (!$("fpsLimitMenu").classList.contains("show")) return;
+      if (event.target.closest("#fpsLimitMenu, #fpsLimitControl")) return;
+      setFpsMenuVisible(false);
+    }, {capture: true});
     $("clipboardButton").addEventListener("click", (event) => {
       const popover = $("clipboardPopover");
       const show = !popover.classList.contains("show");
+      if (show) setFpsMenuVisible(false);
       popover.classList.toggle("show", show);
       scheduleNativeInputSync(20);
-      if (show) {
-        const rect = event.currentTarget.getBoundingClientRect();
-        const left = Math.max(10, Math.min(window.innerWidth - 310, rect.left));
-        popover.style.left = `${left}px`;
-        popover.style.top = `${rect.bottom + 7}px`;
-      }
+      if (show) requestAnimationFrame(positionClipboardPopover);
     });
     $("clipboardSend").addEventListener("change", () => primeClipboardDirection("send"));
     $("clipboardReceive").addEventListener("change", () => primeClipboardDirection("receive"));
@@ -3921,7 +4092,10 @@
       }
     });
     $("remoteFileButton").addEventListener("click", openRemoteFiles);
-    $("lockRemoteButton").addEventListener("click", lockRemoteWorkstation);
+    $("lockRemoteButton").addEventListener("click", () => {
+      if (state.remoteSessionLocked) requestRemoteUnlock(true);
+      else lockRemoteWorkstation();
+    });
     $("fileClose").addEventListener("click", closeRemoteFiles);
     $("fileModal").addEventListener("mousedown", (event) => { if (event.target === $("fileModal")) closeRemoteFiles(); });
     $("fileRootSelect").addEventListener("change", () => loadRemoteDirectory($("fileRootSelect").value));
@@ -3941,20 +4115,69 @@
       const button = event.target.closest("[data-download]");
       if (button) downloadRemoteFile(button.dataset.download, button.dataset.name);
     });
-    $("toolbarToggle").addEventListener("click", () => {
-      const collapsed = $("remoteSession").classList.contains("toolbar-collapsed");
-      if (collapsed) revealToolbar(1800);
-      else {
-        clearTimeout(state.toolbarCollapseTimer);
-        setToolbarCollapsed(true);
-      }
+    $("toolbarToggle").addEventListener("click", () => revealToolbar(1800));
+    const remoteToolbar = $("remoteSession").querySelector(".remote-toolbar");
+    let toolbarDragPointerId = null;
+    let toolbarDragOffsetX = 0;
+    let toolbarDragOffsetY = 0;
+    $("remoteToolbarGrip").addEventListener("pointerdown", (event) => {
+      if (event.button !== 0 || !remoteWindowMode) return;
+      const rect = remoteToolbar.getBoundingClientRect();
+      toolbarDragPointerId = event.pointerId;
+      toolbarDragOffsetX = event.clientX - rect.left;
+      toolbarDragOffsetY = event.clientY - rect.top;
+      state.toolbarDragging = true;
+      state.toolbarDockedAtTop = false;
+      clearTimeout(state.toolbarCollapseTimer);
+      remoteToolbar.style.transition = "none";
+      remoteToolbar.style.left = `${rect.left}px`;
+      remoteToolbar.style.top = `${rect.top}px`;
+      remoteToolbar.style.transform = "none";
+      $("remoteToolbarGrip").setPointerCapture(event.pointerId);
+      event.preventDefault();
+      event.stopPropagation();
     });
-    $("remoteSession").querySelector(".remote-toolbar").addEventListener("pointerenter", () => {
+    $("remoteToolbarGrip").addEventListener("pointermove", (event) => {
+      if (toolbarDragPointerId !== event.pointerId || !state.toolbarDragging) return;
+      const titlebarBottom = 40;
+      const width = remoteToolbar.offsetWidth;
+      const height = remoteToolbar.offsetHeight;
+      const left = Math.max(0, Math.min(window.innerWidth - width, event.clientX - toolbarDragOffsetX));
+      const top = Math.max(titlebarBottom, Math.min(window.innerHeight - height, event.clientY - toolbarDragOffsetY));
+      remoteToolbar.style.left = `${left}px`;
+      remoteToolbar.style.top = `${top}px`;
+      positionOpenToolbarPopovers();
+      event.preventDefault();
+    });
+    const finishToolbarDrag = (event) => {
+      if (toolbarDragPointerId !== event.pointerId || !state.toolbarDragging) return;
+      const rect = remoteToolbar.getBoundingClientRect();
+      state.toolbarDragging = false;
+      toolbarDragPointerId = null;
+      remoteToolbar.style.transition = "";
+      state.toolbarDockedAtTop = rect.top <= 54;
+      if (state.toolbarDockedAtTop) {
+        remoteToolbar.style.left = `${rect.left + rect.width / 2}px`;
+        remoteToolbar.style.top = "48px";
+        remoteToolbar.style.transform = "translateX(-50%)";
+        scheduleToolbarCollapse(900);
+      } else {
+        remoteToolbar.style.left = `${rect.left}px`;
+        remoteToolbar.style.top = `${rect.top}px`;
+        remoteToolbar.style.transform = "none";
+        setToolbarCollapsed(false);
+      }
+      requestAnimationFrame(positionOpenToolbarPopovers);
+      event.preventDefault();
+    };
+    $("remoteToolbarGrip").addEventListener("pointerup", finishToolbarDrag);
+    $("remoteToolbarGrip").addEventListener("pointercancel", finishToolbarDrag);
+    remoteToolbar.addEventListener("pointerenter", () => {
       state.toolbarPointerInside = true;
       clearTimeout(state.toolbarCollapseTimer);
       setToolbarCollapsed(false);
     });
-    $("remoteSession").querySelector(".remote-toolbar").addEventListener("pointerleave", () => {
+    remoteToolbar.addEventListener("pointerleave", () => {
       state.toolbarPointerInside = false;
       scheduleToolbarCollapse(650);
     });
@@ -3984,6 +4207,7 @@
     window.addEventListener("resize", () => {
       scheduleNativeInputSync(40);
       updateRemoteCursorOverlay();
+      requestAnimationFrame(positionOpenToolbarPopovers);
     });
 
     async function toggleWindowMaximize() {
@@ -4001,7 +4225,6 @@
     $("remoteWindowMinimize").addEventListener("click", () => window.pywebview?.api?.minimize_window?.());
     $("remoteWindowMaximize").addEventListener("click", toggleWindowMaximize);
     $("remoteName").addEventListener("dblclick", () => { if (remoteWindowMode) toggleWindowMaximize(); });
-    $("remoteToolbarGrip").addEventListener("dblclick", () => { if (remoteWindowMode) toggleWindowMaximize(); });
     window.addEventListener("pywebviewready", async () => {
       try {
         const nativeState = await window.pywebview.api.window_state();
