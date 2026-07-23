@@ -32,8 +32,6 @@ internal static class ControlWindowHostTests
             TestKeyboardCaptureSurface(assembly);
             TestMouseCaptureMappings(assembly);
             TestFillModeMouseMapping(assembly);
-            TestNativeRemoteToolbar(assembly);
-            TestNativeRemoteTitlebar(assembly);
             TestNativeInputTransport(assembly);
             Console.WriteLine("CONTROL_HOST_STATE_TESTS_OK");
             return 0;
@@ -314,89 +312,6 @@ internal static class ControlWindowHostTests
         mapRemotePoint.Invoke(null, center);
         if (Math.Abs((int)center[3] - 960) > 1 || Math.Abs((int)center[4] - 540) > 1)
             throw new InvalidOperationException("Fill-mode center did not map to the remote center.");
-    }
-
-    private static void TestNativeRemoteToolbar(Assembly assembly)
-    {
-        Type toolbarType = RequiredType(assembly, "WindowsLANRemoteControlHost.NativeRemoteToolbar");
-        ConstructorInfo constructor = toolbarType.GetConstructor(new[] { typeof(Action<string, string>) });
-        MethodInfo updateState = toolbarType.GetMethod("UpdateState");
-        FieldInfo scaleField = toolbarType.GetField("scale", BindingFlags.Instance | BindingFlags.NonPublic);
-        FieldInfo collapseField = toolbarType.GetField("collapse", BindingFlags.Instance | BindingFlags.NonPublic);
-        FieldInfo gripField = toolbarType.GetField("grip", BindingFlags.Instance | BindingFlags.NonPublic);
-        if (constructor == null || updateState == null || scaleField == null || collapseField == null || gripField == null)
-            throw new InvalidOperationException("Native glass toolbar members were not found.");
-
-        string observedAction = String.Empty;
-        using (Form toolbar = (Form)constructor.Invoke(new object[] {
-            new Action<string, string>(delegate(string action, string value) { observedAction = action + value; })
-        }))
-        {
-            Dictionary<string, object> expanded = new Dictionary<string, object>
-            {
-                { "collapsed", false },
-                { "view_only", false },
-                { "fps", 120 },
-                { "scale_mode", "fill" },
-                { "keyboard", true },
-                { "clipboard", true },
-                { "fullscreen", false },
-                { "status_error", false },
-                { "monitors", new object[] { new Dictionary<string, object> { { "id", "all" }, { "label", "全部显示器" } } } }
-            };
-            updateState.Invoke(toolbar, new object[] { expanded });
-            if (toolbar.FormBorderStyle != FormBorderStyle.None || toolbar.Opacity >= 1.0)
-                throw new InvalidOperationException("Native toolbar is not using the translucent borderless glass shell.");
-            object scaleButton = scaleField.GetValue(toolbar);
-            string caption = Convert.ToString(scaleButton.GetType().GetProperty("Caption").GetValue(scaleButton, null));
-            if (!String.Equals(caption, "填充", StringComparison.Ordinal) || toolbar.Width < 300)
-                throw new InvalidOperationException(
-                    "Native toolbar did not expose the fill mode and full controls: caption=" +
-                    caption + ", width=" + toolbar.Width.ToString());
-            Control collapse = (Control)collapseField.GetValue(toolbar);
-            Control grip = (Control)gripField.GetValue(toolbar);
-            if (collapse.Left >= grip.Left)
-                throw new InvalidOperationException("Native toolbar collapse handle is not the first control.");
-            foreach (string fieldName in new[] { "minimize", "maximize", "close" })
-            {
-                if (toolbarType.GetField(fieldName, BindingFlags.Instance | BindingFlags.NonPublic) != null)
-                    throw new InvalidOperationException("Window control remained inside native toolbar: " + fieldName);
-            }
-
-            expanded["collapsed"] = true;
-            updateState.Invoke(toolbar, new object[] { expanded });
-            if (toolbar.Width > 60 || toolbar.Height > 36)
-                throw new InvalidOperationException("Collapsed native toolbar did not become a compact glass handle.");
-        }
-        GC.KeepAlive(observedAction);
-    }
-
-    private static void TestNativeRemoteTitlebar(Assembly assembly)
-    {
-        Type titlebarType = RequiredType(assembly, "WindowsLANRemoteControlHost.NativeRemoteTitlebar");
-        ConstructorInfo constructor = titlebarType.GetConstructor(new[] { typeof(Action<string, string>) });
-        MethodInfo updateState = titlebarType.GetMethod("UpdateState");
-        MethodInfo setWidth = titlebarType.GetMethod("SetOverlayWidth");
-        FieldInfo maximizeField = titlebarType.GetField("maximize", BindingFlags.Instance | BindingFlags.NonPublic);
-        if (constructor == null || updateState == null || setWidth == null || maximizeField == null)
-            throw new InvalidOperationException("Native remote titlebar members were not found.");
-
-        using (Form titlebar = (Form)constructor.Invoke(new object[] {
-            new Action<string, string>(delegate(string action, string value) {})
-        }))
-        {
-            setWidth.Invoke(titlebar, new object[] { 1280 });
-            updateState.Invoke(titlebar, new object[] { new Dictionary<string, object> {
-                { "title", "DESKTOP-TEST · 控制" },
-                { "maximized", true }
-            } });
-            if (titlebar.Width != 1280 || titlebar.Height != 40 || titlebar.FormBorderStyle != FormBorderStyle.None)
-                throw new InvalidOperationException("Native titlebar did not mirror the 40px remote window chrome.");
-            object maximize = maximizeField.GetValue(titlebar);
-            object icon = maximize.GetType().GetProperty("IconKind").GetValue(maximize, null);
-            if (!String.Equals(Convert.ToString(icon), "Restore", StringComparison.Ordinal))
-                throw new InvalidOperationException("Native titlebar did not expose the restore state.");
-        }
     }
 
     private static void AssertMouseButton(

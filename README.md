@@ -69,9 +69,9 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-windows-
 
 构建产物：
 
-- `dist\WindowsLANRemote-1.0.11-portable.zip`：免安装桌面程序（解压后运行其中的 EXE）
-- `dist\WindowsLANRemoteSetup-1.0.11.exe`：管理员安装包
-- `dist\WindowsLANRemoteService-1.0.11.exe`：构建产生的安全桌面服务组件
+- `dist\WindowsLANRemote-1.0.12-portable.zip`：免安装桌面程序（解压后运行其中的 EXE）
+- `dist\WindowsLANRemoteSetup-1.0.12.exe`：管理员安装包
+- `dist\WindowsLANRemoteService-1.0.12.exe`：构建产生的安全桌面服务组件
 
 安装包需要 UAC 管理员确认，安装位置为 `%ProgramFiles%\Windows LAN Remote`。它会创建开始菜单快捷方式、卸载项、专用网络防火墙规则，并注册自动启动的 `WindowsLANRemoteSecureDesktop` LocalSystem 服务。服务只在 `127.0.0.1:8767` 和 `127.0.0.1:8768` 上提供经过本机密钥验证的安全桌面与高权限输入通道，不直接对局域网开放。
 

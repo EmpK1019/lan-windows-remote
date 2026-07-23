@@ -955,13 +955,6 @@
       cursor: default !important;
     }
     #remoteScreen.scale-fill { object-fit: cover; }
-    body.native-video-active .remote-toolbar,
-    body.native-video-active .remote-titlebar,
-    body.native-video-active .remote-unlock-action {
-      visibility: hidden !important;
-      opacity: 0 !important;
-      pointer-events: none !important;
-    }
     .remote-stage.controlling,
     .remote-stage.controlling #remoteScreen { cursor: default !important; }
     .remote-stage.controlling.remote-cursor-active,
@@ -1536,7 +1529,6 @@
       nativeVideoRevision: 0,
       nativeVideoDiagnostics: null,
       nativeFallbackPending: false,
-      nativeOverlaySyncRevision: 0,
       lastMoveAt: 0,
       refreshTimer: 0,
       frameRequestRevision: 0,
@@ -2412,7 +2404,6 @@
       $("toolbarToggle").setAttribute("aria-label", collapsed ? "展开工具栏" : "收起工具栏");
       scheduleNativeInputSync(260);
       requestAnimationFrame(syncNativeVideoLayout);
-      requestAnimationFrame(syncNativeOverlayState);
     }
 
     function scheduleToolbarCollapse(delay = 700) {
@@ -2457,7 +2448,6 @@
       $("remoteStatus").textContent = text;
       $("remoteStatus").title = text;
       $("remoteStatus").classList.toggle("error", error);
-      requestAnimationFrame(syncNativeOverlayState);
     }
 
     function sessionScaleMode(session = state.session) {
@@ -2474,80 +2464,17 @@
       $("scaleModeButton").querySelector("span").textContent = next === "fill" ? "填充" : "适应";
       scheduleNativeInputSync(20);
       updateRemoteCursorOverlay();
-      requestAnimationFrame(syncNativeOverlayState);
+      requestAnimationFrame(syncNativeVideoLayout);
       if (announce && state.session?.connected) {
         setRemoteStatus(next === "fill" ? "画面已填充窗口 · 边缘可能轻微裁切" : "画面已完整适应窗口");
       }
     }
 
-    function nativeOverlayObscured() {
+    function nativeVideoObscured() {
       return $("fileModal").classList.contains("show") ||
         $("clipboardPopover").classList.contains("show") ||
         document.hidden;
     }
-
-    async function syncNativeOverlayState() {
-      if (!remoteWindowMode || !window.pywebview?.api?.set_native_overlay_state) return;
-      const session = state.session;
-      const revision = ++state.nativeOverlaySyncRevision;
-      const payload = {
-        visible: Boolean(state.nativeVideoActive && session?.connected && !nativeOverlayObscured()),
-        title: $("remoteName").textContent || "远程桌面",
-        collapsed: $("remoteSession").classList.contains("toolbar-collapsed"),
-        unlock_visible: Boolean(state.remoteSessionLocked && session?.connected && !session?.viewOnly),
-        view_only: Boolean(session?.viewOnly),
-        fps: sessionControlFps(session),
-        scale_mode: sessionScaleMode(session),
-        keyboard: Boolean(state.keyboardEnabled),
-        clipboard: Boolean($("clipboardSend").checked || $("clipboardReceive").checked),
-        fullscreen: document.body.classList.contains("remote-fullscreen"),
-        maximized: document.body.classList.contains("window-maximized"),
-        status_error: $("remoteStatus").classList.contains("error"),
-        monitors: state.monitors.map((monitor) => ({id: monitor.id, label: monitor.label || monitor.id}))
-      };
-      try {
-        await window.pywebview.api.set_native_overlay_state(payload);
-      } catch {}
-      if (revision !== state.nativeOverlaySyncRevision) return;
-    }
-
-    window.__lanNativeOverlayAction = (action, value = "") => {
-      if (!state.session?.connected && action !== "close") return;
-      if (action === "toolbar_toggle") {
-        const collapsed = $("remoteSession").classList.contains("toolbar-collapsed");
-        if (collapsed) revealToolbar(1800);
-        else {
-          clearTimeout(state.toolbarCollapseTimer);
-          setToolbarCollapsed(true);
-        }
-      } else if (action === "monitor") {
-        $("monitorSelect").value = String(value || "all");
-        $("monitorSelect").dispatchEvent(new Event("change", {bubbles: true}));
-      } else if (action === "fps") {
-        $("fpsLimitSelect").value = String(value || "60");
-        $("fpsLimitSelect").dispatchEvent(new Event("change", {bubbles: true}));
-      } else if (action === "scale_mode") {
-        setRemoteScaleMode(value);
-      } else if (action === "keyboard") {
-        $("keyboardButton").click();
-      } else if (action === "clipboard") {
-        $("clipboardButton").click();
-      } else if (action === "files") {
-        $("remoteFileButton").click();
-      } else if (action === "lock") {
-        $("lockRemoteButton").click();
-      } else if (action === "fullscreen") {
-        $("fullscreenButton").click();
-      } else if (action === "minimize") {
-        window.pywebview?.api?.minimize_window?.();
-      } else if (action === "maximize") {
-        toggleWindowMaximize();
-      } else if (action === "close") {
-        stopSession(remoteWindowMode, true);
-      } else if (action === "unlock") {
-        requestRemoteUnlock(true);
-      }
-    };
 
     function endpoint(path) {
       const session = state.session;
@@ -2958,7 +2885,6 @@
       if (options.stopNativeVideo !== false) {
         window.pywebview?.api?.configure_native_video?.({enabled: false}).catch(() => {});
       }
-      window.pywebview?.api?.set_native_overlay_state?.({visible: false}).catch(() => {});
       clearTimeout(state.refreshTimer);
       state.refreshTimer = 0;
       state.screenAbortController?.abort();
@@ -2990,19 +2916,24 @@
 
     function nativeVideoLayout() {
       const rect = $("remoteStage").getBoundingClientRect();
+      const exclusions = [
+        {left: 0, top: 0, width: window.innerWidth, height: 7},
+        visibleElementRect(document.querySelector(".remote-toolbar")),
+        visibleElementRect($("remoteTitlebar")),
+        visibleElementRect($("unlockRemoteButton"))
+      ].filter(Boolean);
       return {
         surface_left: rect.left,
         surface_top: rect.top,
         surface_width: rect.width,
         surface_height: rect.height,
-        visible: (state.nativeVideoActive || state.nativeVideoPriming) && !nativeOverlayObscured(),
+        visible: (state.nativeVideoActive || state.nativeVideoPriming) && !nativeVideoObscured(),
         scale_mode: sessionScaleMode(),
-        exclusions: []
+        exclusions
       };
     }
 
     function syncNativeVideoLayout() {
-      syncNativeOverlayState();
       if (
         (!state.nativeVideoActive && !state.nativeVideoPriming) ||
         !window.pywebview?.api?.set_native_video_layout
@@ -3041,9 +2972,6 @@
       state.nativeVideoActive = false;
       state.nativeVideoPriming = false;
       document.body.classList.remove("native-video-active");
-      try {
-        await window.pywebview?.api?.set_native_overlay_state?.({visible: false});
-      } catch {}
     }
 
     async function loadSecureTransitionFrame(session) {
@@ -3494,7 +3422,6 @@
       );
       scheduleNativeInputSync(30);
       requestAnimationFrame(syncNativeVideoLayout);
-      requestAnimationFrame(syncNativeOverlayState);
       if (wasLocked && !state.remoteSessionLocked) restartNativeVideoAfterUnlock();
     }
 
@@ -3928,7 +3855,6 @@
       $("keyboardButton").classList.toggle("active", next);
       setNativeKeyboardCapture(next);
       scheduleNativeInputSync();
-      requestAnimationFrame(syncNativeOverlayState);
       if (statusText) setRemoteStatus(next ? "键盘控制已开启，本地按键只发送到远端" : "键盘控制已关闭");
       if (next) $("remoteStage").focus();
     }
@@ -4174,7 +4100,6 @@
       document.body.classList.toggle("window-maximized", Boolean(maximized));
       $("windowMaximize").title = maximized ? "还原" : "最大化";
       $("remoteWindowMaximize").title = maximized ? "还原" : "最大化";
-      requestAnimationFrame(syncNativeOverlayState);
     }
 
     $("windowMinimize").addEventListener("click", () => window.pywebview?.api?.minimize_window?.());

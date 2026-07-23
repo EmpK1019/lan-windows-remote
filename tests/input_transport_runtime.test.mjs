@@ -156,8 +156,7 @@ const delay = milliseconds => new Promise(resolve => setTimeout(resolve, millise
         await Promise.resolve();
         order.push("native_stop_done");
         return true;
-      },
-      set_native_overlay_state: async () => order.push("native_overlay_hidden")
+      }
     }}},
     releaseFrameObjectUrl: () => {},
     sessionScaleMode: () => "fit",

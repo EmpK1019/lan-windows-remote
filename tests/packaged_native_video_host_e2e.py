@@ -172,14 +172,20 @@ def main() -> int:
                     "monitor": "all",
                     "fps_limit": 60,
                     "scale_mode": "fill",
-                    "surface_left": 40,
-                    "surface_top": 80,
-                    "surface_width": 800,
-                    "surface_height": 450,
+                    "surface_left": 0,
+                    "surface_top": 0,
+                    "surface_width": 900,
+                    "surface_height": 550,
                 }
                 html = f"""<!doctype html><meta charset=utf-8><title>{WINDOW_TITLE}</title>
-<style>html,body{{margin:0;background:#101116;color:white;font-family:Segoe UI}}#stage{{position:absolute;left:40px;top:80px;width:800px;height:450px;background:#ff0033}}</style>
-<div id=stage></div><script>
+<style>
+html,body{{margin:0;width:100%;height:100%;overflow:hidden;background:#101116;color:white;font-family:Segoe UI}}
+#stage{{position:absolute;left:0;top:0;width:900px;height:550px;background:#ff0033}}
+#webTitlebar{{position:fixed;z-index:40;top:0;left:0;right:0;height:40px;display:flex;align-items:center;padding:0 13px;box-sizing:border-box;background:rgba(15,17,21,.94);border-bottom:1px solid rgba(255,255,255,.09);font-size:12px;font-weight:600}}
+#webToolbar{{position:fixed;z-index:41;top:48px;left:50%;width:420px;height:42px;transform:translateX(-50%);display:flex;align-items:center;gap:5px;padding:4px 8px;box-sizing:border-box;border:1px solid rgba(238,244,248,.34);border-radius:13px;background:linear-gradient(180deg,rgba(113,116,122,.72),rgba(42,45,51,.64));box-shadow:0 10px 30px rgba(0,0,0,.26),inset 0 1px rgba(255,255,255,.22);backdrop-filter:blur(22px) saturate(145%)}}
+#webToolbar button{{height:31px;border:0;border-radius:9px;background:rgba(255,255,255,.08);color:#e5e8eb;padding:0 12px}}#webStatus{{position:absolute;right:12px;width:10px;height:10px;border-radius:50%;background:#39bf86;box-shadow:0 0 0 3px rgba(57,191,134,.18)}}
+</style>
+<div id=stage></div><header id=webTitlebar>NATIVE-E2E · 控制</header><div id=webToolbar><button>⌃</button><button>显示器</button><button>60 FPS</button><button>键盘</button><button>剪贴板</button><span id=webStatus></span></div><script>
 async function startNativeHostTest() {{
  try {{
   await window.pywebview.api.set_window_title({json.dumps(WINDOW_TITLE)});
@@ -202,13 +208,12 @@ async function startNativeHostTest() {{
         }})}});
         return;
       }}
-      await window.pywebview.api.set_native_video_layout({{...config, visible:true}});
-      await window.pywebview.api.set_native_overlay_state({{
-        visible:true, title:'NATIVE-E2E · 控制', maximized:false,
-        collapsed:false, unlock_visible:false, view_only:false,
-        fps:60, scale_mode:'fill', keyboard:true, clipboard:true, fullscreen:false,
-        status_error:false, monitors:[{{id:'all',label:'全部显示器'}}]
-      }});
+      const titlebar = document.getElementById('webTitlebar').getBoundingClientRect();
+      const toolbar = document.getElementById('webToolbar').getBoundingClientRect();
+      await window.pywebview.api.set_native_video_layout({{...config, visible:true, exclusions:[
+        {{left:titlebar.left,top:titlebar.top,width:titlebar.width,height:titlebar.height}},
+        {{left:toolbar.left,top:toolbar.top,width:toolbar.width,height:toolbar.height}}
+      ]}});
       surfaced = true;
     }}
     if (status.state === 'streaming' && Number(status.rendered_frames || 0) >= 30) {{
@@ -286,24 +291,22 @@ else window.addEventListener('pywebviewready', startNativeHostTest, {{once:true}
             left, top, right, bottom = window_rect(window)
             time.sleep(0.25)
             owned = visible_owned_windows(window)
-            owner_width = right - left
-            titlebars = [
-                rect for rect in owned
-                if rect[2] - rect[0] >= owner_width - 80 and 36 <= rect[3] - rect[1] <= 120
-            ]
-            toolbars = [
-                rect for rect in owned
-                if 260 <= rect[2] - rect[0] < owner_width - 100 and 38 <= rect[3] - rect[1] <= 120
-            ]
-            if not titlebars:
-                raise RuntimeError(f"native remote titlebar was not visible above the D3D surface: {owned}")
-            if not toolbars:
-                raise RuntimeError(f"native glass toolbar was not separated from the window chrome: {owned}")
-            if min(rect[1] for rect in toolbars) < min(rect[3] for rect in titlebars):
-                raise RuntimeError(f"native glass toolbar overlapped the remote titlebar: {owned}")
+            if owned:
+                raise RuntimeError(f"legacy native overlay windows are still visible: {owned}")
             first = ImageGrab.grab(bbox=(left, top, right, bottom)).convert("RGB")
-            preview_path = Path(__file__).resolve().parents[1] / "build" / "native-glass-toolbar-e2e.png"
+            preview_path = Path(__file__).resolve().parents[1] / "build" / "web-toolbar-over-d3d-e2e.png"
             first.save(preview_path)
+            green_toolbar_pixels = 0
+            for sample_y in range(min(first.height, 260)):
+                for sample_x in range(first.width):
+                    red, green, blue = first.getpixel((sample_x, sample_y))
+                    if green > 130 and green > red * 1.45 and green > blue * 1.25:
+                        green_toolbar_pixels += 1
+            if green_toolbar_pixels < 80:
+                raise RuntimeError(
+                    "historical Web toolbar was not visible through the D3D exclusion region; "
+                    f"green_pixels={green_toolbar_pixels}, screenshot={preview_path}"
+                )
             time.sleep(0.35)
             second = ImageGrab.grab(bbox=(left, top, right, bottom)).convert("RGB")
             difference = ImageChops.difference(first, second)
