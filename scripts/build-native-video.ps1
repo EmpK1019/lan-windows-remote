@@ -87,6 +87,19 @@ try {
         if ($LASTEXITCODE -ne 0) {
             throw "Native video protocol tests failed with exit code $LASTEXITCODE."
         }
+
+        $QualityPolicyTest = Join-Path $OutputDir "VideoQualityPolicyTests.exe"
+        & $Compiler @Common `
+            "/Fe:$QualityPolicyTest" `
+            "/Fo:$OutputDir\QualityPolicyTests.obj" `
+            (Join-Path $Root "tests\VideoQualityPolicyTests.cpp")
+        if ($LASTEXITCODE -ne 0) {
+            throw "Video quality policy test compilation failed with exit code $LASTEXITCODE."
+        }
+        & $QualityPolicyTest
+        if ($LASTEXITCODE -ne 0) {
+            throw "Video quality policy tests failed with exit code $LASTEXITCODE."
+        }
     }
 }
 finally {

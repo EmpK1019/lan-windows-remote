@@ -31,16 +31,13 @@
 #include <vector>
 
 #include "NativeVideoProtocol.hpp"
+#include "VideoQualityPolicy.hpp"
 
 using Microsoft::WRL::ComPtr;
 using lanremote::video::Message;
 using lanremote::video::MessageType;
 
 namespace {
-
-constexpr UINT32 kDefaultBitrate30 = 8'000'000;
-constexpr UINT32 kDefaultBitrate60 = 16'000'000;
-constexpr UINT32 kDefaultBitrate120 = 24'000'000;
 
 void ThrowIfFailed(const HRESULT hr, const char* operation) {
     if (FAILED(hr)) {
@@ -615,14 +612,14 @@ struct EncodedSize {
     UINT height;
 };
 
-EncodedSize SelectEncodedSize(const UINT source_width, const UINT source_height) {
-    constexpr UINT max_width = 1920;
-    constexpr UINT max_height = 1080;
+EncodedSize SelectEncodedSize(
+    const UINT source_width, const UINT source_height, const UINT fps) {
+    const auto profile = lanremote::video::QualityProfileForFps(fps);
     const double scale = (std::min)(
         1.0,
         (std::min)(
-            static_cast<double>(max_width) / source_width,
-            static_cast<double>(max_height) / source_height));
+            static_cast<double>(profile.max_width) / source_width,
+            static_cast<double>(profile.max_height) / source_height));
     UINT width = static_cast<UINT>(source_width * scale) & ~1U;
     UINT height = static_cast<UINT>(source_height * scale) & ~1U;
     return {(std::max)(2U, width), (std::max)(2U, height)};
@@ -1166,6 +1163,9 @@ private:
         if (FAILED(transform_.As(&codec_))) return;
         SetCodecBoolean(codec_.Get(), CODECAPI_AVLowLatencyMode, true);
         SetCodecBoolean(codec_.Get(), CODECAPI_AVEncCommonRealTime, true);
+        SetCodecUInt32(
+            codec_.Get(), CODECAPI_AVEncCommonRateControlMode,
+            static_cast<UINT32>(eAVEncCommonRateControlMode_LowDelayVBR));
         SetCodecUInt32(codec_.Get(), CODECAPI_AVEncMPVGOPSize, fps_);
         SetCodecUInt32(codec_.Get(), CODECAPI_AVEncMPVDefaultBPictureCount, 0);
         SetCodecUInt32(codec_.Get(), CODECAPI_AVEncCommonMeanBitRate, bitrate_);
@@ -1311,9 +1311,7 @@ private:
 };
 
 UINT32 BitrateForFps(const UINT fps) {
-    if (fps >= 120) return kDefaultBitrate120;
-    if (fps >= 60) return kDefaultBitrate60;
-    return kDefaultBitrate30;
+    return lanremote::video::DefaultBitrateForFps(fps);
 }
 
 std::atomic<bool> force_keyframe{true};
@@ -1348,19 +1346,16 @@ void ReadControlMessages(const UINT configured_fps, const UINT32 configured_bitr
                     target_fps = static_cast<UINT>((std::clamp)(
                         decode_fps * 1.05, 24.0, static_cast<double>(receiver_capacity)));
                     low_decode_reports = 0;
-                    adaptive_bitrate = (std::max)(
-                        2'000'000U, adaptive_bitrate.load() * 4 / 5);
                 }
             } else if (decode_fps >= target_fps * 0.95 && target_fps < receiver_capacity) {
                 low_decode_reports = 0;
                 target_fps = (std::min)(receiver_capacity, target_fps + 5);
-                adaptive_bitrate = (std::min)(
-                    configured_bitrate,
-                    adaptive_bitrate.load() + configured_bitrate / 10);
             } else {
                 low_decode_reports = 0;
             }
             adaptive_fps_limit = target_fps;
+            adaptive_bitrate = lanremote::video::AdaptiveBitrateForFps(
+                configured_bitrate, configured_fps, target_fps);
         }
     }
 }
@@ -1377,7 +1372,8 @@ int Run(const Options& options) {
     struct MfGuard { ~MfGuard() { MFShutdown(); } } mf_guard;
 
     DesktopCapture capture(options.monitor);
-    const EncodedSize encoded = SelectEncodedSize(capture.width(), capture.height());
+    const EncodedSize encoded = SelectEncodedSize(
+        capture.width(), capture.height(), options.fps);
     const UINT32 bitrate = BitrateForFps(options.fps);
     std::unique_ptr<GpuFrameConverter> gpu_converter;
     try {
@@ -1692,8 +1688,12 @@ int Run(const Options& options) {
                 const std::uint64_t current_writer_dropped = writer.dropped();
                 if (current_writer_dropped > last_diagnostic_writer_dropped + 2 ||
                     writer.depth() >= 2) {
-                    adaptive_bitrate = (std::max)(
-                        2'000'000U, adaptive_bitrate.load() * 4 / 5);
+                    const UINT congested_fps = (std::max)(
+                        lanremote::video::kMinimumAdaptiveFps,
+                        adaptive_fps_limit.load() * 4 / 5);
+                    adaptive_fps_limit = congested_fps;
+                    adaptive_bitrate = lanremote::video::AdaptiveBitrateForFps(
+                        bitrate, options.fps, congested_fps);
                 }
                 const UINT32 requested_bitrate = adaptive_bitrate.load();
                 if (requested_bitrate != active_bitrate && encoder->SetBitrate(requested_bitrate)) {

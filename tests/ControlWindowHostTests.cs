@@ -91,7 +91,7 @@ internal static class ControlWindowHostTests
             throw new InvalidOperationException("Remote startup members were not found.");
 
         using (Form mainWindow = (Form)constructor.Invoke(new object[] {
-            new Uri("http://127.0.0.1:8765/?v=1.2.0")
+            new Uri("http://127.0.0.1:8765/?v=1.2.1")
         }))
         using (Form remoteWindow = (Form)constructor.Invoke(new object[] {
             new Uri("http://127.0.0.1:8765/?remote=1&handoff=abcdefghijklmnop")

@@ -259,6 +259,38 @@ def main() -> int:
             if args.enforce_performance:
                 refresh_hz = display_refresh_hz()
                 final_status["display_refresh_hz"] = refresh_hz
+                max_width, max_height = {
+                    30: (2560, 1440),
+                    60: (2560, 1440),
+                    120: (1920, 1080),
+                }[args.fps]
+                coordinate_width = int(final_status.get("coordinate_width", 0))
+                coordinate_height = int(final_status.get("coordinate_height", 0))
+                resolution_scale = min(
+                    1.0,
+                    max_width / max(1, coordinate_width),
+                    max_height / max(1, coordinate_height),
+                )
+                expected_width = max(2, int(coordinate_width * resolution_scale) & ~1)
+                expected_height = max(2, int(coordinate_height * resolution_scale) & ~1)
+                encoded_width = int(final_status.get("encoded_width", 0))
+                encoded_height = int(final_status.get("encoded_height", 0))
+                if (encoded_width, encoded_height) != (expected_width, expected_height):
+                    raise RuntimeError(
+                        "native video resolution policy failed: "
+                        f"encoded={encoded_width}x{encoded_height}, "
+                        f"expected={expected_width}x{expected_height}, status={final_status}"
+                    )
+                adaptive_fps = max(1, int(final_status.get("adaptive_fps", args.fps)))
+                encoded_bits_per_frame = (
+                    int(final_status.get("bitrate", 0)) / adaptive_fps
+                )
+                final_status["encoded_bits_per_frame"] = round(encoded_bits_per_frame)
+                if encoded_bits_per_frame < 500_000:
+                    raise RuntimeError(
+                        "native desktop quality budget fell below 500 kbit/frame: "
+                        f"{encoded_bits_per_frame:.0f}, status={final_status}"
+                    )
                 sender_floor = {30: 29.0, 60: 55.0, 120: 90.0}[args.fps]
                 render_floor = sender_floor
                 if args.fps == 120 and refresh_hz > 1:
