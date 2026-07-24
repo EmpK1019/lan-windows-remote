@@ -451,7 +451,10 @@ public:
     ID3D11Device* device() const { return device_.Get(); }
     IMFDXGIDeviceManager* device_manager() const { return device_manager_.Get(); }
     bool hardware() const { return hardware_; }
-    void SetVisible(const bool visible) { visible_ = visible; }
+    void SetVisible(const bool visible) {
+        visible_ = visible;
+        queue_signal_.notify_all();
+    }
     void SetScaleMode(const bool fill) {
         std::lock_guard<std::mutex> guard(lock_);
         fill_mode_ = fill;
@@ -506,7 +509,9 @@ private:
             std::uint64_t capture_timestamp_us = 0;
             {
                 std::unique_lock<std::mutex> guard(queue_lock_);
-                queue_signal_.wait(guard, [&] { return stopping_ || pending_sample_; });
+                queue_signal_.wait(guard, [&] {
+                    return stopping_ || (pending_sample_ && visible_.load());
+                });
                 if (stopping_) return;
                 sample = std::move(pending_sample_);
                 width = pending_width_;

@@ -21,6 +21,7 @@ from PIL import Image
 
 TOKEN = "abcdefghijklmnop"
 CONTROLLER_PORT = int(os.environ.get("LAN_REMOTE_CONTROLLER_PORT", "0"))
+MJPEG_WEBVIEW_DISPLAY_FPS_FLOOR = 24
 WM_CLOSE = 0x0010
 MOUSEEVENTF_LEFTDOWN = 0x0002
 MOUSEEVENTF_LEFTUP = 0x0004
@@ -55,15 +56,15 @@ class AuditState:
                 self.input_event.set()
 
 
-def png_frame(red: int = 17) -> bytes:
+def jpeg_frame(red: int = 17) -> bytes:
     image = Image.new("RGB", (1280, 720), (red, 27, 42))
     output = io.BytesIO()
-    image.save(output, format="PNG")
+    image.save(output, format="JPEG", quality=82, optimize=False)
     return output.getvalue()
 
 
-FRAME = png_frame()
-FRAME_SEQUENCE = tuple(png_frame(32 + index * 12) for index in range(8))
+FRAME = jpeg_frame()
+FRAME_SEQUENCE = tuple(jpeg_frame(32 + index * 12) for index in range(8))
 
 
 class AuditHandler(BaseHTTPRequestHandler):
@@ -144,7 +145,7 @@ class AuditHandler(BaseHTTPRequestHandler):
                         self.server.state.screen_request_queries.append(self.path)
                     frame = FRAME_SEQUENCE[frame_index % len(FRAME_SEQUENCE)]
                     self.wfile.write(
-                        b"--audit-frame\r\nContent-Type: image/png\r\nContent-Length: "
+                        b"--audit-frame\r\nContent-Type: image/jpeg\r\nContent-Length: "
                         + str(len(frame)).encode("ascii")
                         + b"\r\n\r\n"
                         + frame
@@ -161,7 +162,7 @@ class AuditHandler(BaseHTTPRequestHandler):
                 self.server.state.screen_request_times.append(time.monotonic())
                 self.server.state.screen_request_queries.append(self.path)
             self.send_response(HTTPStatus.OK)
-            self.common_headers("image/png", len(FRAME))
+            self.common_headers("image/jpeg", len(FRAME))
             self.end_headers()
             self.wfile.write(FRAME)
             return
@@ -603,9 +604,10 @@ def main() -> int:
             time.sleep(0.004)
         display_duration = time.perf_counter() - display_started
         displayed_fps = max(0, len(display_colors) - 1) / display_duration
-        if displayed_fps < 33:
+        if displayed_fps < MJPEG_WEBVIEW_DISPLAY_FPS_FLOOR:
             raise RuntimeError(
-                f"WebView displayed only {displayed_fps:.1f} changing frames/s: {display_colors}"
+                "MJPEG fallback displayed only "
+                f"{displayed_fps:.1f} changing frames/s: {display_colors}"
             )
         for _ in range(4):
             if not user32.SetCursorPos(point.x, point.y):

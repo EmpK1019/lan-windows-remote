@@ -140,20 +140,37 @@ async function startNativeHostTest() {{
   await window.pywebview.api.set_window_title({json.dumps(WINDOW_TITLE)});
   const config = {json.dumps(config)};
   const started = await window.pywebview.api.configure_native_video(config);
-  await window.pywebview.api.set_native_video_layout({{...config, visible:true}});
-  await window.pywebview.api.set_native_overlay_state({{
-    visible:true, collapsed:false, unlock_visible:false, view_only:false,
-    fps:60, scale_mode:'fill', keyboard:true, clipboard:true, fullscreen:false,
-    status_error:false, monitors:[{{id:'all',label:'全部显示器'}}]
-  }});
+  let bootstrapVisible = false;
+  let bootstrapRenderedFrames = 0;
   for (let attempt=0; attempt<300; attempt++) {{
     const status = await window.pywebview.api.native_video_status();
     if (!started || status.state === 'failed') {{
       await fetch('/result', {{method:'POST', body:JSON.stringify(status)}});
       return;
     }}
-    if (status.state === 'streaming' && Number(status.rendered_frames || 0) >= 30) {{
-      await fetch('/result', {{method:'POST', body:JSON.stringify(status)}});
+    if (
+      !bootstrapVisible &&
+      Number(status.decoded_frames || 0) > 0 &&
+      (status.state === 'decoding' || status.state === 'streaming')
+    ) {{
+      bootstrapRenderedFrames = Number(status.rendered_frames || 0);
+      await window.pywebview.api.set_native_video_layout({{...config, visible:true}});
+      bootstrapVisible = true;
+    }}
+    if (
+      bootstrapVisible &&
+      status.state === 'streaming' &&
+      Number(status.rendered_frames || 0) >= Math.max(30, bootstrapRenderedFrames + 2)
+    ) {{
+      await window.pywebview.api.set_native_overlay_state({{
+        visible:true, collapsed:false, unlock_visible:false, view_only:false,
+        fps:60, scale_mode:'fill', keyboard:true, clipboard:true, fullscreen:false,
+        status_error:false, monitors:[{{id:'all',label:'全部显示器'}}]
+      }});
+      await fetch('/result', {{
+        method:'POST',
+        body:JSON.stringify({{...status, bootstrap_from_hidden:true}})
+      }});
       return;
     }}
     await new Promise(resolve => setTimeout(resolve, 50));
@@ -209,6 +226,8 @@ else window.addEventListener('pywebviewready', startNativeHostTest, {{once:true}
                 )
             if report.get("state") != "streaming" or int(report.get("rendered_frames", 0)) < 30:
                 raise RuntimeError(f"packaged native control host failed: {report}")
+            if report.get("bootstrap_from_hidden") is not True:
+                raise RuntimeError(f"packaged native control host skipped the hidden bootstrap gate: {report}")
             window = find_window(WINDOW_TITLE)
             if not window:
                 raise RuntimeError("packaged native control host window was not visible")

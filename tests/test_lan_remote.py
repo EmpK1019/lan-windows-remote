@@ -136,8 +136,13 @@ class CoreFunctionTests(unittest.TestCase):
         self.assertIn('"decoding"', native)
         self.assertIn("rendered_frames_.load() > first_frame_rendered_count", native)
         self.assertIn("next_first_frame_keyframe", native)
+        self.assertIn("(pending_sample_ && visible_.load())", native)
+        self.assertIn("queue_signal_.notify_all();", native)
         self.assertIn("function startNativeVideoPreview(session)", html)
-        self.assertIn("Number(status.rendered_frames || 0) > 0", html)
+        self.assertIn("nativeVideoBootstrapVisible", html)
+        self.assertIn("state.nativeVideoBootstrapRenderedFrames + 2", html)
+        self.assertIn("queueNativeVideoCommand({enabled: false})", html)
+        self.assertIn("scheduleNativeVideoRetry(session, 120)", html)
 
     def test_native_video_protocol_round_trip_and_validation(self) -> None:
         message = lan_remote.NativeVideoMessage(
