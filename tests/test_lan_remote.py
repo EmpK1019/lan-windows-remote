@@ -409,6 +409,19 @@ class CoreFunctionTests(unittest.TestCase):
         self.assertIn("QualityProfileForFps(fps)", encoder)
         self.assertIn("eAVEncCommonRateControlMode_LowDelayVBR", encoder)
         self.assertIn("AdaptiveBitrateForFps(", encoder)
+        self.assertIn(
+            "fps_ >= 120 ? eAVEncH264VProfile_Main : eAVEncH264VProfile_High",
+            encoder,
+        )
+        self.assertIn("CODECAPI_AVScenarioInfo", encoder)
+        self.assertIn("eAVScenarioInfo_DisplayRemoting", encoder)
+        self.assertIn("EncoderQualityVsSpeedForFps(fps_)", encoder)
+        self.assertIn("CODECAPI_AVEncCommonQualityVsSpeed", encoder)
+        self.assertIn("CODECAPI_AVEncH264CABACEnable", encoder)
+        self.assertIn("D3D11_VIDEO_USAGE_OPTIMAL_QUALITY", native)
+        self.assertIn("D3D11_VIDEO_PROCESSOR_FILTER_EDGE_ENHANCEMENT", native)
+        self.assertIn("description.InputFrameRate.Numerator = requested_fps_;", native)
+        self.assertIn("description.OutputFrameRate.Numerator = requested_fps_;", native)
         self.assertIn("FillMode", host)
         self.assertIn("window.__lanNativeOverlayAction", html)
         self.assertIn("set_native_overlay_state", html)

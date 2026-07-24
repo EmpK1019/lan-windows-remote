@@ -1018,6 +1018,9 @@ public:
 
     const std::string& name() const { return name_; }
     bool hardware() const { return hardware_; }
+    bool display_remoting_hint() const { return display_remoting_hint_; }
+    UINT32 quality_vs_speed() const { return quality_vs_speed_; }
+    bool cabac() const { return cabac_; }
     bool SetBitrate(const UINT32 bitrate) {
         if (!codec_ || !SetCodecUInt32(codec_.Get(), CODECAPI_AVEncCommonMeanBitRate, bitrate)) {
             return false;
@@ -1145,7 +1148,9 @@ private:
         ThrowIfFailed(MFSetAttributeRatio(output_type.Get(), MF_MT_PIXEL_ASPECT_RATIO, 1, 1), "set output aspect");
         output_type->SetUINT32(MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive);
         output_type->SetUINT32(MF_MT_AVG_BITRATE, bitrate_);
-        output_type->SetUINT32(MF_MT_MPEG2_PROFILE, eAVEncH264VProfile_Main);
+        output_type->SetUINT32(
+            MF_MT_MPEG2_PROFILE,
+            fps_ >= 120 ? eAVEncH264VProfile_Main : eAVEncH264VProfile_High);
         ThrowIfFailed(transform_->SetOutputType(output_stream_, output_type.Get(), 0), "set H.264 output type");
 
         ComPtr<IMFMediaType> input_type;
@@ -1163,11 +1168,28 @@ private:
         if (FAILED(transform_.As(&codec_))) return;
         SetCodecBoolean(codec_.Get(), CODECAPI_AVLowLatencyMode, true);
         SetCodecBoolean(codec_.Get(), CODECAPI_AVEncCommonRealTime, true);
+        display_remoting_hint_ =
+            SetCodecUInt32(
+                codec_.Get(), CODECAPI_AVScenarioInfo,
+                static_cast<UINT32>(eAVScenarioInfo_DisplayRemoting)) ||
+            display_remoting_hint_;
+        const UINT32 requested_quality_vs_speed =
+            lanremote::video::EncoderQualityVsSpeedForFps(fps_);
+        if (SetCodecUInt32(
+                codec_.Get(), CODECAPI_AVEncCommonQualityVsSpeed,
+                requested_quality_vs_speed)) {
+            quality_vs_speed_ = requested_quality_vs_speed;
+        }
         SetCodecUInt32(
             codec_.Get(), CODECAPI_AVEncCommonRateControlMode,
             static_cast<UINT32>(eAVEncCommonRateControlMode_LowDelayVBR));
         SetCodecUInt32(codec_.Get(), CODECAPI_AVEncMPVGOPSize, fps_);
         SetCodecUInt32(codec_.Get(), CODECAPI_AVEncMPVDefaultBPictureCount, 0);
+        if (fps_ < 120) {
+            cabac_ =
+                SetCodecBoolean(codec_.Get(), CODECAPI_AVEncH264CABACEnable, true) ||
+                cabac_;
+        }
         SetCodecUInt32(codec_.Get(), CODECAPI_AVEncCommonMeanBitRate, bitrate_);
     }
 
@@ -1298,6 +1320,9 @@ private:
     DWORD output_stream_ = 0;
     bool hardware_ = false;
     bool asynchronous_ = false;
+    bool display_remoting_hint_ = false;
+    UINT32 quality_vs_speed_ = 0;
+    bool cabac_ = false;
     UINT need_input_requests_ = 0;
     bool have_output_ = false;
     std::string name_;
@@ -1453,6 +1478,12 @@ int Run(const Options& options) {
            << ",\"bitrate\":" << bitrate
            << ",\"encoder\":\"" << JsonEscape(encoder->name()) << "\""
            << ",\"hardware\":" << (encoder->hardware() ? "true" : "false")
+           << ",\"h264_profile\":\""
+           << (options.fps >= 120 ? "main" : "high") << "\""
+           << ",\"display_remoting_hint\":"
+           << (encoder->display_remoting_hint() ? "true" : "false")
+           << ",\"quality_vs_speed\":" << encoder->quality_vs_speed()
+           << ",\"cabac\":" << (encoder->cabac() ? "true" : "false")
            << ",\"encoder_selection\":\"" << encoder_selection << "\""
            << ",\"hardware_benchmark_fps\":" << hardware_benchmark_fps
            << ",\"software_benchmark_fps\":" << software_benchmark_fps

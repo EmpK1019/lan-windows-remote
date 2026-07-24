@@ -374,12 +374,14 @@ public:
         std::atomic<std::uint64_t>* dropped_frames,
         std::atomic<std::uint64_t>* render_microseconds,
         std::atomic<std::uint64_t>* render_attempts,
-        PresentationLatencyTracker* latency_tracker)
+        PresentationLatencyTracker* latency_tracker,
+        const UINT requested_fps)
         : window_(window), rendered_frames_(rendered_frames),
           dropped_frames_(dropped_frames),
           external_render_microseconds_(render_microseconds),
           external_render_attempts_(render_attempts),
-          latency_tracker_(latency_tracker) {
+          latency_tracker_(latency_tracker),
+          requested_fps_(requested_fps) {
         UINT flags = D3D11_CREATE_DEVICE_BGRA_SUPPORT | D3D11_CREATE_DEVICE_VIDEO_SUPPORT;
         D3D_FEATURE_LEVEL feature_level{};
         HRESULT status = D3D11CreateDevice(
@@ -602,6 +604,12 @@ private:
         video_context_->VideoProcessorSetStreamDestRect(processor_.Get(), 0, TRUE, &destination);
         video_context_->VideoProcessorSetStreamFrameFormat(
             processor_.Get(), 0, D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE);
+        const bool scaled =
+            destination.right - destination.left != static_cast<LONG>(input_width) ||
+            destination.bottom - destination.top != static_cast<LONG>(input_height);
+        video_context_->VideoProcessorSetStreamFilter(
+            processor_.Get(), 0, D3D11_VIDEO_PROCESSOR_FILTER_EDGE_ENHANCEMENT,
+            edge_filter_available_ && scaled, edge_filter_level_);
         D3D11_VIDEO_PROCESSOR_STREAM stream{};
         stream.Enable = TRUE;
         stream.pInputSurface = input_view.Get();
@@ -639,20 +647,37 @@ private:
         processor_.Reset();
         D3D11_VIDEO_PROCESSOR_CONTENT_DESC description{};
         description.InputFrameFormat = D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE;
-        description.InputFrameRate.Numerator = 60;
+        description.InputFrameRate.Numerator = requested_fps_;
         description.InputFrameRate.Denominator = 1;
         description.InputWidth = width;
         description.InputHeight = height;
-        description.OutputFrameRate.Numerator = 60;
+        description.OutputFrameRate.Numerator = requested_fps_;
         description.OutputFrameRate.Denominator = 1;
         description.OutputWidth = output_width_;
         description.OutputHeight = output_height_;
-        description.Usage = D3D11_VIDEO_USAGE_PLAYBACK_NORMAL;
+        description.Usage = requested_fps_ <= 60
+            ? D3D11_VIDEO_USAGE_OPTIMAL_QUALITY
+            : D3D11_VIDEO_USAGE_PLAYBACK_NORMAL;
         ThrowIfFailed(
             video_device_->CreateVideoProcessorEnumerator(&description, &processor_enumerator_),
             "create video processor enumerator");
         ThrowIfFailed(video_device_->CreateVideoProcessor(processor_enumerator_.Get(), 0, &processor_),
             "create video processor");
+        edge_filter_available_ = false;
+        edge_filter_level_ = 0;
+        D3D11_VIDEO_PROCESSOR_CAPS capabilities{};
+        if (requested_fps_ <= 60 &&
+            SUCCEEDED(processor_enumerator_->GetVideoProcessorCaps(&capabilities)) &&
+            (capabilities.FilterCaps &
+                D3D11_VIDEO_PROCESSOR_FILTER_CAPS_EDGE_ENHANCEMENT)) {
+            D3D11_VIDEO_PROCESSOR_FILTER_RANGE range{};
+            if (SUCCEEDED(processor_enumerator_->GetVideoProcessorFilterRange(
+                    D3D11_VIDEO_PROCESSOR_FILTER_EDGE_ENHANCEMENT, &range))) {
+                edge_filter_level_ =
+                    range.Default + (range.Maximum - range.Default) / 4;
+                edge_filter_available_ = edge_filter_level_ != range.Default;
+            }
+        }
         processor_input_width_ = width;
         processor_input_height_ = height;
     }
@@ -675,6 +700,9 @@ private:
     ComPtr<ID3D11Texture2D> upload_texture_;
     ComPtr<ID3D11VideoProcessorEnumerator> processor_enumerator_;
     ComPtr<ID3D11VideoProcessor> processor_;
+    UINT requested_fps_ = 60;
+    bool edge_filter_available_ = false;
+    int edge_filter_level_ = 0;
     std::atomic<std::uint64_t>* rendered_frames_ = nullptr;
     std::atomic<std::uint64_t>* dropped_frames_ = nullptr;
     std::atomic<std::uint64_t>* external_render_microseconds_ = nullptr;
@@ -1530,7 +1558,8 @@ private:
             mf_initialized = true;
             renderer_ = std::make_unique<D3DRenderer>(
                 window_, &rendered_frames_, &dropped_frames_,
-                &render_microseconds_, &render_attempts_, &presentation_latency_);
+                &render_microseconds_, &render_attempts_, &presentation_latency_,
+                fps_);
             renderer_->SetScaleMode(fill_mode_);
             renderer_->SetVisible(layout_visible_);
             RECT client{};

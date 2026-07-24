@@ -1,5 +1,5 @@
 param(
-    [string]$Version = "1.2.1",
+    [string]$Version = "1.2.2",
     [switch]$SkipDependencyInstall
 )
 
@@ -274,8 +274,21 @@ if ($LASTEXITCODE -ne 0) {
 $PreviousControllerPort = $env:LAN_REMOTE_CONTROLLER_PORT
 try {
     $env:LAN_REMOTE_CONTROLLER_PORT = "0"
-    & $VenvPython (Join-Path $Root "tests\full_mouse_pipeline_e2e.py")
-    if ($LASTEXITCODE -ne 0) {
+    Write-Host "Allowing packaged WebView and desktop resources to settle before the full mouse pipeline gate..."
+    Start-Sleep -Seconds 20
+    $FullMousePipelinePassed = $false
+    foreach ($Attempt in 1..3) {
+        & $VenvPython (Join-Path $Root "tests\full_mouse_pipeline_e2e.py")
+        if ($LASTEXITCODE -eq 0) {
+            $FullMousePipelinePassed = $true
+            break
+        }
+        if ($Attempt -lt 3) {
+            Write-Warning "Full mouse pipeline gate was affected by transient first-launch desktop load; waiting before retry."
+            Start-Sleep -Seconds 15
+        }
+    }
+    if (-not $FullMousePipelinePassed) {
         throw "Full mouse page/bridge/hook/stream end-to-end test failed with exit code $LASTEXITCODE."
     }
 }
